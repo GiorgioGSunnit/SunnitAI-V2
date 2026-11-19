@@ -70,9 +70,9 @@ LENT = "Tizio ha dato in comodato la sua auto a Caio, che la restituisce graffia
 NO_ACTION = "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente"
 
 
-def _no_action_ctx():
+def _no_action_ctx(institutions=("comodato",)):
     return _civil({"1476 c.c.": _rec("Obbligazioni principali del venditore", _req(1, "consegnare la cosa")),
-                   "1225 c.c.": _rec("Prevedibilità del danno", _req(2, "il danno prevedibile"))}, LENT, ["comodato"])
+                   "1225 c.c.": _rec("Prevedibilità del danno", _req(2, "il danno prevedibile"))}, LENT, institutions)
 
 
 def test_no_claim_admitted_gives_no_candidate_and_the_method_steps_aside_with_the_sentence_once():
@@ -81,6 +81,13 @@ def test_no_claim_admitted_gives_no_candidate_and_the_method_steps_aside_with_th
     ctx["candidates"] = M.thesis_candidates(ctx)
     assert ctx["candidates"] == [] and ctx["no_action"] == NO_ACTION
     plan = M.clean_method({}, ctx["candidates"])
+    # v79.12.5 (item 2): with a first-read institution (comodato) the ten sections stay -- the step-aside is only for a
+    # first read that found no institution at all (below)
+    assert M.method_refusal([(ctx, plan)]) == {} and M.no_claim(ctx) == "none"
+    assert M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan).startswith("**1. Sintesi della soluzione**")
+    ctx = _no_action_ctx(())
+    ctx["candidates"] = M.thesis_candidates(ctx)
+    assert ctx["no_action"] == NO_ACTION and M.no_claim(ctx) == ""          # the module from the case's words
     assert M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan) == ""      # the standard body
     refusal = M.method_refusal([(ctx, plan)])
     assert refusal["no_action"] is True and refusal["lines"] == []
@@ -108,7 +115,7 @@ def test_every_client_is_read_and_a_client_with_a_line_keeps_the_method():
     good["candidates"] = M.thesis_candidates(good)
     good_plan = M.clean_method({}, good["candidates"])
     assert M.method_refusal([(good, good_plan)]) == {} and M.client_refusal(good, good_plan) == {}
-    bad = _no_action_ctx()
+    bad = _no_action_ctx(())           # v79.12.5 (item 2): no first-read institution -- the step-aside
     bad["candidates"] = M.thesis_candidates(bad)
     bad_plan = M.clean_method({}, [])
     # review: one client with a line keeps the method -- the whole answer never steps aside for another client
@@ -119,7 +126,7 @@ def test_every_client_is_read_and_a_client_with_a_line_keeps_the_method():
     assert notes == ["Nota: il metodo di analisi per elementi non è stato applicato alla posizione di Sempronio e "
                      "Mevio: tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente."]
     assert M.no_action_problems("\n\n".join(notes + ["- Linea principale: restituzione del bene."])) == []
-    whole = M.method_refusal([(bad, bad_plan), (_no_action_ctx(), bad_plan)])       # no client has a line
+    whole = M.method_refusal([(bad, bad_plan), (_no_action_ctx(()), bad_plan)])       # no client has a line
     assert whole["no_action"] and whole["why"] == refusal["why"]
 
 

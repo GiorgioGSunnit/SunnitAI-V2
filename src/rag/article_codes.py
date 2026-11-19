@@ -37,8 +37,14 @@ _LAW_KIND = [(re.compile(r"d\.?\s?lgs|decreto legislativo", re.I), "d.lgs."),
 
 def law_label(document_name: str) -> str:
     """How an article of this document is cited: "l. 241/1990", "d.lgs. 36/2023", else the document's name
-    without a trailing edition year, in brackets ("(Testo unico enti locali)")."""
+    without a trailing edition year, in brackets ("(Testo unico enti locali)"). v79.12.5 (item 8): a document
+    data/corpus_expected.json maps by its exact name is cited by that law's citation ("d.P.R. 309/1990" for "Testo
+    Unico sugli Stupefacenti 2026": corpus_laws.citation_of), never its title."""
     name = (document_name or "").strip()
+    from . import corpus_laws
+    cited = corpus_laws.citation_of(name)
+    if cited:
+        return cited
     for kind_re, kind in _LAW_KIND:
         if not kind_re.search(name):
             continue

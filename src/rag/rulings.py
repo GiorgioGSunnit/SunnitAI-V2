@@ -105,6 +105,25 @@ DEMOTED_ACTS = ("O", "I")
 
 _ITALGIURE_RE = re.compile(r"(snpen|snciv)[@_ ]s(\w)(\w)[@_ ]a((?:19|20)\d{2})[@_ ]n0*(\d+)[@_ ]t([a-z])", re.I)
 _DATE_RES = (re.compile(r"((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})"), re.compile(r"(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)\d{2})"))
+# v79.12.5 (item 9): the other shapes a date_enacted or a ruling's name holds -- «2025/03/12», «2025.03.12»,
+# «20250312», «12 marzo 2025» (with «1°») -- read after the two above, the year window the same
+_MONTHS = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre",
+           "novembre", "dicembre")
+_DATE_MORE_RES = (re.compile(r"(?<!\d)((?:19|20)\d{2})[/.](\d{1,2})[/.](\d{1,2})(?!\d)"),
+                  re.compile(r"(?<!\d)((?:19|20)\d{2})(\d{2})(\d{2})(?!\d)"))
+_DATE_WORDS_RE = re.compile(rf"(?<!\d)(\d{{1,2}})\s*[°º]?\s+({'|'.join(_MONTHS)})\s+((?:19|20)\d{{2}})(?!\d)", re.I)
+# v79.12.5 (item 9): the ruling's own date in its text -- «Così deciso in Roma, il 12/03/2025» (anywhere: the closing
+# formula is the ruling's own; the last one read), or, at the start of a sentence or line only, «Depositata in
+# cancelleria il 3 aprile 2025», «Data di deposito: …», «Udienza pubblica del …» -- never any date the text cites
+# (review fix: «con ricorso depositato il …», «la sentenza di appello, depositata il …», «all'udienza del …» are dates
+# the ruling cites, mid-sentence, and are not read)
+_DATE_ANY = (rf"((?:\d{{1,2}}[/.-]\d{{1,2}}[/.-](?:19|20)\d{{2}})|(?:\d{{1,2}}\s*[°º]?\s+(?:{'|'.join(_MONTHS)})\s+"
+             r"(?:19|20)\d{2}))")
+_OWN_DECIDED_RE = re.compile(r"\bcos[iì]\s+deciso\b[^;\n]{0,80}?" + _DATE_ANY, re.I)
+_OWN_HEAD_RE = re.compile(r"(?:^|(?<=[.;:\n])|(?<=[.;:\n]\s)|(?<=[.;:\n]\s\s))\s*"
+                          r"(?:depositat[ao]\s+(?:in\s+cancelleria\s*)?(?:oggi\s+|il\s+|in\s+data\s+|:\s*)?|"
+                          r"data\s+(?:di\s+|del(?:la)?\s+|dell'\s*)?(?:deposito|pubblicazione|decisione|udienza)\s*:?\s*|"
+                          r"udienza\s+(?:pubblica\s+|camerale\s+)?(?:del\s+|:\s*))" + _DATE_ANY, re.I)
 _WORD_RE = re.compile(r"[a-zàèéìòù]{4,}", re.I)
 _STOP = set("""
 alla alle allo anche ancora avere aveva base caso cioè come con contro cosa così dalla dalle dallo degli della delle
@@ -184,13 +203,24 @@ def sezioni_unite(p: Optional[Dict[str, Any]]) -> bool:
 
 
 def ruling_date(value: Any, year: str = "") -> Optional[date]:
-    """date_enacted as a date when it reads as one (ISO, or dd/mm/yyyy) within a year of the number's; else None."""
+    """date_enacted as a date when it reads as one (ISO, or dd/mm/yyyy) within a year of the number's; else None.
+    v79.12.5 (item 9): also «2025/03/12», «2025.03.12», «20250312» and «12 marzo 2025»; a value already a date is
+    itself."""
+    if isinstance(value, date):
+        return value if not year or abs(value.year - int(year)) <= 1 else None
     text = str(value or "")
-    for i, rx in enumerate(_DATE_RES):
+    shapes = [(rx, "ymd" if i == 0 else "dmy") for i, rx in enumerate(_DATE_RES)] + \
+        [(rx, "ymd") for rx in _DATE_MORE_RES] + [(_DATE_WORDS_RE, "words")]
+    for rx, how in shapes:
         m = rx.search(text)
         if not m:
             continue
-        y, mo, d = (m.group(1), m.group(2), m.group(3)) if i == 0 else (m.group(3), m.group(2), m.group(1))
+        if how == "ymd":
+            y, mo, d = m.group(1), m.group(2), m.group(3)
+        elif how == "dmy":
+            y, mo, d = m.group(3), m.group(2), m.group(1)
+        else:
+            y, mo, d = m.group(3), str(_MONTHS.index(m.group(2).lower()) + 1), m.group(1)
         try:
             found = date(int(y), int(mo), int(d))
         except ValueError:
@@ -201,13 +231,46 @@ def ruling_date(value: Any, year: str = "") -> Optional[date]:
     return None
 
 
+def own_date(text: Any, year: str = "") -> Optional[date]:
+    """v79.12.5 (item 9): the ruling's own date in its text («Così deciso … il 12/03/2025», «Depositata in cancelleria
+    il 3 aprile 2025», «Data di deposito: …», «Udienza del …»), within a year of its number's (ruling_date); None when
+    the text states none -- a date it merely cites is never read. Review fix: «così deciso» first (the last one
+    read), then a deposit, decision or hearing date only where it opens a sentence or line."""
+    text = str(text or "")
+    for rx, order in ((_OWN_DECIDED_RE, -1), (_OWN_HEAD_RE, 1)):
+        for m in list(rx.finditer(text))[::order]:
+            found = ruling_date(m.group(1), year)
+            if found:
+                return found
+    return None
+
+
+def dated(g: Dict[str, Any], p: Dict[str, Any], text: str = "") -> Optional[date]:
+    """v79.12.5 (item 9): a ruling's date -- its date_enacted (ruling_date), else a date in its document's name, else
+    its own date in the text read (own_date); None («data n.d.») when none of them holds one within a year of its
+    number's."""
+    return ruling_date(g.get("date_enacted"), p["year"]) or ruling_date(g.get("name"), p["year"]) or \
+        (own_date(text, p["year"]) if text else None)
+
+
 def render_estremi(p: Dict[str, Any], date_enacted: Any = None) -> str:
-    """«Cass. pen., Sez. Un., n. 12345/2025 (12.03.2025)», «Cass. civ., Sez. 3, n. 678/2026 (data n.d.)»."""
+    """«Cass. pen., Sez. Un., n. 12345/2025 (12.03.2025)», «Cass. civ., Sez. 3, n. 678/2026 (data n.d.)». v79.12.5:
+    date_enacted may be the date itself (dated)."""
     court = "Cass. pen." if p["archive"] == "penale" else "Cass. civ."
     room = chamber(p)
     when = ruling_date(date_enacted, p["year"])
     return (f"{court}, " + (f"{room}, " if room else "") + f"n. {p['number']}/{p['year']} "
             + (f"({when.day:02d}.{when.month:02d}.{when.year})" if when else "(data n.d.)"))
+
+
+# v79.12.5 (item 9): a ruling's estremi as printed («Cass. pen., Sez. 2, n. 7/2025 (12.03.2025)», «… (data n.d.)»)
+_ESTREMI_RE = re.compile(r"Cass\.\s+(?:pen|civ)\.,\s+(?:[^,\n]{1,20},\s+)?n\.\s+\d+/(?:19|20)\d{2}\s+"
+                         r"\((?:\d{2}\.\d{2}\.\d{4}|data n\.d\.)\)")
+
+
+def estremi_printed(text: str) -> List[str]:
+    """v79.12.5 (item 9): every ruling's estremi printed in the text (render_estremi's form), in order."""
+    return [m.group(0) for m in _ESTREMI_RE.finditer(text or "")]
 
 
 # --- 3. ranking ------------------------------------------------------------------------------------------------------------
@@ -456,6 +519,16 @@ _LONE = r"(?:[A-ZÀ-Ý][a-zà-ÿ]{0,3}['’])?(?:[A-ZÀ-Ý][a-zà-ÿ]{2,}|[A-ZÀ
 _SAVING_CLAUSE = r"\s*,\s*a\s+prescindere\s+dall[ae]?\s*['’]?\s*titolarit"
 _ELIDED_BEFORE = "|".join(rf"(?<=\b{p}['’])" for p in ("d", "l", "all", "dall", "dell", "nell", "sull", "coll"))
 _SAVING_SURNAME_RE = re.compile(rf"(?:(?<![\w'’.\[-])|{_ELIDED_BEFORE})({_LONE})(?![\w'’-])(?={_SAVING_CLAUSE})")
+# v79.12.5 (79.12.3 item 7): an article or an articled preposition, written out (never elided: «l'Agenzia», «dell'Inps» are an
+# office far more often than a surname) -- il, lo, la, i, gli, le; del, al, dal, nel, sul and their forms; col, coi
+ARTICLES = frozenset(["il", "lo", "la", "i", "gli", "le", "col", "coi"] +
+                     [p + a for p in ("de", "a", "da", "ne", "su") for a in ("l", "llo", "lla", "i", "gli", "lle")])
+_ARTICLE = "|".join(sorted(ARTICLES, key=len, reverse=True))
+# v79.12.5 (79.12.3 item 7): a surname printed alone after an article («il Rossi», «del Bianchi», «dal Verdi», «la Russo»)
+_ARTICLE_SURNAME_RE = re.compile(rf"(?<![\w'’.\[-])(?P<art>(?i:{_ARTICLE}))[ \t]+({_LONE})(?![\w'’-])")
+_ROMAN_RE = re.compile(r"^[IVXLCDM]+$")
+# v79.12.5 (review of item 7): the word right before a position, on the same line with only blanks between
+_PREV_WORD_RE = re.compile(r"([\w'’-]+)[ \t]+$")
 REDACTION_STOPLIST_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                        "data", "redaction_stoplist.json")
 
@@ -466,10 +539,10 @@ def _stoplist() -> Dict[str, frozenset]:
         with open(REDACTION_STOPLIST_FILE, encoding="utf-8") as f:
             raw = json.load(f)
         return {k: frozenset(str(w).capitalize() for w in raw.get(k) or [])
-                for k in ("words", "openers", "role_nouns")}
+                for k in ("words", "openers", "role_nouns", "office_tails")}
     except (OSError, ValueError) as exc:
         logger.warning("rulings: %s not read: %s", REDACTION_STOPLIST_FILE, exc)
-        return {"words": frozenset(), "openers": frozenset(), "role_nouns": frozenset()}
+        return {"words": frozenset(), "openers": frozenset(), "role_nouns": frozenset(), "office_tails": frozenset()}
 
 
 def not_names() -> frozenset:
@@ -490,15 +563,101 @@ def role_nouns() -> frozenset:
     return _stoplist().get("role_nouns") or frozenset()
 
 
+def not_a_surname(word: str) -> bool:
+    """v79.12.5 (79.12.3 item 7): a lone capitalised word that is never read as a surname -- a gazetteer word (an office, a
+    court, an act), an opener or a role noun (data/redaction_stoplist.json «words», «openers», «role_nouns»)."""
+    return _gazetteer(word) or word.capitalize() in openers() or word.capitalize() in role_nouns()
+
+
+def article_surname(article: str, word: str) -> bool:
+    """v79.12.5 (79.12.3 item 7): the capitalised word after an article is a surname («il Rossi», «del Bianchi», «la Russo»)
+    unless it is a gazetteer word, an opener or a role noun («il Tribunale», «la Corte», «il Ricorrente», «del Ctu»);
+    never a Roman numeral («del XVIII»), and never in a heading in capitals («DELLA SENTENZA»: the article in capitals
+    too, while «del ROSSI» is a surname)."""
+    if not_a_surname(word):
+        return False
+    if word.isupper() and (_ROMAN_RE.match(word) or article.isupper()):
+        return False
+    return True
+
+
+def office_tails() -> frozenset:
+    """v79.12.5 (review of 79.12.3 item 7): the words that continue an office's name after «del» and its forms
+    (data/redaction_stoplist.json «office_tails»: «Conti», «Sviluppo», «Contratti», «Salute» ...)."""
+    return _stoplist().get("office_tails") or frozenset()
+
+
+_TAIL_WORD_RE = re.compile(r"\w+(?:['’]\s*|\s+)([\w'’-]+)")
+
+
+def _tail_word(text: str, start: int) -> bool:
+    """The word after the articled preposition at start continues an office's name: a gazetteer word, a role noun, an
+    opener or an office tail («office_tails») -- never another capitalised word (a surname: «la Procura del Rossi»)."""
+    m = _TAIL_WORD_RE.match(text, start)
+    word = m.group(1) if m else ""
+    return bool(word) and (not_a_surname(word) or word.capitalize() in office_tails())
+
+
+def office_tail(text: str, start: int, depth: int = 0) -> bool:
+    """v79.12.5 (review of item 7): the articled preposition at `start` continues the name of an office, a body or an
+    act, so the capitalised word after it is part of that name, never a surname («la Corte dei Conti», «il Codice del
+    Consumo», «il Consiglio dei Ministri», «lo Statuto del Contribuente»): the word right before it (same line, no
+    punctuation between) is a gazetteer word, one of the capitalised words just before a gazetteer word («la Corte
+    Europea dei Diritti»), or a word such a preposition took («il Ministero dello Sviluppo»). Only «del» and its forms
+    continue a name: never a bare article («la Corte dei Conti e il Conti»), «dal» or «al» («proposta al Tribunale dal
+    Rossi»), nor a «del» after «e» («contro il Ministero della Salute e del Bianchi»: a party; an office's second part,
+    «e del Mercato», stays by the role list). Read by the redactor (article_surnames) and the nightly's names_left.
+    Review fix: the word after the preposition must itself continue such a name (_tail_word: the gazetteer, the role
+    nouns, data/redaction_stoplist.json «office_tails»: «Conti», «Sviluppo», «Contratti») -- after an office, any other
+    capitalised word is a surname («la Procura del Rossi», «il Governo del Ricci»), redacted and counted: the nightly's
+    names_left shares only these closed lists with the redactor, as it shares the gazetteer."""
+    art = re.match(r"\w+", text[start:start + 8])
+    if depth > 6 or not art or not art.group(0).lower().startswith("de"):   # «… e il Conti», «al Tribunale dal Rossi»
+        return False
+    if not _tail_word(text, start):
+        return False
+    m = _PREV_WORD_RE.search(text, 0, start)
+    if m and m.group(1).lower() in ("e", "ed"):     # review: «… dell'Economia e delle Finanze» -- a tail word after
+        before = _PREV_WORD_RE.search(text, 0, m.start(1))     # «e» continues the name its own tail word began
+        prev = re.sub(r"^[^'’]{1,4}['’]", "", before.group(1)) if before else ""
+        if prev[:1].isupper() and (not_a_surname(prev) or prev.capitalize() in office_tails()):
+            return True
+    for _ in range(3):                  # the capitalised words before it, back to the office's head
+        if not m:
+            return False
+        word = m.group(1)
+        core = re.sub(r"^[^'’]{1,4}['’]", "", word)
+        if not core[:1].isupper():
+            return False
+        if _gazetteer(word):
+            return True
+        before = _PREV_WORD_RE.search(text, 0, m.start(1))
+        if before and before.group(1).lower() in ARTICLES and office_tail(text, before.start(1), depth + 1):
+            return True
+        m = before
+    return False
+
+
+def article_surnames(text: str) -> List[Tuple[int, int, str]]:
+    """v79.12.5 (79.12.3 item 7): the spans of a surname printed alone after an article or an articled preposition (rule
+    «article»: «il Rossi», «del Bianchi», «dal Verdi», «la Russo», «il ROSSI») -- the article left out of the span. A
+    wrong one (logged with its rule and word: log_redaction) is fixed by adding its word to «role_nouns»."""
+    out = []
+    for m in _ARTICLE_SURNAME_RE.finditer(text or ""):
+        if article_surname(m.group("art"), m.group(2)) and not office_tail(text, m.start("art")):
+            out.append((m.start(2), m.end(2), "article"))
+    return out
+
+
 def lone_surnames(text: str) -> List[Tuple[int, int, str]]:
     """v79.12.1 (E2): the spans of a surname printed alone right before «, a prescindere dalla titolarità» (rule
     «saving»: «del Bianchi», «di ROSSI», «dell'Esposito» -- the elided article left out) -- never a gazetteer word, an
-    opener or a role noun (data/redaction_stoplist.json). A surname alone elsewhere («il Rossi») is not read: a
-    capitalised role after an article («il Ricorrente», «del Ctu») cannot be told from it without a lexicon."""
+    opener or a role noun (data/redaction_stoplist.json). v79.12.5 (79.12.3 item 7): a surname alone after an article is read by
+    article_surnames (rule «article»), the role nouns its lexicon."""
     out = []
     for m in _SAVING_SURNAME_RE.finditer(text or ""):
         w = m.group(1)
-        if _gazetteer(w) or w.capitalize() in openers() or w.capitalize() in role_nouns():
+        if not_a_surname(w):
             continue
         out.append((m.start(1), m.end(1), "saving"))
     return out
@@ -572,7 +731,8 @@ def name_spans(text: str) -> Tuple[List[Tuple[int, int, str, str]], List[str]]:
             s, e = min([s] + [spans[i][0] for i in hit]), max([e] + [spans[i][1] for i in hit])
             spans = [x for i, x in enumerate(spans) if i not in hit]
         spans.append((s, e, text[s:e], "particle"))
-    for s, e, rule in lone_surnames(text):     # v79.12.1 (E2): «del Bianchi, a prescindere dalla titolarità»
+    # v79.12.1 (E2): «del Bianchi, a prescindere dalla titolarità»; v79.12.5 (79.12.3 item 7): «il Rossi», «dal Verdi»
+    for s, e, rule in lone_surnames(text) + article_surnames(text):
         if not any(a < e and s < b for a, b, _, _ in spans):
             spans.append((s, e, text[s:e], rule))
     return sorted(spans), kept
@@ -673,7 +833,9 @@ def names_left(passage: str) -> List[str]:
       two adjacent capitalised words (no punctuation between them) neither of which is in the gazetteer
       (data/redaction_stoplist.json «words»), the first not an opener at a sentence's start («Il», «Nella»);
       v79.10.6: a first name and a surname with its lowercase particle («Mario de Luca»), the same way; what a
-      redaction left of a hyphenated name («[omissis]-Bianchi»); «dr.», «dr.ssa» among the titles.
+      redaction left of a hyphenated name («[omissis]-Bianchi»); «dr.», «dr.ssa» among the titles;
+      v79.12.1: a surname alone before «, a prescindere dalla titolarità»; v79.12.5 (79.12.3 item 7): a surname alone after an
+      article or an articled preposition («il Rossi», «del Bianchi»), not a gazetteer word, an opener or a role noun.
     Overlapping hits are one name; [omissis] is no name."""
     text = passage or ""
     spans: List[Tuple[int, int]] = []
@@ -717,6 +879,19 @@ def names_left(passage: str) -> List[str]:
             continue
         if _LIT_SAVING_RE.match(text, s0 + lead + len(word)):
             spans.append((s0 + lead, s0 + lead + len(word)))
+    # v79.12.5 (79.12.3 item 7): a surname alone right after an article or an articled preposition written out («il Rossi»,
+    # «del Bianchi», «dal Verdi», «la Russo») -- the word whole, no punctuation between them; never a gazetteer word,
+    # an opener, a role noun, a Roman numeral, or a word in capitals after an article in capitals (a heading)
+    for (prev, _, pe), (raw, s0, _) in zip(tokens, tokens[1:]):
+        art = prev.lstrip(_LIT_OPEN)
+        if art.lower() not in ARTICLES or text[pe:s0].strip(" \t") or raw[:1] in _LIT_OPEN:
+            continue
+        word = raw.rstrip(_LIT_CLOSE + ".,;:!?")
+        if len(word) < 3 or not _LIT_CAP_RE.match(word) or (word.isupper() and len(word) < 4) \
+                or word.endswith(("'", "’")) or not article_surname(art, word) \
+                or office_tail(text, pe - len(art)):        # v79.12.5: «la Corte dei Conti», «Codice del Consumo»
+            continue
+        spans.append((s0, s0 + len(word)))
 
     def core(raw: str) -> str:
         return raw.lstrip(_LIT_OPEN).rstrip(_LIT_CLOSE + ".,;:!?")
@@ -1000,8 +1175,9 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                 continue
             if not chamber(p):
                 log["estremi"]["section_unmapped"] += 1
-            cands.append({"id": g["id"], "article": label, "estremi": render_estremi(p, g["date_enacted"]),
-                          "su": sezioni_unite(p), "date": ruling_date(g["date_enacted"], p["year"]),
+            when = dated(g, p)              # v79.12.5 (item 9): date_enacted, else the ruling's name
+            cands.append({"id": g["id"], "article": label, "estremi": render_estremi(p, when),
+                          "su": sezioni_unite(p), "date": when,
                           "score": overlap(g["abstract"], mine), "sections": g["sections"], "elements": mine,
                           "parsed": p})
         preselected[label] = (sorted(cands, key=_order_key), str(rec.get("rubrica") or ""))
@@ -1011,6 +1187,13 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     body = texts(session, [x for ranked, _ in preselected.values() for r in ranked[:PRESELECT_PER_ARTICLE]
                            for x in r["sections"]])
     log["signatures_stripped"] = sum(len(SIGNATURE_RE.findall(t or "")) for t in body.values())     # v79.8
+    for ranked, _ in preselected.values():      # v79.12.5 (item 9): no date yet -- the ruling's own, in its text read
+        for r in ranked[:PRESELECT_PER_ARTICLE]:
+            if r.get("date") is None:
+                when = own_date(" ".join(body.get(x) or "" for x in r["sections"]), r["parsed"]["year"])
+                if when:
+                    r["date"], r["estremi"] = when, render_estremi(r["parsed"], when)
+                    log["dates_from_text"] = log.get("dates_from_text", 0) + 1
     for label, (ranked, rubrica) in preselected.items():
         counts = log["articles"][label]["filters"]
         civil = civil_label(label)
@@ -1074,6 +1257,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
             graded[k] = [r for r in graded[k] if r not in off]
     kept = round_robin({k: sorted(graded[k], key=lambda r: (not r.get("passage"), _order_key(r)))[:PER_ARTICLE]
                         for k in records if k in graded}, PER_ANSWER)
+    log["date_nd"] = sum(1 for r in kept if r.get("date") is None)     # v79.12.5 (item 9): printed «data n.d.»
     for r in kept:
         log["articles"][r["article"]]["kept"] += 1
         log["articles"][r["article"]]["passages"] += bool(r.get("passage"))

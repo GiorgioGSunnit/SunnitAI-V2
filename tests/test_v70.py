@@ -412,9 +412,11 @@ def test_the_critique_mode_scores_points_and_finds_regressions(tmp_path):
 def test_the_nightly_has_five_cells_and_reports_regressions(tmp_path):
     import nightly_sim as N
     cells = N.cells()
-    single = [c for c in cells if not c.get("clients")]          # v79.6: plus one two-client cell
+    # v79.6: plus one two-client cell; v79.12.5 (item 10): plus one two-turn cell (a «followup»)
+    single = [c for c in cells if not c.get("clients") and not c.get("followup")]
     assert len(single) == 5 and len({json.dumps(c["cell"], sort_keys=True) for c in single}) == 5
-    assert len(cells) == 6 and [len(c["clients"]) for c in cells if c.get("clients")] == [2]
+    assert len(cells) == 7 and [len(c["clients"]) for c in cells if c.get("clients")] == [2]
+    assert len([c for c in cells if c.get("followup")]) == 1
     assert N.cell_check({"rito": "penale", "role": "imputato", "stage": "indagini"}, IMPUTATO)["ok"] is False
     spec = next(c for c in cells if c["cell"]["role"] == "imputato")
     recs = _charge("provato", "provato")

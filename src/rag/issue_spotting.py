@@ -114,7 +114,12 @@ def _phrase(code: str) -> str:
 
 
 def _searchable(document: Dict[str, Any]) -> str:
-    return _norm(" ".join([document["name"]] + list(document.get("aliases") or [])))
+    """The document's name and aliases; v79.12.5 (item 8): with its legal citation when data/corpus_expected.json maps
+    its name exactly (corpus_laws.citation_of: «d.P.R. 309/1990» for «Testo Unico sugli Stupefacenti 2026») -- the
+    printed text cites a special law so (corpus_laws.cite_titles), and a citation read back finds its document."""
+    from . import corpus_laws
+    cited = corpus_laws.citation_of(document["name"])
+    return _norm(" ".join([document["name"]] + list(document.get("aliases") or []) + ([cited] if cited else [])))
 
 
 def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

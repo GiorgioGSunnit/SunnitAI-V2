@@ -326,7 +326,8 @@ def test_every_sentence_logged_as_removed_is_absent_from_the_final_text():
     assert SENT not in out and code_line in out and "Frase proposta e rimasta nel testo finale." in out
     assert "Inoltre, il compratore può chiedere la risoluzione del contratto." in out
     assert nightly.ledger_check(out, state) == {"check": "ledger_removed_absent", "ok": True, "count": 0, "why": ""}
-    assert state["block_counters"] == {"ledger_struck": 1, "ledger_kept": 2, "ledger_removed_present": 0}
+    assert state["block_counters"] == {"ledger_struck": 1, "ledger_kept": 2, "ledger_removed_present": 0,
+                                       "ledger_kept_contained": 1, "ledger_kept_code": 1}    # v79.12.5: why each stays
     assert entries[0]["kind"] == "removed" and entries[0]["settled"] == "struck"
     assert [e.get("kept_why") for e in (entries[1], entries[3])] == ["code", "contained"]
     assert all(e["kind"] == "kept" and e["was"] == "removed" for e in (entries[1], entries[3]))

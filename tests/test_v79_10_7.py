@@ -257,13 +257,15 @@ def test_the_abbreviato_on_an_unknown_pena_is_da_verificare():
 # --- 3. the 168-bis list: a draft for the lawyer ----------------------------------------------------------------------------
 
 def test_the_listed_offences_are_labelled_a_draft_and_cited_as_provisional():
+    """v79.12.5 (item 8): the draft status stays in the table's «status» only -- never in a printed line."""
     entry = next(r for r in M.data()["riti_alternativi"] if r["id"] == "messa_alla_prova")
     assert entry["status"].startswith("bozza") and "avvocato" in entry["status"] and "Cartabia" in entry["status"]
     assert entry["listed_offences"] == ["336", "337", "343", "349", "588", "590-bis", "625", "648"]   # unchanged
     listed = _by_id(M.rite_statuses("reclusione da due a otto anni (co. 1)", "648"))["messa_alla_prova"]["line"]
-    assert "bozza" in listed and "550, co. 2" in listed
+    assert "bozza" not in listed and "elenco interno" not in listed and listed.endswith("550, co. 2, c.p.p.")
     precluded = _by_id(M.rite_statuses("reclusione da tre a sette anni (co. 1)", "572"))["messa_alla_prova"]["line"]
-    assert "preclusa" in precluded and "bozza" in precluded and "non figura" in precluded
+    assert "preclusa" in precluded and "bozza" not in precluded and "non figura" in precluded
+    assert precluded.endswith("dall'art. 550, co. 2, c.p.p.") and not precluded.endswith("..")
 
 
 # --- 4. D1: a span counted to today ----------------------------------------------------------------------------------------

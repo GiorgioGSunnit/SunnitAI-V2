@@ -61,9 +61,25 @@ EXTRA = (
     ("lawyer_method", "PENAL_ROUTE_CONCLUSION", "Metodo, «Conclusioni»: la via penale di un caso civile (v79.8)"),
     ("lawyer_method", "PENAL_ROUTE_UNKNOWN", "Metodo, la via penale: procedibilità non letta (v79.8)"),
     ("lawyer_method", "NO_ACTION_LINE", "Risposta, la nota del metodo non applicato: nessuna norma d'azione (le parole "
-                                        "del PO, v79.8.6; v79.10.1: mai linea principale)"),
-    ("lawyer_method", "NO_ACTION_EXPIRED_LINE", "Risposta, la nota del metodo non applicato: ogni domanda preclusa da "
-                                                "un termine decorso (v79.12.4, voce 7)"),
+                                        "del PO, v79.8.6; v79.10.1: mai linea principale; v79.12.5, voce 2: in "
+                                        "«Soluzioni a confronto» quando le dieci sezioni restano)"),
+    ("lawyer_method", "NO_ACTION_EXPIRED_LINE", "Metodo, «Sintesi»: ogni domanda preclusa da un termine decorso "
+                                                "(v79.12.4, voce 7; v79.12.5, voce 2: le dieci sezioni restano)"),
+    # v79.12.5 (item 2): no admitted claim -- the ten sections kept
+    ("lawyer_method", "CORPUS_LINE", "Metodo, «Sintesi»: nessuna domanda ammessa, o un istituto senza modulo né norme "
+                                     "lette della sua famiglia (le parole del PO, v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_HEAD", "Metodo, «Soluzioni a confronto»: nessuna linea e nessuna previsione, senza "
+                                       "domanda ammessa (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_EXPIRED_WHY", "Metodo, «Soluzioni a confronto»: il perché, ogni domanda preclusa da un "
+                                              "termine (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_READ", "Metodo, «Soluzioni a confronto»: titolo dell'elenco delle norme lette "
+                                       "(v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_NONE_READ", "Metodo, «Soluzioni a confronto»: nessuna norma letta (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_ARTICLE_WHY", "Metodo, «Soluzioni a confronto»: perché una norma letta non dà una "
+                                              "linea al cliente (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_QUESTION", "Metodo, «Questione giuridica»: senza domanda ammessa (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_OBJECTIONS", "Metodo, «Obiezioni e risposte»: senza linea proposta (v79.12.5, voce 2)"),
+    ("lawyer_method", "NO_CLAIM_CONCLUSION", "Metodo, «Conclusioni»: senza linea né previsione (v79.12.5, voce 2)"),
     ("lawyer_method", "MISSING_LAWS_LINE", "Metodo, «Sintesi» e «Conclusioni»: la disciplina speciale assente "
      "dall'archivio (le parole del PO, v79.9)"),
     ("lawyer_method", "NO_ACTION_SUBJECT", "Risposta, la nota senza norma d'azione: nessun istituto nominato (v79.8.5)"),

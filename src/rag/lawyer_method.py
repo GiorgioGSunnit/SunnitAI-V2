@@ -979,8 +979,10 @@ RITE_POINT = "L'accesso a {names}: da verificare sulla pena edittale del reato c
 # my draft; v79.10.7: «{word}» the rito's own gender (the table's «precluded_word», «preclusa» by default); «min» the
 # best case (best_case_text), «ergastolo» with the rule's source when the table names one (the abbreviato's 438 co. 1-bis)
 RITE_PRECLUDED = {"max": "{name}: {word}, il massimo edittale del reato contestato supera {n} anni.",
+                  # v79.12.5 (item 8): never the draft's own status in the printed line -- it stays in the table's
+                  # «status» («bozza — da verificare dall'avvocato …»)
                   "max_listed": "{name}: {word}, il massimo edittale del reato contestato supera {n} anni e il reato "
-                                "non figura tra quelli indicati dall'{source} {provisional}.",
+                                "non figura tra quelli indicati dall'{source}.",
                   "min": "{name}: {word}, perché anche nel caso più favorevole {best}, oltre {n} anni.",
                   "ergastolo": "{name}: {word}, il reato contestato è punito con l'ergastolo{source_paren}."}
 # v79.10.7 (my draft): the best case's words -- the minimum, the attenuanti held, the rite's third, the result
@@ -1146,6 +1148,7 @@ def rite_statuses(pena_text: str = "", number: str = "", attenuanti: Sequence[st
                 source=r.get("listed_source") or "", provisional=str(r.get("provisional") or "").strip(),
                 source_paren=f" ({src})" if src else "",
                 best=best_case_text(p["low"], attenuanti) if why == "min" else "").replace(" .", ".")
+            text = text[:-1] if text.endswith("..") else text         # v79.12.5: «… c.p.p.» ends the sentence
         out.append({"id": str(r.get("id") or ""), "name": name, "status": status, "why": why, "line": text,
                     "rite": not r.get("sentencing")})
     return out
@@ -1526,6 +1529,8 @@ def article_scope(ctx: Dict[str, Any], texts: Sequence[str] = ()) -> set:
     labels = list((ctx.get("records") or {})) + list((ctx.get("circumstances") or {})) + list(ctx.get("notes") or {})
     labels += list(((ctx.get("rulings_record") or {}).get("landmarks") or {}))
     labels += [c["article"] for c in ctx.get("candidates") or [] if c.get("article")]      # v79: the candidates'
+    from . import topic_groups              # v79.12.5 (item 10): the general clauses, the stage table's articles
+    labels += list(topic_groups.default_admitted())
     written = [ctx.get("case") or "", ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""]
     written += [f"{c.get('tesi') or ''} {c.get('articles') or ''}" for c in ctx.get("candidates") or []]
     written += list(ctx.get("litisconsorzio") or []) + list(ctx.get("riti") or []) + list(texts or [])
@@ -1985,6 +1990,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     posture = ctx.get("posture") or {}
     charge = a.get("article") or ""
     out: List[Dict[str, Any]] = []
+    ctx["module_proven"] = False        # v79.12.5 (item 11, review): set below when a module line rests on proven elements
 
     def add(kind: str, tesi: str, contesta=(), poggia_su=(), label: str = SUSTAINABLE, **extra):
         rule = extra.pop("admitted_by", "") or ADMITTED_BY.get(kind, "")     # v79.8 (B1): the rule that admits it
@@ -2108,7 +2114,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             open_ = [r for r in live if r.get("status") == DA_PROVARE and r.get("id")]
             if any(r.get("status") == NON_RISULTA for r in live) or not fatt(label):
                 continue
-            rule, group, rank = family_admission(label, modules, consumer, families)    # v79.8 (B1); v79.10.1 (A2)
+            rule, group, rank = family_admission(label, modules, consumer, families,     # v79.8 (B1); v79.10.1 (A2)
+                                                 sale_contract(str(ctx.get("case") or "")))      # v79.12.5 (10)
             if not rule:
                 refused[label] = group
                 continue
@@ -2129,6 +2136,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             t["kind"] != "prescrizione" and t.get("firm", True) and not (excused and t["id"] in EXCUSABLE_TERMS)
             for t in e)}
         module_proven = any(g == "module" and p and not barring[x] for _, x, _, _, g, p, _ in admitted)
+        ctx["module_proven"] = module_proven        # v79.12.5 (item 11, review): main_outside reads it
         inherited = [] if module_proven else list({t["id"]: {**t, "inherited": True} for _, x, _, _, g, p, _ in admitted
                                                   if g == "module" and p for t in barring[x]}.values())
         claims = []
@@ -2166,7 +2174,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         # v79.8.5: does any article of the client's confer an action, whatever its elements' status? v79.10.1 (A2):
         # admitted as the claims are -- an article outside the institution or its family confers none here
         ctx["claims_any_admitted"] = any(x[1] not in expired_out for x in admitted) or any(
-            family_admission(x, modules, consumer, families)[0] for x, r in records.items()
+            family_admission(x, modules, consumer, families, sale_contract(str(ctx.get("case") or "")))[0]
+            for x, r in records.items()
             if r.get("side") != "threat" and fatt(x) and x not in expired_out)      # v79.12.4 (item 7)
         if refused:
             _log("claims_refused", refused)
@@ -2193,11 +2202,13 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 claim=claim, reduction=bool(own), **{k: r[k] for k in ("label", "articles", "requires") if k in r})
         add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
     ctx.pop("no_action", None)
+    ctx.pop("no_action_kind", None)
     if known_role and not victim and role not in ACCUSED and not out and expired_out:
         # v79.12.4 (item 7, review): the norm confers the action, the term has run -- said so, never «nessuna
         # attribuisce un'azione»
         ctx["no_action"] = NO_ACTION_EXPIRED_LINE.format(istituto=action_subject(ctx), terms=expired_terms_text(
             [t for x in expired_out for t in fact_signals_barring(x, ctx)]))
+        ctx["no_action_kind"] = "expired"                   # v79.12.5 (item 2)
         _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {}),
                            "expired": list(expired_out)})
     elif known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
@@ -2205,6 +2216,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         # method steps aside to the prose answer as 79.6 did (no candidate: the placeholder, method_refusal), and the
         # sentence is said once, in v76's note (a norm that does, with an element excluded, keeps v76's own why)
         ctx["no_action"] = NO_ACTION_LINE.format(istituto=action_subject(ctx))
+        ctx["no_action_kind"] = "none"                      # v79.12.5 (item 2)
         _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {})})
     if not offender:
         for label, r in contests["integrated"]:
@@ -2294,6 +2306,89 @@ def action_subject(ctx: Dict[str, Any]) -> str:
     return matter or NO_ACTION_SUBJECT
 
 
+# v79.12.5 (item 2, the PO's words): no admitted claim keeps the ten sections -- §1 says the corpus is not enough yet,
+# §6 lists the articles read (no main line, no forecast), §5 and §8 stay. The prose step-aside only when the first read
+# finds no institution at all. The same line fires in §1 of any parere whose first-read institution has no module and
+# nothing graded in its family (corpus_line)
+CORPUS_LINE = ("Il corpus non contiene ancora informazioni sufficienti su {materia}: il parere si limita alle norme dei "
+               "codici")
+NO_CLAIM_HEAD = "Nessuna linea è proposta e nessuna previsione di esito: {why}."      # my draft (79.12.5, item 2)
+NO_CLAIM_EXPIRED_WHY = "l'azione del cliente è preclusa dal termine decorso indicato nella sintesi"     # my draft
+NO_CLAIM_READ = "Norme lette:"                                                         # my draft
+NO_CLAIM_NONE_READ = "Nessuna norma è stata letta sui fatti narrati."                  # my draft
+NO_CLAIM_ARTICLE_WHY = {   # my drafts: why an article read gives the client no line (CLAIM_REFUSED is never printed)
+    "expired": "azione preclusa dal termine decorso",
+    "refused": "non attribuisce un'azione al cliente sui fatti narrati",
+    "threat": "pretesa della controparte",
+    "excluded": "un elemento non risulta dai fatti narrati",
+    "unproven": "nessun elemento provato dai fatti narrati"}
+NO_CLAIM_QUESTION = "Se le norme lette sui fatti narrati attribuiscano a {client} un'azione in materia di {materia}."  # my draft
+NO_CLAIM_OBJECTIONS = "Senza una linea proposta non vi sono obiezioni della controparte da esaminare."   # my draft
+NO_CLAIM_CONCLUSION = ("Il parere non propone una linea né una previsione di esito: si limita alle norme lette sui "
+                       "fatti narrati.")                                                # my draft
+
+
+def no_claim(ctx: Optional[Dict[str, Any]]) -> str:
+    """v79.12.5 (item 2): «expired» or «none» when the client has no admitted claim and the answer keeps the ten
+    sections -- every claim barred by a DECORSO term (the honesty line naming the terms, always), or no norm conferring
+    an action while the first read found an institution; "" otherwise (a claim admitted, or no institution at all: the
+    prose step-aside of 79.10.1 A1)."""
+    if not ctx or not ctx.get("no_action"):
+        return ""
+    kind = str(ctx.get("no_action_kind") or "none")
+    if kind == "expired":
+        return kind
+    return kind if institution_names(ctx.get("institutions") or []) else ""
+
+
+def corpus_line(ctx: Dict[str, Any]) -> str:
+    """v79.12.5 (item 2): CORPUS_LINE (with its stop) when the first read found an institution that has no module
+    (read_families names none of institution_modules.json) and no record of the client's is of its family (article_families:
+    nothing graded in it); "" otherwise."""
+    if not institution_names(ctx.get("institutions") or []):
+        return ""
+    families = read_families(ctx) or []
+    mod_ids = {str(m["id"]) for m in institution_modules().get("modules") or []}
+    if any(f in mod_ids for f in families):
+        return ""
+    fams = set(families)
+    if fams and any(set(article_families(x)) & fams for x, r in (ctx.get("records") or {}).items()
+                    if isinstance(r, dict) and not r.get("ranked_candidate") and not r.get("unprinted")):
+        return ""
+    return CORPUS_LINE.format(materia=action_subject(ctx)) + "."
+
+
+def no_claim_summary(ctx: Dict[str, Any], kind: str) -> str:
+    """v79.12.5 (item 2): §1 with no admitted claim -- the honesty line naming the terms (expired), else CORPUS_LINE;
+    "" when the missing-laws line is said (missing_laws_line: it names the laws the corpus lacks and already says the
+    parere is limited to the code -- the two never both)."""
+    if kind == "expired":
+        return str(ctx.get("no_action") or "").rstrip(".") + "."
+    if missing_laws_line(ctx):
+        return ""
+    return CORPUS_LINE.format(materia=action_subject(ctx)) + "."
+
+
+def no_claim_solutions(ctx: Dict[str, Any], kind: str) -> str:
+    """v79.12.5 (item 2): §6 with no admitted claim -- why no line is proposed (the no-action sentence, its one
+    appearance), then the articles read, each with why it gives the client no line; no table, no main line, no forecast."""
+    line = str(ctx.get("no_action") or "")
+    why = NO_CLAIM_EXPIRED_WHY if kind == "expired" else (line[:1].lower() + line[1:]).rstrip(".")
+    refused = ctx.get("claims_refused") or {}
+    expired = set(ctx.get("claims_expired") or [])
+    items = []
+    for label, rec in (ctx.get("records") or {}).items():
+        if not isinstance(rec, dict) or rec.get("ranked_candidate") or rec.get("unprinted"):
+            continue
+        live = _live(rec)
+        reason = ("expired" if label in expired else "threat" if rec.get("side") == "threat" else
+                  "refused" if label in refused else
+                  "excluded" if any(r.get("status") == NON_RISULTA for r in live) else "unproven")
+        items.append(f"- Art. {label}{_rubrica_tail(rec)}: {NO_CLAIM_ARTICLE_WHY[reason]}.")
+    body = "\n".join([NO_CLAIM_READ] + items) if items else NO_CLAIM_NONE_READ
+    return f"{NO_CLAIM_HEAD.format(why=why)}\n\n{body}"
+
+
 # v79.8 (B1): every candidate records the rule that admits it -- a claim, a riconvenzionale and a remedy theirs
 # (claim_admission, remedies.json); the others by their kind. A candidate with none is counted (must be 0).
 ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "contest_open": "elemento dell'addebito o "
@@ -2312,7 +2407,8 @@ CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, neve
     "non_action": "{why}: non conferisce un'azione al cliente",             # v79.9 (B2)
     "consumer": "codice del consumo: nessuna controparte professionale tra i fatti certi",     # v79.9 (B3)
     "family": "fuori dalla famiglia dell'istituto della prima lettura ({family}; prima lettura: {read})",  # v79.10.1 (A2)
-    "expired": "termine decorso ({terms}): l'azione è preclusa"}                                       # v79.12.4 (7)
+    "expired": "termine decorso ({terms}): l'azione è preclusa",                                       # v79.12.4 (7)
+    "consumer_sale": "codice del consumo, artt. 128-135: solo per una vendita"}     # v79.12.5 (10)
 FAMILY_REFUSED_HEAD = CLAIM_REFUSED["family"].split(" (")[0]
 MODULES_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_modules.json")
 _MODULES: Dict[str, Any] = {}
@@ -2392,10 +2488,124 @@ def consumer_code(label: str) -> bool:
 CONSUMER_LAW = "d.lgs. 206/2005"
 
 
+# v79.12.5 (item 10): the counterparty's qualification -- «impresa, società, ditta, S.r.l., S.p.A., professionista,
+# azienda» name a business wherever the case says them (a party's own description is a certain fact, whichever
+# sentence carries it); a private seller's sign still excludes it
+_QUALIFIER_RE = re.compile(r"\b(?:impres[ae]|societ[àa]|ditt[ae]|s\.\s?r\.\s?l\.?|srl|s\.\s?p\.\s?a\.?|spa|"
+                           r"professionist[aie]|aziend[ae])(?!\w)", re.IGNORECASE)     # never «aziendale», «dittatura»
+
+
+# a qualification someone only asserts or supposes («Tizio sostiene che Alfa sia un'impresa») is no certain fact
+_REPORTED_RE = re.compile(r"\b(?:sostien\w*|sosteneva|afferm\w*|ritien\w*|riteneva|crede\w*|pensa\w*|forse|"
+                          r"probabilmente|potrebbe|potrebbero|sembr\w*|pare|parrebbe|presunt\w*|asserit\w*|se)\b",
+                          re.IGNORECASE)
+
+
+# v79.12.5 (item 10, review): a business word that does not describe the counterparty -- the client's own business
+# («Assisto la società Beta S.r.l.», «il mio cliente, titolare di una ditta», «sono titolare di una ditta», «la mia
+# ditta»), the client's employer («lavora come dipendente presso un'azienda»), a negated qualification («non è una
+# società né una ditta») -- read in the clause before the word; and a word in a question («Era una ditta?»)
+_CLIENT_BUSINESS_RE = re.compile(
+    r"(?:\b(?:assist[oiae]\w*|rappresent[oiae]\w*|difend[oiae]\w*|patrocin\w*)\s+(?:(?:la|il|lo|l['’]|una|un['’]?)\s*)?"
+    r"(?:[\w.]+\s+){0,2}"
+    r"|\b(?:sono|siamo|client[ei]\w*\s*,|assistit[oa]\s*,|io\s*,)\s*(?:(?:anche|il|la)\s+)?(?:titolar\w*|soci[oa]?|"
+    r"amministrator\w*|legale\s+rappresentante|dipendent\w*|impiegat\w*)\b[^.;:!?]{0,25}"
+    r"|\b(?:dipendent[ei]|impiegat[oaie]|assunt[oaie]|alle\s+dipendenze|lavor(?:a|ava|ano|o|avo|ato)\s+(?:come|presso|per|alle))"
+    r"\b[^.;:!?]{0,30}"
+    r"|\b(?:mi[ao]|nostr[ao])\s+(?:(?:piccol[ao]|propri[ao])\s+)?"
+    r"|\b(?:non\s+(?:è|era|sia|fosse|risulta)|né)\b[^.;:!?]{0,25})$", re.IGNORECASE)
+
+
+def _describes_counterparty(text: str, m: "re.Match") -> bool:
+    """v79.12.5 (item 10, review): the business word m names the counterparty -- not asserted or supposed in its
+    clause (_REPORTED_RE), not the client's own business, employer or a negated qualification (_CLIENT_BUSINESS_RE),
+    not in a question."""
+    stops = [x.end() for x in re.finditer(r"[.;:!?\n]\s", text[:m.start()])]
+    before = text[stops[-1] if stops else 0:m.start()]
+    after = re.search(r"[.;!?\n](?:\s|$)|$", text[m.end():])
+    if after and after.group(0).startswith("?"):
+        return False
+    return not (_REPORTED_RE.search(before) or _CLIENT_BUSINESS_RE.search(before))
+
+
+def _counterparty_word(text: str, rx: "re.Pattern") -> str:
+    """v79.12.5 (item 10, review): the first word of rx in text that names the counterparty (_describes_counterparty)."""
+    return next((m.group(0) for m in rx.finditer(text or "") if _describes_counterparty(text, m)), "")
+
+
+def counterparty_qualifier(ctx: Dict[str, Any]) -> str:
+    """v79.12.5 (item 10): the qualifier word the case names a business by (_QUALIFIER_RE) in any of its sentences --
+    never one only asserted or supposed in its clause (_REPORTED_RE before it); "" with none or with a private seller's
+    sign (_PRIVATE_RE) in the case. Review fix: a word that describes the client's own business, its employer, a
+    negated qualification or sits in a question names no counterparty (_describes_counterparty)."""
+    case = str(ctx.get("case") or "")
+    if _PRIVATE_RE.search(case) or _PRIVATE_RE.search(certain_text(ctx)):
+        return ""
+    return _counterparty_word(case, _QUALIFIER_RE)
+
+
 def professional_counterparty(ctx: Dict[str, Any]) -> bool:
-    """v79.9 (B3): the consumer qualification's condition -- a business as a certain fact, no sign of a private seller."""
+    """v79.9 (B3): the consumer qualification's condition -- a business as a certain fact, no sign of a private seller.
+    v79.12.5 (item 10): a qualifier word anywhere in the case is one (counterparty_qualifier); (review) either way a
+    word that names the client's business, its employer or a negated one is none (_describes_counterparty)."""
     text = certain_text(ctx)
-    return bool(_PROFESSIONAL_RE.search(text)) and not _PRIVATE_RE.search(text)
+    if _counterparty_word(text, _PROFESSIONAL_RE) and not _PRIVATE_RE.search(text):
+        return True
+    return bool(counterparty_qualifier(ctx))
+
+
+# v79.12.5 (item 10): the consumer code's scope on a consumer-professional contract -- its general titles (artt. 1-38)
+# and Parte VI (141 ff.) for any such contract, the sale block (128-135 and their -bis ...) only for a sale
+CONSUMER_GENERAL = ((1, 38), (141, 10 ** 6))
+CONSUMER_SALE = (128, 135)
+CONSUMER_SALE_ONLY = CLAIM_REFUSED["consumer_sale"]
+_SALE_RE = re.compile(r"\b(?:compravendit\w*|vendit\w*|vend(?:e|uto|uta|uti|ute|ono|eva|ere)\b|acquist\w*|"
+                      r"comprat[oaie]\b|compr(?:a|ò|ano)\b|"
+                      # review fix: the other ways a purchase is told -- «ho ordinato online un frigorifero», «ho preso
+                      # uno smartphone nel negozio», «ho pagato 900 euro … per una lavatrice, consegnata …»
+                      r"ordinat[oaie]\b|ordin(?:a|ò|ano)\b|(?:ho|ha|hanno|abbiamo|avevo|aveva)\s+(?:preso|pagato|ricevuto)\b|"
+                      r"consegnat[oaie]\b|difett\w*\s+di\s+conformit\w*|garanzia\s+(?:legale|di\s+conformit\w*))", re.IGNORECASE)
+# v79.12.5 (item 10, review): a service or a supply is no sale of goods, though told with a sale's word («ha acquistato
+# un abbonamento in palestra», «il venditore di energia»): a sale word whose object (the rest of its clause, at most
+# 60 characters) is one of these is not counted
+_SERVICE_RE = re.compile(r"\b(?:abbonament\w*|serviz[io]\w*|fornitur\w*|energia|luce|gas|acqua|utenz\w*|palestr\w*|"
+                         r"pacchett\w*|viagg\w*|vacanz\w*|vol[oi]\b|bigliett\w*|soggiorn\w*|polizz\w*|assicura\w*|"
+                         r"mutu[oi]\b|finanziament\w*|prestit\w*|conto\s+corrente|telefon\w*|internet|connession\w*|"
+                         r"cors[oi]\b|iscrizion\w*|riparazion\w*|manutenzion\w*|installazion\w*|appalt\w*|lavori\b|"
+                         r"ristrutturazion\w*|prestazion\w*|consulenz\w*|trasport\w*|noleggi\w*|locazion\w*|affitt\w*|"
+                         r"streaming|contenut[oi]\s+digital\w*|servizi\s+digital\w*|software|licenz\w*)", re.IGNORECASE)
+
+
+def sale_contract(text: str) -> bool:
+    """v79.12.5 (item 10): the case is a sale (_SALE_RE: a sale's words, the buying). Review fix: also an order, a
+    purchase told as «preso» or «pagato», a delivery, the conformity guarantee; never a sale word whose object is a
+    service or a supply (_SERVICE_RE in the rest of its clause)."""
+    text = text or ""
+    for m in _SALE_RE.finditer(text):
+        tail = re.split(r"[.;:!?\n]", text[m.end():m.end() + 60], maxsplit=1)[0]
+        if not _SERVICE_RE.search(tail):
+            return True
+    return False
+
+
+# v79.12.5 (item 10, review): Capo I's sale of goods runs to 135-septies (d.lgs. 170/2021); 135-octies to 135-vicies
+# ter (Capo I-bis) are digital content and services -- no sale block
+_DIGITAL_SUFFIX_RE = re.compile(r"(?:octies|novies|\w*decies|\w*vicies)\b")
+
+
+def consumer_scope(number: Any, sale: bool) -> str:
+    """v79.12.5 (item 10): "" when a consumer-code article is in scope on a consumer-professional contract, else why --
+    the general titles (1-38) and 141 ff. always, the sale block (128-135-septies) only for a sale; the rest (Capo
+    I-bis's digital content among them) as before (the family rules, the module)."""
+    m = re.match(r"\s*(\d+)(?:\s*[-‐ ]\s*([a-z]+))?", str(number or "").lower())
+    if not m:
+        return ""
+    n, suffix = int(m.group(1)), m.group(2) or ""
+    if any(lo <= n <= hi for lo, hi in CONSUMER_GENERAL):
+        return ""
+    if CONSUMER_SALE[0] <= n <= CONSUMER_SALE[1] and not (n == CONSUMER_SALE[1] and _DIGITAL_SUFFIX_RE.match(suffix)):
+        return "" if sale else CONSUMER_SALE_ONLY
+    return ""
 
 
 def module_stage(module: Dict[str, Any], ctx: Dict[str, Any]) -> str:
@@ -2591,7 +2801,8 @@ def schema_module_disagree(ctx: Dict[str, Any], mods: Sequence[Dict[str, Any]], 
         _log("schema_module_disagree", {"patterns": found, "schema": other})
 
 
-def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True) -> Tuple[str, str, Tuple]:
+def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True,
+                    sale: bool = True) -> Tuple[str, str, Tuple]:
     """v79.8 (B1): (the rule admitting a claim on the article, its group, its rank) -- an active module's action
     (group «module», the module's order), «general» obligations law (1218, 1453, 2043: subordinate), a remedies.json
     matter's action («matter»); a limiting rule or none: ("", why, ()). v79.9: an active module's «non_actions» (2118,
@@ -2606,6 +2817,8 @@ def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: boo
                 return "", CLAIM_REFUSED["non_action"].format(why=why), ()
     if not consumer and consumer_code(label):                       # v79.9 (B3)
         return "", CLAIM_REFUSED["consumer"], ()
+    if consumer_code(label) and consumer_scope(label, sale):       # v79.12.5 (item 10): the sale block, a sale only
+        return "", CLAIM_REFUSED["consumer_sale"], ()
     for i, m in enumerate(modules):
         for j, spec in enumerate(m.get("actions") or []):
             if same_article(label, spec):
@@ -2658,12 +2871,12 @@ def read_families(ctx: Dict[str, Any]) -> Optional[List[str]]:
 
 
 def family_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True,
-                     families: Optional[Sequence[str]] = None) -> Tuple[str, str, Tuple]:
+                     families: Optional[Sequence[str]] = None, sale: bool = True) -> Tuple[str, str, Tuple]:
     """v79.10.1 (A2): claim_admission, then the institution's bounds on what a remedies.json matter's actions admit
     («matter»): with a module active, nothing (v79.8 B2: «outside»); else only an article of the first read's family
     (article_families in read_families) -- and where the read's institution has a module (named, not active), only
     that module's; with no first-read institution (families None) as v79.8. ("", why, ()) when refused."""
-    rule, group, rank = claim_admission(label, modules, consumer)
+    rule, group, rank = claim_admission(label, modules, consumer, sale)
     if not rule or group != "matter":
         return rule, group, rank
     if modules:                                                     # v79.8 (B2): nothing outside the institution
@@ -3348,13 +3561,35 @@ def schema_shadow(ctx: Dict[str, Any]) -> Dict[str, Any]:
 COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
 
 
+def general_obligations(label: str) -> bool:
+    """v79.12.5 (item 11): general obligations law -- institution_modules.json «general» (1218, 1453, 2043)."""
+    return any(same_article(label or "", g) for g in institution_modules().get("general") or [])
+
+
+def module_proven_line(ctx: Dict[str, Any]) -> bool:
+    """v79.12.5 (item 11): the institution's module yields a proven line -- a claim or riconvenzionale candidate
+    admitted by an active module («modulo …») resting on a proven element. Review fix: thesis_candidates' own reading
+    (ctx «module_proven»: a module line on proven elements, not barred) when it ran; else a module candidate whose
+    poggia_su is proven -- never an open one («…, provando …»: its poggia_su lists the elements still to prove)."""
+    if "module_proven" in ctx:
+        return bool(ctx["module_proven"])
+    return any(c.get("kind") in ("claim", "riconvenzionale") and str(c.get("admitted_by") or "").startswith("modulo ")
+               and c.get("poggia_su") and ", provando " not in str(c.get("tesi") or "")
+               for c in ctx.get("candidates") or [])
+
+
 def main_outside(ctx: Dict[str, Any], main: Dict[str, Any]) -> bool:
     """v79.8 (B4): the main line is a claim (or a remedy) on an article outside the first read's institution modules,
-    while one is active."""
+    while one is active. v79.12.5 (item 11, row 24): general obligations law (general_obligations: 1453 on a
+    preliminare) is accepted when the institution's module yields nothing proven (module_proven_line) -- the line is
+    right there, so the counter measures only a main line outside the institution while it had one of its own."""
+    cand = next((c for c in ctx.get("candidates") or [] if c.get("id") == main.get("candidate")), {})
+    art = str(cand.get("article") or main.get("article") or "")
+    if art and general_obligations(art) and not module_proven_line(ctx):
+        return False
     if (line_pertinence(main, ctx) or (0, 0))[0]:      # v79.12.1 (row 16): its norm outside the first read's
         return True                                     # institution (must be 0: a line inside it is promoted)
     mods = [m for m in institution_modules().get("modules") or [] if m["id"] in (ctx.get("claim_modules") or [])]
-    cand = next((c for c in ctx.get("candidates") or [] if c.get("id") == main.get("candidate")), {})
     if not mods or cand.get("kind") not in ("claim", "riconvenzionale", "remedy"):
         return False
     return not any(same_article(cand.get("article") or "", a) for m in mods for a in m.get("actions") or [])
@@ -3576,6 +3811,8 @@ def client_refusal(ctx: Optional[Dict[str, Any]], plan: Dict[str, Any]) -> Dict[
     if not tesi:
         return {}
     line = str(ctx.get("no_action") or "")
+    if line and no_claim(ctx):          # v79.12.5 (item 2): the ten sections stay (compose: no_claim)
+        return {}
     why = (line[:1].lower() + line[1:]) if line else NOT_APPLIED_WHY["placeholder"]
     return {"tesi": tesi, "why": why, "no_action": bool(line), "lines": [x for x in [missing_laws_line(ctx)] if x]}
 
@@ -3624,6 +3861,65 @@ def no_action_problems(answer: str) -> List[str]:
     return out
 
 
+# --- v79.12.5 (item 10): the two-turn cell -- «approfondisci il punto N» after the parere -----------------------------------
+
+_POINT_ASK_RE = re.compile(r"\bpunto\s+(\d{1,2})\b", re.IGNORECASE)
+_POINT_LINE_RE = re.compile(r"^\s*(\d{1,2})\.\s+(.+)$")
+FOLLOWUP_SECTIONS_MAX = 2       # a follow-up printing more section heads than this is the whole parere again
+FOLLOWUP_OTHER_SHARE = 0.6      # another point counts as covered when this share of its own words is in the follow-up
+
+
+def asked_point(request: str) -> int:
+    """The N of «approfondisci il punto N», 0 without one."""
+    m = _POINT_ASK_RE.search(request or "")
+    return int(m.group(1)) if m else 0
+
+
+def answer_points(answer: str) -> Dict[int, str]:
+    """{N: text} of §10's numbered points («Punti da verificare»: points_section)."""
+    body = dict(answer_sections(answer or "")).get(title("verificare")) or ""
+    return {int(m.group(1)): m.group(2).strip() for m in (_POINT_LINE_RE.match(x) for x in body.split("\n")) if m}
+
+
+def followup_scope(first: str, second: str, request: str, records_before: Optional[Sequence[str]] = None,
+                   records_after: Optional[Sequence[str]] = None) -> List[str]:
+    """v79.12.5 (item 10): the follow-up to «approfondisci il punto N» checked against the parere -- [] when it keeps
+    its scope: point N exists in §10; the follow-up is on that topic (its words, rule_statements.stems: two shared, or
+    every one of a shorter point); only that topic (no other point's own words, FOLLOWUP_OTHER_SHARE of them, three at
+    least); nothing unrequested (never the whole parere again -- more than FOLLOWUP_SECTIONS_MAX section heads --, no
+    article cited that neither the parere nor the case's records hold); the case's records kept (records_before all in
+    records_after, when both are given). Each problem in words."""
+    from . import citations, rule_statements
+    out: List[str] = []
+    n = asked_point(request)
+    points = answer_points(first)
+    if not n or n not in points:
+        return [f"punto {n or '?'} assente nel parere ({len(points)} punti)"]
+    own = rule_statements.stems(points[n])
+    said = rule_statements.stems(second)
+    shared = len(own & said)
+    if not (shared >= 2 or (own and shared == len(own))):
+        out.append(f"fuori tema: {shared} parole del punto {n}")
+    for j, text in points.items():
+        unique = rule_statements.stems(text) - own
+        if j != n and len(unique) >= 3 and len(unique & said) >= FOLLOWUP_OTHER_SHARE * len(unique):
+            out.append(f"anche il punto {j}")
+    heads = len(_SECTION_RE.findall(second or ""))
+    if heads > FOLLOWUP_SECTIONS_MAX:
+        out.append(f"il parere intero di nuovo ({heads} sezioni)")
+    known = {citations.label(r) for r in citations.article_refs(first or "")} | {
+        _norm_label(x) for x in records_before or []}
+    extra = [x for x in dict.fromkeys(citations.label(r) for r in citations.article_refs(second or ""))
+             if x not in known and _norm_label(x) not in known]
+    if extra:
+        out.append("articoli non richiesti: " + ", ".join(extra))
+    if records_before is not None and records_after is not None:
+        lost = [x for x in records_before if x not in set(records_after)]
+        if lost:
+            out.append("schede perse: " + ", ".join(lost))
+    return out
+
+
 def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Callable] = None,
                     review_call: Optional[Callable] = None) -> Dict[str, Any]:
     """v73: the objections written for the selected line -- one call after the selection (selection(): compose's own),
@@ -3633,6 +3929,8 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     from langchain_core.messages import HumanMessage, SystemMessage
     from .llm_reply import parse_json_reply
     sols, main, sub = selection(ctx, plan)
+    if sols[main].get("placeholder"):   # v79.12.5 (item 2): no line to object to (no_claim, or the step-aside)
+        return plan
     penal = criminal(ctx.get("posture"))                          # v79 (E2)
     system = OBJECTIONS_SYSTEM.format(who="l'accusa" if penal else "la controparte")
     rules = writer_rules_text(ctx.get("rito") or "", ctx.get("areas") or ())
@@ -5150,7 +5448,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     labels_log: List[str] = []                  # v79 (F1): a registry label that names no registry ruling
     rites_log: List[str] = []                   # v79.10.3 (C1): a written sentence offering a rito not admitted
 
-    def prose(text: str, rules: bool = True) -> str:   # every written paragraph: no orientation of its own, retrieved
+    closed_list = stage_lines(ctx.get("posture") or {})     # v79.12.5 (item 10): §8's closed list, code-written
+    closed_kept: List[str] = []                             # its sentences the rule check would have removed
+
+    # every written paragraph: no orientation of its own, retrieved
+    def prose(text: str, rules: bool = True, keep: Sequence[str] = ()) -> str:
         text = rulings_mod.labels_out(text, ctx.get("rulings_record"), labels_log)     # v79 (F1): «[G1]» -> estremi
         text = orientation_claims_out(text, orientation_claims)            # rulings only, circumstances with their
         text = unretrieved_rulings_out(text, rulings, rulings_out)         # requisites, no remissione for a d'ufficio
@@ -5160,10 +5462,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         text = rites_out(text, ctx.get("rites") or [], rites_log)      # v79.10.3 (C1): no rito the charge refuses
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
         text = circumstance_claims(text, circ, claims)
-        return rule_statements.check(text, rule_src, rules_log) if rules else text      # v79 (B1): grounded rules
+        return rule_statements.check(text, rule_src, rules_log, keep, closed_kept) if rules else text   # v79 (B1)
 
-    def checked(text: str, rules: bool = True) -> str:     # v79 (E3): prose, its removals into the ledger
-        return tracked("prose", text, prose(text, rules))
+    def checked(text: str, rules: bool = True, keep: Sequence[str] = ()) -> str:     # v79 (E3): prose, its removals
+        return tracked("prose", text, prose(text, rules, keep))                     # into the ledger
     charged_log: List[str] = []         # v75b: the charged article's paragraph from its sussunzione rows only
     norms = checked(charged_blocks(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
                                  ctx.get("charged_prose") or {}, charged_log))
@@ -5180,7 +5482,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     extra = [x for x in [ctx.get("temporal")] + [f"Litisconsorzio: {x}" for x in ctx.get("litisconsorzio") or []] if x]
     precluded = precluded_block(ctx.get("riti_precluded") or [], procedure)       # v79.10.3 (C1): §8 says them
     extra += [precluded] if precluded else []
-    procedure = "\n\n".join([p for p in [checked(procedure)] + extra if p]) or "Nessun profilo processuale calcolato sul caso."
+    procedure = "\n\n".join([p for p in [checked(procedure, keep=closed_list)] + extra if p]) or \
+        "Nessun profilo processuale calcolato sul caso."
     coherence: List[Dict[str, Any]] = []
     sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ,
                                     ctx=ctx)                    # v79.12.1 (row 16): pertinence before realismo
@@ -5191,12 +5494,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             keep = [i for i, t in enumerate(sols) if t.get("candidate") or t.get("fallback") or i == main]
             main, sols = keep.index(main), [sols[i] for i in keep]
             log["added_theses_dropped"] = added
-    if sols[main].get("placeholder"):       # v75: never printed -- "" keeps the standard body (the caller's), logged
+    # v79.12.5 (item 2): no admitted claim -- the ten sections stay, with no main line and no forecast (no_claim)
+    kind = no_claim(ctx) if sols[main].get("placeholder") else ""
+    log["no_claim"] = kind
+    ctx["no_claim_sections"] = kind
+    if sols[main].get("placeholder") and not kind:    # v75: never printed -- "" keeps the standard body, logged
         log["refused"] = {"why": "placeholder", "tesi": sols[main]["tesi"]}
         _log("compose_refused", log["refused"])
         return ""
-    a = settle_objective(forecast(ctx, sols[main], a, log), sols, records, circ)      # v79 (E1)
-    a = certainty_of(a, records, log)                       # v79.8 (E1): the main line's article alone
+    if not kind:
+        a = settle_objective(forecast(ctx, sols[main], a, log), sols, records, circ)      # v79 (E1)
+        a = certainty_of(a, records, log)                   # v79.8 (E1): the main line's article alone
     scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
 
     def planned(text: str, code: bool = False) -> str:     # v78: the plan's prose -- the checks above, then the
@@ -5227,29 +5535,42 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
             "obiezioni": objections_reviewed,
             "questione_giuridica": planned(plan.get("questione_giuridica") or "")}
-    conclusions = [conclusions_from_selection(a, sols, main, sub, ctx, client)]
-    steps = steps_text(steps_from_selection(ctx, sols, main))
-    if steps:
-        conclusions.append(steps)
+    if kind:                                # v79.12.5 (item 2): no line, no forecast, no steps
+        conclusions = [NO_CLAIM_CONCLUSION]
+    else:
+        conclusions = [conclusions_from_selection(a, sols, main, sub, ctx, client)]
+        steps = steps_text(steps_from_selection(ctx, sols, main))
+        if steps:
+            conclusions.append(steps)
     # v79.6 (item 1): the quesiti are answered first, in «Risposte ai quesiti» -- §9 no longer appends them
-    fallback_objections = list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
+    fallback_objections = [] if kind else \
+        list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
                               "fallback": max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
+    # v79.12.5 (item 2): the corpus line in §1 -- with no admitted claim (no_claim_summary), else wherever the first
+    # read's institution has no module and nothing graded in its family (corpus_line)
+    general = "" if kind or missing_laws_line(ctx) else corpus_line(ctx)
+    summary = no_claim_summary(ctx, kind) if kind else _with_line(
+        summary_section({}, sols, main, a, client, (ctx.get("charge") or {}).get("article") or "", records, log),
+        general)
+    log["corpus_line"] = CORPUS_LINE.split(" su ")[0] in summary
+    ctx["corpus_line"] = log["corpus_line"]
+    summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
+                                       missing_laws_line(ctx)) if x)                             # v79.9 (B2)
     keyed = [
-        ("sintesi", _with_line(_with_line(summary_section({}, sols, main, a, client,
-                                                          (ctx.get("charge") or {}).get("article") or "", records, log),
-                                          (ctx.get("penal_route") or {}).get("summary")),       # v79.8 (E3)
-                               missing_laws_line(ctx))),                                         # v79.9 (B2)
+        ("sintesi", summary),
         ("fatti", facts_section(ctx.get("facts") or {})),
-        ("questione", question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
-                                       log)),                                            # v79.10.5 (E1)
+        ("questione", NO_CLAIM_QUESTION.format(client=client or "la parte assistita", materia=action_subject(ctx))
+         if kind and not plan.get("questione_giuridica") else    # v79.12.5 (item 2): no article to frame it on
+         question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
+                          log)),                                                         # v79.10.5 (E1)
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
         ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points)),
-        ("soluzioni", solutions_section(sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "",
-                                        layout_log)),
-        ("obiezioni", objections_section(plan, fallback_objections)),
+        ("soluzioni", no_claim_solutions(ctx, kind) if kind else solutions_section(
+            sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log)),
+        ("obiezioni", NO_CLAIM_OBJECTIONS if kind else objections_section(plan, fallback_objections)),
         ("processuali", procedure),
         # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
         ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
@@ -5268,7 +5589,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "fact_wording": fact_wording, "charged_prose": charged_log,
                 "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out,
                 "rites_out": rites_log,                                                      # v79.10.3 (C1)
-                "headless_citations_out": headless_log, **layout_log})
+                "headless_citations_out": headless_log, **layout_log,
+                "closed_list_kept": closed_kept})                                            # v79.12.5 (item 10)
+    ctx["closed_list_kept"] = len(closed_kept)
+    ctx["articles_out_of_scope"] = len(articles_log)        # v79.12.5 (item 10): what the scope check still flags
     log["controllo_finale"] = final_check(dict(keyed), ctx, log, plan)
     # «orientamento da verificare» stays where the section prints it (v71); its point is collected all the same
     exempt = title("orientamenti")
@@ -5286,7 +5610,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "obiettivo": a.get("obiettivo")})
     _log("compose", log)
     joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
-    answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure, sols, main, a,
+    answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure,
+                                            [] if kind else sols, main, a,      # v79.12.5 (item 2): no line
                                             client, checked, log)          # v79.6 (item 1): before §1
     if answers:
         joined = f"{answers}\n\n{joined}"
@@ -5296,7 +5621,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         [f"{o.get('obiezione') or ''} {o.get('risposta') or ''}" for o in fallback_objections] + \
         [f"{t['tesi']} {t.get('pro') or ''} {t.get('contro') or ''}" for t in sols] + [ctx.get("subsumption") or ""] + \
         [ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""] + list(ctx.get("litisconsorzio") or []) + \
-        list(ctx.get("riti") or []) + list(points) + strategy_lines
+        list(ctx.get("riti") or []) + list(points) + strategy_lines + list(closed_list)     # v79.12.5 (item 10)
     log["ledger"] = [e for e in removals.entries if e["kind"] in ("removed", "rewritten")]     # v79 (E3)
     ctx["compose_removals"] = log["ledger"]
     ctx["output_sources"] = {**rule_statements.serializable(rule_src), "element_ids": sorted(known_all),
@@ -5803,6 +6128,22 @@ def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
     return {"unsourced": unsourced, "out_of_scope": list(dict.fromkeys(outside)), "wording": wording}
 
 
+def stage_lines(posture: Dict[str, Any]) -> List[str]:
+    """v79.12.5 (item 10): the lines of the posture's closed list (render_computed.stage_blocks, every block), each
+    without its bullet -- code-written: §8 keeps them whatever the rule check reads in them (the ATP line restored)."""
+    try:
+        from . import render_computed
+        blocks = render_computed.stage_blocks(posture or {})
+    except Exception:           # noqa: BLE001 -- no list, nothing kept beyond the check's own
+        return []
+    return [ln.strip().lstrip("-").strip() for _, body in blocks for ln in str(body).split("\n") if ln.strip()]
+
+
+def no_claim_layout(solutions: str) -> bool:
+    """v79.12.5 (item 2): §6 is the no-claim one (no_claim_solutions)."""
+    return NO_CLAIM_HEAD.split(":")[0] in (solutions or "")
+
+
 _CLIENT_LAYOUT_RE = re.compile(r"(?m)^\*\*Nell'interesse di [^*\n]+\*\*\s*$|^_Sezione comune a [^\n]+_\s*$")
 
 
@@ -5833,16 +6174,21 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
     check("no_count_sentence", not re.search(r"requisiti provati:?\s*\d+\s+su\s+\d+", answer or "", re.I),
           "a «requisiti provati N su M» line")
     sol = by.get(title("soluzioni")) or ""
-    check("solutions_table", "| Tesi | Pro | Contro | Realismo |" in sol, "no solutions table")
-    check("stragiudiziale", "Opzione stragiudiziale:" in sol, "no stragiudiziale option in the strategy")
-    obj = by.get(title("obiezioni")) or ""
-    check("three_objections", len(re.findall(r"(?m)^\*\*Obiezione \d+\.\*\*", obj)) >= OBJECTIONS,
-          "fewer than three objections")
     con = by.get(title("conclusioni")) or ""
-    for line in ("**Esito probabile**", "**Grado di certezza**", "**Obiettivo realistico**"):
-        check(f"conclusions:{line.strip('*')}", line in con, "missing")
-    check("obiettivo_label", bool(re.search(r"\*\*Obiettivo realistico\*\*: (?:esito pieno|esito parziale|contenimento)",
-                                            con)), "no esito pieno / parziale / contenimento")
+    if no_claim_layout(sol):    # v79.12.5 (item 2): no admitted claim -- no table, no line, no forecast, said so
+        check("no_claim_no_forecast", not re.search(r"esito\s+probabile|linea\s+principale", answer or "", re.I)
+              and NO_CLAIM_CONCLUSION in con, "a forecast or a main line with no admitted claim")
+    else:
+        check("solutions_table", "| Tesi | Pro | Contro | Realismo |" in sol, "no solutions table")
+        check("stragiudiziale", "Opzione stragiudiziale:" in sol, "no stragiudiziale option in the strategy")
+        obj = by.get(title("obiezioni")) or ""
+        check("three_objections", len(re.findall(r"(?m)^\*\*Obiezione \d+\.\*\*", obj)) >= OBJECTIONS,
+              "fewer than three objections")
+        for line in ("**Esito probabile**", "**Grado di certezza**", "**Obiettivo realistico**"):
+            check(f"conclusions:{line.strip('*')}", line in con, "missing")
+        check("obiettivo_label", bool(re.search(
+            r"\*\*Obiettivo realistico\*\*: (?:esito pieno|esito parziale|contenimento)", con)),
+            "no esito pieno / parziale / contenimento")
     from . import rulings as rulings_mod
     orient = by.get(title("orientamenti")) or ""
     registry_layout = rulings_mod.CORPUS_LINE in orient         # v78: §5 the registry's (rulings.section_text)

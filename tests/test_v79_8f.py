@@ -118,6 +118,10 @@ def test_the_line_is_the_main_line_and_survives_the_wording_pass():
     counts = M.selection_counts(ctx, plan, {})
     assert counts["main_is_fallback"] is True and "no_action" not in counts
     assert M.placeholder_main(ctx, plan)                            # the standard body
+    # v79.12.5 (item 2): the first read's institution (comodato) keeps the ten sections; with none, the step-aside
+    assert M.method_refusal([(ctx, plan)]) == {}
+    ctx = {**_ctx(), "institutions": []}
+    ctx["candidates"] = M.thesis_candidates(ctx)
     assert M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan) == ""
     note = M.not_applied_note(M.method_refusal([(ctx, plan)])["why"])
     assert "tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in note

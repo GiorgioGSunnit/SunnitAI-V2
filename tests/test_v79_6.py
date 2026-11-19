@@ -470,4 +470,4 @@ def test_the_nightly_has_a_two_client_cell_and_prints_per_client_counts():
     text = "\n".join(nightly.counts_lines(rows))
     assert "| x / Tizio | 2 |" in text and "| x / Caio | 4 |" in text
     data = json.loads((HERE / "data" / "nightly_cells.json").read_text())
-    assert "Sempronio" in two[0]["text"] and len(data["cells"]) == 6
+    assert "Sempronio" in two[0]["text"] and len(data["cells"]) == 7      # v79.12.5 (item 10): the two-turn cell

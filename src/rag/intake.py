@@ -1496,13 +1496,117 @@ def demand_kind(text: str) -> str:
 
 RESIST_WHY = "«{words}»: il cliente resiste a una pretesa (non è mai l'attore)"
 
+# v79.12.5 (item 6, row 54): «agire / citare in giudizio» (and the like) whose subject is a named party demanding
+# something of the client -- that party's threat, never the client's claim
+_THREAT_ACT_RE = re.compile(r"\b(?:agire|agirà|agirebbe|citar\w*|convenir\w*|fare\s+causa|far\s+causa|adire\s+(?:il\s+giudice|"
+                            r"le\s+vie\s+legali|il\s+tribunale)|(?:procedere|ricorrere)\s+(?:per\s+)?(?:le\s+)?vie\s+legali|"
+                            r"azioni\s+legali|vie\s+legali)\b", re.IGNORECASE)
+_THREAT_NOT_SUBJECT = {"il", "la", "lo", "le", "gli", "un", "una", "uno", "se", "in", "per", "ma", "e", "ed", "che", "chi",
+                       "cosa", "come", "quale", "quali", "non", "si", "ci", "mi", "dopo", "poi", "ora", "oggi", "ieri",
+                       "inoltre", "tuttavia", "allora", "quindi", "infine", "assisto", "sono", "siamo", "vorrei", "posso",
+                       "possiamo", "può", "nel", "nella", "con", "da", "dal", "dalla", "al", "alla", "a", "di"}
+_THREAT_PARTY_RE = re.compile(r"\b(?:la|il|lo|l['’])\s*(controparte|banca|società|ditta|impresa|creditor[ei]|"
+                              r"fornitor[ei]|venditor[ei]|locator[ei]|committent[ei]|condominio|compagnia|finanziaria|"
+                              r"agenzia|azienda)\b", re.IGNORECASE)
+_THREAT_CLIENT_RE = re.compile(r"\b(?:cliente|assistit[oa]|io|noi|vorrei|voglio|vogliamo|posso|possiamo|devo|dobbiamo)\b",
+                               re.IGNORECASE)
+_CLAUSE_STOP_RE = re.compile(r"(?<!\d)\.|\.(?!\d)|[;:!?\n]")        # a stop, never a thousands dot («5.000»)
+THREAT_WHY = "«{words}»: la minaccia di agire è della controparte che pretende, non una domanda del cliente"
+# v79.12.5 (item 6): a payment demand in the text and no client named -- the request's task decides the side, else the
+# role stays unknown (never the claimant by default), with neither side's wording
+_PAYMENT_DEMAND_RE = re.compile(rf"\b{_DEMAND_VERB}\b[^.;]{{0,80}}?{_DEMAND_OBJECT}|\b{_DEMAND_DOC}\b", re.IGNORECASE)
+_TASK_DEFEND_RE = re.compile(r"\b(?:come|per|può|possono|posso|possiamo|deve|devo|dobbiamo)\s+(?:\w+\s+)?(?:contestar\w*|"
+                             r"oppors\w*|opporr\w*|difender\w*|resister\w*|eccepir\w*|evitare\s+di\s+pagare|non\s+pagare)\b|"
+                             r"\b(?:deve|devo|dobbiamo|è\s+tenut[oa]\s+a)\s+pagare\b|\bva\s+pagat[oa]\b", re.IGNORECASE)
+_TASK_CLAIM_RE = re.compile(r"\b(?:come|per)\s+(?:agire|ottenere|recuperare|riottenere|far\s+valere|citare)\b|"
+                            r"\bquali\s+azioni\b|\bcome\s+(?:ottengo|agisco|recupero|otteniamo|agiamo)\b", re.IGNORECASE)
+TASK_WHY = {"defending": "la richiesta chiede di resistere alla pretesa", "claiming": "la richiesta chiede di agire"}
+UNKNOWN_DEMAND_WHY = "una pretesa di pagamento nel testo, nessun cliente nominato e nessuna richiesta che decida la parte"
 
-def derive_role(text: str, rito: str = "") -> Tuple[str, str, str]:
+
+# v79.12.5 (item 6, review): a company's form («S.r.l.», «S.p.A.», «s.n.c.», «S.a.s.», «s.r.l.s.») -- its dots end
+# no clause, and it names no party of its own: read as blanks (same length, the spans unchanged); its last dot still
+# ends the sentence when a capital follows
+_COMPANY_FORM_RE = re.compile(r"(?<![\w.])(?:s\.\s?r\.\s?l\.(?:\s?s\.)?|s\.\s?p\.\s?a\.|s\.\s?n\.\s?c\.|"
+                              r"s\.\s?a\.\s?s\.|s\.?r\.?l\.?s?|s\.?p\.?a\.?|s\.?n\.?c\.?|s\.?a\.?s\.?)(?!\w)", re.IGNORECASE)
+
+
+def _company_blanked(text: str) -> str:
+    """v79.12.5 (item 6, review): text with every company form blanked (_COMPANY_FORM_RE), its length kept."""
+    def blank(m: "re.Match") -> str:
+        form = m.group(0)
+        if form.endswith(".") and re.match(r"\s+[A-ZÀ-Ü]", text[m.end():m.end() + 3]):
+            return " " * (len(form) - 1) + "."
+        return " " * len(form)
+    return _COMPANY_FORM_RE.sub(blank, text or "")
+
+
+def _threat_subjects(head: str, name: str = "") -> List[str]:
+    """v79.12.5 (item 6, review): every party a clause's head may name as its subject, in order -- its capitalised
+    names (not a function word: a leading «Successivamente» is tried and passed over), then a party word («la
+    società»); none when the head names the client (its name, «cliente», a first person)."""
+    if _THREAT_CLIENT_RE.search(head) or (name and any(re.search(rf"\b{re.escape(w)}\b", head) for w in name.split())):
+        return []
+    out = [w.group(0) for w in re.finditer(r"\b[A-ZÀ-Ü][\w'’-]+", head)
+           if w.group(0).lower() not in _THREAT_NOT_SUBJECT and w.group(0).lower() not in _NOT_PARTY_WORDS]
+    m = _THREAT_PARTY_RE.search(head)
+    return out + ([m.group(1)] if m else [])
+
+
+def _threat_subject(head: str, name: str = "") -> str:
+    """The party a clause's head names as its subject -- a capitalised name (not a function word), else a party word
+    («la società»); "" when the head names the client (its name, «cliente», a first person) or no party."""
+    return next(iter(_threat_subjects(head, name)), "")
+
+
+def _demanding(text: str, party: str) -> bool:
+    """The party demands something of another in the text: a demand's verb in a clause it heads, or a demand's
+    document it sends («Alfa ha inviato una diffida»)."""
+    p = re.escape(party)
+    for m in re.finditer(rf"\b{p}\b([^.;]{{0,80}}?)\b(?:{_DEMAND_VERB}|(?:ha\s+)?(?:inviat|mandat|spedit|notificat|"
+                         rf"intimat)\w*\s+(?:a\s+\w+\s+)?(?:un|una|la|il|l['’])?\s*{_DEMAND_DOC})", text or "",
+                         re.IGNORECASE):
+        # the party heads the demand's clause: no relative, no «contro», no other party named between
+        if not re.search(r"\b(?:che|cui|contro|quale)\b|\b[A-ZÀ-Ü]", m.group(1)):
+            return True
+    return False
+
+
+def party_threat(text: str, name: str = "") -> Tuple[str, List[Tuple[int, int]]]:
+    """v79.12.5 (item 6, row 54): (the words, their spans) of «agire / citare in giudizio» (and the like) whose subject
+    is a named party demanding something of the client (_demanding) -- that party's threat against the client, never the
+    client's claim; ("", []) with none."""
+    text = text or ""
+    blanked = _company_blanked(text)        # review: «Beta S.p.A. pretende …» -- the form's dots end no clause
+    words, spans = "", []
+    for m in _THREAT_ACT_RE.finditer(blanked):
+        stops = [x.end() for x in _CLAUSE_STOP_RE.finditer(blanked, 0, m.start())]
+        start = stops[-1] if stops else 0
+        # review: each party the head names, in order, until one demands («Successivamente Beta ha chiesto …»)
+        party = next((x for x in _threat_subjects(blanked[start:m.start()], name) if _demanding(blanked, x)), "")
+        if party:
+            spans.append((start, m.end()))
+            words = words or _flat(text[start:m.end()])[:100]
+    return words, spans
+
+
+def task_side(text: str) -> str:
+    """v79.12.5 (item 6): the side the request's task asks for -- «defending» (contest, oppose, avoid paying),
+    «claiming» (act, recover, obtain), "" with neither or both."""
+    ask = ask_part(text or "")
+    defend, claim = bool(_TASK_DEFEND_RE.search(ask)), bool(_TASK_CLAIM_RE.search(ask))
+    return "defending" if defend and not claim else "claiming" if claim and not defend else ""
+
+
+def derive_role(text: str, rito: str = "", name: str = "") -> Tuple[str, str, str]:
     """v79.6 (item 5): (role, why, reading) for a client whose role nobody stated -- the sentences about the entity the
     lawyer names («difensore della società», «assisto l'impresa»), else the whole text: resisting a claim, a payment
     demand, a penalty or a charge -> the matter's defending role (imputato, convenuto); bringing or wanting to bring
     one -> its claiming role (persona offesa, attore); neither, or both -> a reading (the claiming role: nothing in the
-    text acts against the client), said in one line (reading)."""
+    text acts against the client), said in one line (reading). v79.12.5 (item 6, row 54): «agire / citare in giudizio»
+    whose subject is a named demanding party is that party's threat (party_threat: a sign of resisting, never the
+    client's claim); with a payment demand in the text and no client named (name, the entity), neither or both sides
+    is never the claimant by default -- the request's task decides (task_side), else UNKNOWN with no reading."""
     family = "penale" if str(rito or "").startswith("penale") else "civile"
     defending, claiming = ROLE_SIDES[family]
     m = _ENTITY_RE.search(text or "")
@@ -1511,12 +1615,22 @@ def derive_role(text: str, rito: str = "") -> Tuple[str, str, str]:
     if entity:
         about = [x for x in sentences(text or "") if entity[:5] in x.lower() and not _ENTITY_RE.search(x)]
         scope = " ".join(about) or scope
-    resist, claim = _RESIST_RE.search(scope), _CLAIM_RE.search(scope)
+    threat, spans = ("", []) if family == "penale" else party_threat(scope, name)
+    resist = _RESIST_RE.search(scope)
+    claim = next((c for c in _CLAIM_RE.finditer(scope)
+                  if not any(a <= c.start() < b or a < c.end() <= b for a, b in spans)), None)
     who = f"«{entity}»: " if entity else ""
-    if resist and not claim:
-        return defending, f"{who}«{_flat(resist.group(0))}»: il cliente resiste", ""
-    if claim and not resist:
+    if (resist or threat) and not claim:
+        if resist:
+            return defending, f"{who}«{_flat(resist.group(0))}»: il cliente resiste", ""
+        return defending, who + THREAT_WHY.format(words=threat), ""
+    if claim and not (resist or threat):
         return claiming, f"{who}«{_flat(claim.group(0))}»: il cliente agisce", ""
+    if family == "civile" and not entity and not (name or "").strip() and _PAYMENT_DEMAND_RE.search(scope):
+        side = task_side(text or "")
+        if side:
+            return (defending, TASK_WHY["defending"], "") if side == "defending" else (claiming, TASK_WHY["claiming"], "")
+        return UNKNOWN, UNKNOWN_DEMAND_WHY, ""
     why = READING_WHY[family]
     return claiming, f"lettura: {why}", why
 
@@ -1571,13 +1685,15 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         take("deliverable", default, DEFAULT, "nessuna regola, nessuna risposta del modello")
     case = values["deliverable"] in CASE_DELIVERABLES
     take("stage", "pre_filing" if case else UNKNOWN, DEFAULT, "il testo non dice la fase")
-    reading = ""
+    reading = unknown_why = ""
     if case and "role" not in values:       # v79.6 (item 5): no role stated nor read -- derived from the text
-        derived, derived_why, reading = derive_role(f"{message}\n{upload}", values.get("rito") or "")
-        if not reading:             # a definite reading here; the fallback waits for the analysis (resolve)
+        derived, derived_why, reading = derive_role(f"{message}\n{upload}", values.get("rito") or "", client["name"])
+        if not reading and derived != UNKNOWN:  # a definite reading here; the fallback waits for the analysis
             take("role", derived, RULE, derived_why)
+        elif derived == UNKNOWN:            # v79.12.5 (item 6): left unknown -- said why, the analysis may decide
+            unknown_why = derived_why
     take("rito", UNKNOWN, DEFAULT, "l'area del caso la decide (frame)")
-    take("role", UNKNOWN, DEFAULT, "la logica del cliente la decide")
+    take("role", UNKNOWN, DEFAULT, unknown_why or "la logica del cliente la decide")
     if not case and confidence.get("role") != RULE:
         values["role"], confidence["role"] = UNKNOWN, DEFAULT
     from .query_router import party_kinds
@@ -1714,8 +1830,10 @@ def resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optio
             out["role"] = role
             out["client"] = {**(out.get("client") or {}), "side": side}
         else:                           # v79.6 (item 5): never «sconosciuto» -- a reading of the text, said in one line
-            case = str((analysis or {}).get(interactive_flow.CASE_KEY) or "")
-            role, why, reading = derive_role(case, "penale" if penal else "civile")
+            case = str((analysis or {}).get(interactive_flow.CASE_KEY) or "")      # v79.12.5 (item 6): or unknown,
+            role, why, reading = derive_role(case, "penale" if penal else "civile",      # with neither side's
+                                             str((out.get("client") or {}).get("name") or ""))      # wording
             out["role"], out["role_reading"] = role, reading
+            out["role_why"] = why
             out["confidence"]["role"] = DEFAULT
     return out

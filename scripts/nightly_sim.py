@@ -137,6 +137,40 @@ the narrated event with its cause, still «da provare» for the causal link); it
 0); item 7 claims_refused_expired, claims_expired_minority and claims_expired_sustainable (must be 0: a claim on an
 article a DECORSO term bars offered as sustainable).
 
+v79.12.5 (79.12.3 item 7): names_redacted's own reading (rulings.names_left) also counts a surname printed alone after
+an article or an articled preposition («il Rossi», «del Bianchi»), never a role noun, a gazetteer word or an opener
+(data/redaction_stoplist.json), nor a word continuing an office's name after «del» («la Corte dei Conti»:
+rulings.office_tail) -- the redactor's rule «article» read apart.
+
+v79.12.5 (items 8, 9), in the counters table (interactive_flow.law_titles_cited, text_counted, ledger_settled; the run's
+state only): item 8 law_titles_cited (the special laws' document titles printed as their citation) and law_titles_left
+(must be 0: an answer document's title still in the text -- a mapping to add to data/corpus_expected.json), see_point
+(«v. punto N») and to_verify («da verificare») per answer; item 9 rulings_printed and rulings_date_nd («data n.d.»
+read against the rulings printed), ledger_kept_contained and ledger_kept_code (why a logged-removed sentence stays),
+ledger_settle_failed (must be 0), the last three set only when not 0.
+
+v79.12.5 (items 2, 6, 10, 11), in the counters table (interactive_flow.case_counters; the run's state only): item 2
+no_claim_sections (an answer kept in the ten sections with no admitted claim: §1's corpus or honesty line, §6 the
+articles read, no line, no forecast) and corpus_line (§1's «Il corpus non contiene ancora informazioni sufficienti su …»);
+item 6 role_threat_not_claim (a named demanding party's «agire / citare in giudizio» read as its threat) and
+role_unknown_on_demand (a payment demand, no client named, no task deciding: the role left unknown); item 10
+counterparty_professional and counterparty_by_qualifier (the qualifier words), consumer_sale_block_out (the consumer
+code's 128-135 kept out of a case that is no sale), code_articles_admitted_default (the general clauses and the stage
+table's articles the scope gate kept by default; code_articles_out_of_scope still counts what it drops),
+articles_out_of_scope (compose's scope removals) and closed_list_kept (§8's closed-list sentences -- the ATP, the 700 line
+-- kept from the grounded-rule check). Item 11 changes main_outside_institution: general obligations law is accepted
+when the institution's module yields no proven line. The cells: the two penal cells expect the indagini, and a seventh,
+two-turn cell («followup»: «approfondisci il punto 1» after the parere, interactive_flow.follow_up on the first turn's
+state) is checked by followup_scope (lawyer_method.followup_scope: only that point's topic, the case's records kept,
+nothing unrequested); with --answers its second answer is DIR/<cell id>.followup.md. A no-claim answer's §6 is read by
+the structure check as its own layout (no_claim_no_forecast).
+
+v79.12.5 item 0 (element schemas' checker) adds no runtime counter: its new mappings («obbligo» -> «condotta», a comma
+speciale's «limiting» -> «limite», a logic op «other» lifted, a missing tipo -> «other» with a note; (review) a value no vocabulary maps read as its field's neutral value, counted, not
+rejected) are counted by
+schema_vocabulary_mapped, as every mapping; its measures are scripts/schema_show.py --recheck's (usable before ->
+after, and every value no vocabulary maps counted by field and value: "unknown", "unknown_by_field").
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -251,6 +285,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(clients_once_check(out["answer"]))                                 # v79.10.2 (B3)
         out["checks"].append(rites_fit_check(out["counters"]))                                  # v79.10.3 (C3)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
+        if spec.get("followup"):                                                                # v79.12.5 (10)
+            run_followup(spec, out["answer"], result.get("state") or {}, out)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
         if by_client:                                                                          # v79.6 (2)
             out["thesis_counts_by_client"] = by_client
@@ -344,6 +380,29 @@ def no_action_check(answer: str) -> Dict[str, Any]:
     from src.rag import lawyer_method
     found = lawyer_method.no_action_problems(answer)
     return {"check": "no_action_prose", "ok": not found, "why": "; ".join(found)}
+
+
+def followup_check(first: str, second: str, request: str, records_before: Optional[List[str]] = None,
+                   records_after: Optional[List[str]] = None) -> Dict[str, Any]:
+    """v79.12.5 (item 10): the two-turn cell's follow-up («approfondisci il punto N») keeps its scope -- only that
+    topic, the case's records kept, nothing unrequested (lawyer_method.followup_scope)."""
+    from src.rag import lawyer_method
+    if not (second or "").strip():
+        return {"check": "followup_scope", "ok": False, "why": "no follow-up answer"}
+    found = lawyer_method.followup_scope(first, second, request, records_before, records_after)
+    return {"check": "followup_scope", "ok": not found, "why": "; ".join(found)}
+
+
+def run_followup(spec: Dict[str, Any], first: str, state: Dict[str, Any], out: Dict[str, Any]) -> None:
+    """v79.12.5 (item 10): the cell's second turn -- spec["followup"] after the parere (interactive_flow.follow_up, the
+    state the first turn left), its answer kept («followup_answer») and checked (followup_check)."""
+    from src.rag import interactive_flow
+    before = sorted((state.get("records") or {}).keys())
+    got = interactive_flow.follow_up(spec["followup"], state) or {}
+    after_state = got.get("state") or state
+    out["followup_answer"] = str(got.get("answer") or "")
+    out["checks"].append(followup_check(first, out["followup_answer"], spec["followup"], before,
+                                        sorted((after_state.get("records") or {}).keys())))
 
 
 def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -931,6 +990,10 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
     if check:           # v78: offline, the penal cells only (the record is not in a file)
         out["checks"].append(check)
+    if spec.get("followup"):            # v79.12.5 (item 10): DIR/<cell id>.followup.md, the second turn's answer
+        second = folder / f"{spec['id']}.followup.md"
+        out["followup_answer"] = second.read_text(encoding="utf-8") if second.is_file() else ""
+        out["checks"].append(followup_check(out["answer"], out["followup_answer"], spec["followup"]))
     return out
 
 

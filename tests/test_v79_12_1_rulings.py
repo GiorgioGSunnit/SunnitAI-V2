@@ -305,11 +305,11 @@ def test_e2_a_surname_before_a_prescindere_dalla_titolarita_is_redacted(text, go
     "La dimora del Conduttore, a prescindere dalla titolarità del bene, è tutelata.",
     "La sede della Lombardia, a prescindere dalla titolarità del bene.",
     "La sede dell'INPS, a prescindere dalla titolarità del bene.",
-    "Il Colombo si è introdotto nell'abitazione.",
 ])
 def test_e2_roles_offices_acts_and_regions_stay(text):
-    """review: a capitalised role or office after an article is no surname -- only the saving clause's lone word is
-    read, and never a role noun, a gazetteer word or an opener (a surname alone elsewhere is not read: «il Colombo»)."""
+    """review: a capitalised role or office after an article is no surname -- never a role noun, a gazetteer word or an
+    opener. v79.12.5 (79.12.3 item 7): a surname alone after an article («il Colombo») is now read too (rule
+    «article», tests/test_v79_12_5.py)."""
     assert rulings.redact_names(text) == text and rulings.names_left(text) == []
 
 
@@ -318,7 +318,7 @@ def test_e2_the_redaction_log_names_the_new_rule(monkeypatch):
     monkeypatch.setattr(rulings, "_log", lambda event, data, *a: seen.append((event, data)))
     rulings.redact_names("La dimora di Ferraro, a prescindere dalla titolarità, e quella del Greco sono tutelate.")
     entry = next(d for e, d in seen if e == "redaction")
-    assert entry["items"] == [{"words": "Ferraro", "rule": "saving"}]
+    assert entry["items"][0] == {"words": "Ferraro", "rule": "saving"}       # v79.12.5: «del Greco» is «article»
 
 
 def test_e2_the_nightly_counts_a_lone_surname_left_in_a_printed_passage():

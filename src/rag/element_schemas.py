@@ -61,7 +61,13 @@ GROUNDING = ("explicit", "inferred")
 LOGIC_OPS = ("all_of", "any_of", "not", "conditional")
 CONNECTIVES = ("e", "o", None)
 SPECIAL_KINDS = ("presunzione", "aggravamento", "attenuazione", "equiparazione", "caso speciale", "scriminante",
-                 "procedibilità", "other")
+                 "procedibilità", "limite", "other")    # v79.12.5 (item 0): «limite» (the model's «limiting»)
+TIPO_MISSING = "tipo mancante"  # v79.12.5 (item 0): a schema with no tipo read as «other» with this note, not invalid
+# v79.12.5 (item 0, review): a value no vocabulary maps is counted, never a rejection -- read as the field's neutral
+# value (FALLBACK) with a note naming it, logged as a mapping («unknown»); unknown_values lists each
+TIPO_UNKNOWN = "tipo sconosciuto"
+KIND_UNKNOWN = "kind sconosciuto"
+FALLBACK = {"kinds": "other", "tipi": "other", "roles": "altro", "special_kinds": "other", "connectives": None}
 CHECK_KEYS = ("invalid", "ungrounded", "fragments", "branches_without_alternative", "logic_errors",
               "logic_incomplete", "fonte_unlocated", "inferred_unexplained", "comma_unknown", "kind_other_unexplained",
               "vocabulary_mapped", "procedibilita_moved")
@@ -535,7 +541,7 @@ def _canon(value: Any, vocabulary: Sequence[Optional[str]]) -> Optional[str]:
 # --- the vocabulary's synonyms (v79.12.3) -------------------------------------------------------------------------------
 
 _UNKNOWN = object()             # a value no vocabulary entry and no synonym maps (canon_connective)
-_VOCAB_FIELDS = ("kinds", "connectives", "tipi", "roles", "special_kinds")
+_VOCAB_FIELDS = ("kinds", "connectives", "tipi", "roles", "special_kinds", "ops")   # v79.12.5: logic ops
 _vocab_cache: Dict[str, Any] = {}
 
 
@@ -548,7 +554,8 @@ def vkey(value: Any) -> str:
 
 
 def _vocabularies() -> Dict[str, Sequence[Optional[str]]]:
-    return {"kinds": KINDS, "connectives": CONNECTIVES, "tipi": TIPI, "roles": ROLES, "special_kinds": SPECIAL_KINDS}
+    return {"kinds": KINDS, "connectives": CONNECTIVES, "tipi": TIPI, "roles": ROLES, "special_kinds": SPECIAL_KINDS,
+            "ops": LOGIC_OPS + (None,)}     # v79.12.5 (item 0): an op mapped to null is no op -- the node lifted
 
 
 def vocabulary() -> Dict[str, Dict[str, Any]]:
@@ -643,11 +650,35 @@ def canon_connective(value: Any) -> Any:
     return _mapped(value, "connectives")
 
 
+_OP_LIFT = object()             # v79.12.5: an op the vocabulary maps to no op («other»): the node lifted (_map_ops)
+
+
+def canon_op(op: Any) -> Any:
+    """v79.12.5 (item 0): a logic op as the vocabulary has it («All_Of» -> "all_of"); _OP_LIFT for an op mapped to
+    no op (data/schema_vocabulary.json «ops»: «other», «altro» -> null); _UNKNOWN for any other (a missing op too)."""
+    if not isinstance(op, str) or not op.strip():
+        return _UNKNOWN
+    got = _mapped(op, "ops")
+    return _OP_LIFT if got is None else got
+
+
+def missing_tipo(tipo: Any) -> bool:
+    """v79.12.5 (item 0): no tipo written -- the key absent or null, a blank string, an empty list or one of blanks."""
+    if tipo is None or (isinstance(tipo, str) and not tipo.strip()):
+        return True
+    return isinstance(tipo, list) and all(t is None or (isinstance(t, str) and not t.strip()) for t in tipo)
+
+
 def tipi_of(schema: Any) -> List[str]:
-    """v79.12.3: a schema's tipo as vocabulary values (a bare string read as a list; unknown ones left out)."""
+    """v79.12.3: a schema's tipo as vocabulary values (a bare string read as a list; unknown ones left out). v79.12.5
+    (item 0): the «other» normalize puts in place of a missing tipo (tipo_note «tipo mancante») is no tipo -- no
+    opinion for the gate, no offence --, never the model's own «other»."""
     tipo = schema.get("tipo") if isinstance(schema, dict) else None
     if isinstance(tipo, str):
         tipo = [tipo]
+    if isinstance(schema, dict) and tipo == ["other"] and \
+            str(schema.get("tipo_note") or "").startswith((TIPO_MISSING, TIPO_UNKNOWN)):
+        return []
     return [t for t in (canon_tipo(x) for x in tipo or []) if t is not None] if isinstance(tipo, list) else []
 
 
@@ -688,20 +719,77 @@ def _map_refs(node: Any, ids: Sequence[str], log, depth: int = 0) -> Any:
     return out
 
 
+def _op_children(node: Dict[str, Any]) -> List[Any]:
+    """A node's children in order: its args, then arg, if, then, else."""
+    out = [a for a in node.get("args") if a is not None] if isinstance(node.get("args"), list) else []
+    return out + [node[k] for k in ("arg", "if", "then", "else") if node.get(k) is not None]
+
+
+def _map_ops(node: Any, log, depth: int = 0) -> Any:
+    """v79.12.5 (item 0): a logic tree with each op in the vocabulary's own spelling and each op it maps to no op
+    («other», «altro») lifted -- the node replaced by its children, themselves mapped: one child is the node; several
+    are an all_of of them (the relation unread, every one of them still required and cited: the fattispecie's default
+    conjunction, so no element leaves the logic and none is read as a mere alternative); none, the node removed (None).
+    Each change logged.
+    Review fix (counts, not rejections): an unknown op the model wrote (a string: «xor», «nebbia») is lifted the same
+    way, logged as unknown; a node with no op at all stays invalid (no value: a malformed tree)."""
+    if depth > 60 or not isinstance(node, dict) or ("ref" in node and "op" not in node):
+        return node
+    op = node.get("op")
+    got = canon_op(op)
+    out = dict(node)
+    if isinstance(node.get("args"), list):     # only a lifted node with no child leaves (a null the model wrote stays)
+        mapped_args = [(a, _map_ops(a, log, depth + 1)) for a in node["args"]]
+        out["args"] = [x for a, x in mapped_args if x is not None or not isinstance(a, dict)]
+    for key in ("arg", "if", "then", "else"):
+        if isinstance(node.get(key), dict):
+            mapped = _map_ops(node[key], log, depth + 1)
+            if mapped is None:
+                out.pop(key, None)
+            else:
+                out[key] = mapped
+    unknown = got is _UNKNOWN and isinstance(op, str) and bool(op.strip())
+    if got is _OP_LIFT or unknown:
+        children = _op_children(out)
+        if "ref" in out:                        # a node with both ref and op: its ref is a child too
+            children.insert(0, {"ref": out["ref"]})
+        lifted = None if not children else children[0] if len(children) == 1 else {"op": "all_of", "args": children}
+        log("op", op, None if lifted is None else lifted.get("op", "ref"), *(("op",) if unknown else ()))
+        return lifted
+    if got is not _UNKNOWN and got != op:
+        log("op", op, got)
+        out["op"] = got
+    return out
+
+
 def _normalize_one(sc: Dict[str, Any], scope: str, out: List[Dict[str, Any]], top: bool) -> None:
-    def log(eid: str, field: str, old: Any, new: Any) -> None:
-        out.append({"scope": scope, "id": eid, "field": field, "from": old, "to": new})
+    def log(eid: str, field: str, old: Any, new: Any, unknown: str = "") -> None:
+        out.append({"scope": scope, "id": eid, "field": field, "from": old, "to": new,
+                    **({"unknown": unknown} if unknown else {})})
     tipo = sc.get("tipo")
-    if isinstance(tipo, str) and canon_tipo(tipo) is not None:
+    if missing_tipo(tipo):                      # v79.12.5 (item 0): «other» with a note, never invalid
+        log("tipo", "tipo", tipo, ["other"])
+        sc["tipo"] = ["other"]
+        sc["tipo_note"] = TIPO_MISSING
+    elif isinstance(tipo, str) and canon_tipo(tipo) is not None:
         log("tipo", "tipo", tipo, [canon_tipo(tipo)])
         sc["tipo"] = [canon_tipo(tipo)]
-    elif isinstance(tipo, list):
-        new = []
-        for t in tipo:
+    elif isinstance(tipo, (str, list)):
+        # review (counts, not rejections): an unknown tipo is left out, logged as unknown; none left -> «other»
+        # with tipo_note «tipo sconosciuto …» (tipi_of: no tipo, as a missing one)
+        new, unknown = [], []
+        for t in [tipo] if isinstance(tipo, str) else tipo:
             c = canon_tipo(t)
+            if c is None and isinstance(t, str) and t.strip():     # a non-string stays (malformed: invalid)
+                log("tipo", "tipo", t, None, "tipo")
+                unknown.append(t)
+                continue
             if c is not None and c != t:
                 log("tipo", "tipo", t, c)
             new.append(t if c is None else c)
+        if unknown and not [t for t in new if not missing_tipo(t)]:
+            new = ["other"]
+            sc["tipo_note"] = f"{TIPO_UNKNOWN} " + ", ".join(repr(t) for t in unknown)
         sc["tipo"] = new
     for field in ("destinatario", "legittimato", "soggetto_passivo"):
         value = sc.get(field)
@@ -713,9 +801,12 @@ def _normalize_one(sc: Dict[str, Any], scope: str, out: List[Dict[str, Any]], to
         for i, e in enumerate(value):
             role = e.get("ruolo") if isinstance(e, dict) else e
             c = canon_role(role)
+            unknown = c is None and isinstance(role, str) and bool(role.strip())
+            if unknown:                         # review: an unknown role -> «altro», counted (never a rejection)
+                c = FALLBACK["roles"]
             if c is None or c == role:
                 continue
-            log(field, field, role, c)
+            log(field, field, role, c, "role" if unknown else "")
             value[i] = {**e, "ruolo": c} if isinstance(e, dict) else c
     ids: List[str] = []
     for i, el in enumerate(sc.get("elementi") if isinstance(sc.get("elementi"), list) else []):
@@ -727,24 +818,38 @@ def _normalize_one(sc: Dict[str, Any], scope: str, out: List[Dict[str, Any]], to
             el["id"] = eid
         ids.append(str(el.get("id") or ""))
         c = canon_kind(el.get("kind"), el.get("testo"))
-        if c is not None and c != el.get("kind"):
+        if c is None and isinstance(el.get("kind"), str) and el["kind"].strip():
+            # review (counts, not rejections): an unknown kind -> «other», its kind_note naming it, counted
+            log(eid, "kind", el.get("kind"), FALLBACK["kinds"], "kind")
+            if not str(el.get("kind_note") or "").strip():
+                el["kind_note"] = f"{KIND_UNKNOWN} {el['kind']!r}"
+            el["kind"] = FALLBACK["kinds"]
+        elif c is not None and c != el.get("kind"):
             log(eid, "kind", el.get("kind"), c)
             el["kind"] = c
         if "connective" in el:
             conn = canon_connective(el.get("connective"))
-            if conn is not _UNKNOWN and conn != el.get("connective"):
+            if conn is _UNKNOWN and isinstance(el.get("connective"), str):
+                # review: an unknown connective -> none (the logic tree states the relation), counted
+                log(eid, "connective", el.get("connective"), FALLBACK["connectives"], "connective")
+                el["connective"] = FALLBACK["connectives"]
+            elif conn is not _UNKNOWN and conn != el.get("connective"):
                 log(eid, "connective", el.get("connective"), conn)
                 el["connective"] = conn
-    if isinstance(sc.get("logic"), dict):
+    if isinstance(sc.get("logic"), dict):     # v79.12.5 (item 0): ops first («other» lifted), then the refs
+        sc["logic"] = _map_ops(sc["logic"], lambda f, a, b, u="": log("logic", f, a, b, u))
         sc["logic"] = _map_refs(sc["logic"], [i for i in ids if i], lambda f, a, b: log("logic", f, a, b))
     if top:
         for cs in sc.get("commi_speciali") if isinstance(sc.get("commi_speciali"), list) else []:
             if not isinstance(cs, dict):
                 continue
             c = canon_special(cs.get("kind"))
+            unknown = c is None and isinstance(cs.get("kind"), str) and bool(cs["kind"].strip())
+            if unknown:                         # review: an unknown special kind -> «other», counted
+                c = FALLBACK["special_kinds"]
             if c is not None and c != cs.get("kind"):
                 out.append({"scope": norm_comma(cs.get("comma")) or "?", "id": "kind", "field": "comma_speciale",
-                            "from": cs.get("kind"), "to": c})
+                            "from": cs.get("kind"), "to": c, **({"unknown": "special_kind"} if unknown else {})})
                 cs["kind"] = c
 
 
@@ -755,7 +860,11 @@ def normalize(schema: Any) -> Tuple[Any, List[Dict[str, Any]]]:
     «procedural» -> «procedibilità» or «competenza» by its testo) and connective («ovvero», «oppure», «od» -> «o»; «ed»
     -> «e»), a ref differing from its element's id only by case or spaces, a comma speciale's kind («aggravante» ->
     «aggravamento»). Each mapping {"scope", "id", "field", "from", "to"}; a value no synonym maps is left as it is
-    (check() calls it invalid). The checker validates the mapped copy (check, repair)."""
+    (v79.12.5 review: a string no synonym maps is read as its field's neutral value -- FALLBACK -- and logged as an
+    «unknown» mapping; unknown_values lists it; a non-string stays, check() calls it invalid). The checker validates the mapped copy (check, repair).
+    v79.12.5 (item 0): «obbligo» -> «condotta», a comma speciale's «limiting» -> «limite»; a logic op in its own
+    spelling, «other» lifted (_map_ops); a missing tipo (missing_tipo) -> ["other"] with tipo_note «tipo mancante»,
+    never invalid (tipi_of reads it as no tipo)."""
     if not isinstance(schema, dict):
         return schema, []
     out = json.loads(json.dumps(schema, ensure_ascii=False))
@@ -778,6 +887,74 @@ def mapping_actions(mappings: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [{"scope": m["scope"], "id": m["id"], "check": "vocabulary", "action": "mapped", "why": mapping_text(m),
              "field": m["field"], "from": m["from"], "to": m["to"], "testo": "", "comma": m["scope"]}
             for m in mappings]
+
+
+UNKNOWN_FIELDS = ("kind", "connective", "op", "tipo", "role", "special_kind")   # v79.12.5 (item 0)
+
+
+def _unknown_ops(node: Any, out: List[Any], depth: int = 0) -> None:
+    if depth > 60 or not isinstance(node, dict) or ("ref" in node and "op" not in node):
+        return
+    if node.get("op") not in LOGIC_OPS:
+        out.append(node.get("op"))
+    for child in _op_children(node):
+        _unknown_ops(child, out, depth + 1)
+
+
+def _unknown_one(sc: Dict[str, Any], scope: str, out: List[Dict[str, Any]]) -> None:
+    def add(eid: str, field: str, value: Any) -> None:
+        out.append({"scope": scope, "id": eid, "field": field, "value": value})
+    tipo = sc.get("tipo")
+    for t in tipo if isinstance(tipo, list) else [tipo] if isinstance(tipo, str) else []:
+        if t not in TIPI:
+            add("tipo", "tipo", t)
+    for field in ("destinatario", "legittimato", "soggetto_passivo"):
+        for e in sc.get(field) if isinstance(sc.get(field), list) else []:
+            role = e.get("ruolo") if isinstance(e, dict) else e
+            if canon_role(role) is None:
+                add(field, "role", role)
+    for i, el in enumerate(sc.get("elementi") if isinstance(sc.get("elementi"), list) else []):
+        if not isinstance(el, dict):
+            continue
+        eid = str(el.get("id") or "").strip() or f"elementi[{i}]"
+        if canon_kind(el.get("kind")) is None:
+            add(eid, "kind", el.get("kind"))
+        if el.get("connective") not in CONNECTIVES:
+            add(eid, "connective", el.get("connective"))
+    ops: List[Any] = []
+    _unknown_ops(sc.get("logic"), ops)
+    for op in ops:
+        add("logic", "op", op)
+
+
+def unknown_values(schema: Any) -> List[Dict[str, Any]]:
+    """v79.12.5 (item 0): every value of the schema no vocabulary maps -- {"scope", "id", "field": kind | connective |
+    op | tipo | role | special_kind, "value"}, over the schema and every commi_speciali sub-schema, in order.
+    scripts/schema_show.py --recheck counts them by value. Review fix (counts, not rejections): normalize reads each
+    as its field's neutral value (FALLBACK; an unknown op lifted), logged as an «unknown» mapping, so the schema is
+    not rejected for it; these are those mappings' values, plus any value still outside the vocabulary after
+    normalize (a non-string kind or role: a malformed value, still invalid)."""
+    if not isinstance(schema, dict):
+        return []
+    norm, mappings = normalize(schema)
+    out: List[Dict[str, Any]] = [{"scope": m["scope"], "id": m["id"], "field": m["unknown"], "value": m["from"]}
+                                 for m in mappings if m.get("unknown")]
+    _unknown_one(norm, "", out)
+    for cs in norm.get("commi_speciali") if isinstance(norm.get("commi_speciali"), list) else []:
+        if not isinstance(cs, dict):
+            continue
+        scope = norm_comma(cs.get("comma")) or "?"
+        if cs.get("kind") not in SPECIAL_KINDS:
+            out.append({"scope": scope, "id": "kind", "field": "special_kind", "value": cs.get("kind")})
+        if isinstance(cs.get("schema"), dict):
+            _unknown_one(cs["schema"], scope, out)
+    return out
+
+
+def unknown_text(u: Dict[str, Any]) -> str:
+    """One unknown value as --recheck counts it: «kind 'obbligo giuridico'» (case and spaces folded)."""
+    v = u.get("value")
+    return f"{u.get('field')} {(' '.join(v.split()).lower() if isinstance(v, str) else v)!r}"
 
 
 def all_dangling_refs(schema: Any) -> List[str]:
@@ -1405,6 +1582,8 @@ def _any_span(node: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], ctx: _Text
 def _check_one(schema: Dict[str, Any], ctx: _Text, out: Dict[str, Any], prefix: str, top: bool) -> None:
     p = prefix
     tipo = schema.get("tipo")
+    if isinstance(tipo, str) and tipo.strip():  # v79.12.5: a bare unknown tipo is unknown, not missing
+        tipo = [tipo]
     if not isinstance(tipo, list) or not tipo:
         out["invalid"].append(f"{p}tipo mancante")
     else:
@@ -1566,7 +1745,8 @@ def check(schema: Any, text: str) -> Dict[str, Any]:
     commi_speciali sub-schema; each problem a short string naming the id. failed/cut are the generator's. v79.12.2:
     BLOCKING (invalid, logic_errors = dangling refs) make it unusable; ELEMENT_CHECKS are what repair() fixes or
     drops; the rest is reported. v79.12.3: the vocabulary's synonyms mapped first (normalize: vocabulary_mapped lists
-    each), so «procedural» or «ovvero» is no longer invalid; a value no synonym maps still is. Then the procedibilità
+    each), so «procedural» or «ovvero» is no longer invalid; v79.12.5 (item 0, review): a value no synonym maps is its
+    field's neutral value, counted (unknown_values), never invalid -- a non-string one still is. Then the procedibilità
     moved to its block (split_procedibilita: procedibilita_moved lists each, non-blocking), its conditions checked for
     grounding like an eccezione (_check_block)."""
     out = empty_checks()
@@ -1611,7 +1791,10 @@ def prune_logic(node: Any, dropped: Iterable[str] = (), depth: int = 0) -> Any:
     of one arg read as its arg. None when nothing is left -- no logic, not an error. A node that is no node or a
     dangling ref is left as it is (check() says so). v79.12.3: every ref to a dropped id goes, wherever it stands
     (inside an unknown op or a node with both ref and op too, so the checker never leaves one dangling); an all_of left
-    with one child by the pruning is read as that child (a not keeps its single child)."""
+    with one child by the pruning is read as that child (a not keeps its single child). v79.12.5 (item 0): a
+    conditional's if / then / else pruned exactly as args, the node collapsed or dropped, never kept with a branch
+    missing (_prune_conditional: no then -> «if not(if) then else», or None without an else; no if -> then, else, or
+    an any_of of the two)."""
     gone = dropped if isinstance(dropped, (set, frozenset)) else set(dropped)
     if depth > 60 or not isinstance(node, dict):
         return node
@@ -1636,15 +1819,7 @@ def prune_logic(node: Any, dropped: Iterable[str] = (), depth: int = 0) -> Any:
         arg = prune_logic(node.get("arg"), gone, depth + 1) if node.get("arg") is not None else None
         return None if arg is None else {**node, "arg": arg}
     if op == "conditional":
-        out = dict(node)
-        for key in ("if", "then", "else"):
-            if node.get(key) is not None:
-                out[key] = prune_logic(node[key], gone, depth + 1)
-            if out.get(key) is None:
-                out.pop(key, None)              # a branch pruned away is left out, never kept as null
-        if not any(k in out for k in ("if", "then", "else")):
-            return None                         # no branch left: the node has no args
-        return out                              # a live branch kept (a missing if/then: logic_incomplete)
+        return _prune_conditional(node, gone, depth)
     out = dict(node)                            # an unknown op (invalid): its refs to dropped ids still go
     if isinstance(node.get("args"), list):
         out["args"] = [x for x in (prune_logic(a, gone, depth + 1) for a in node["args"]) if x is not None]
@@ -1656,6 +1831,44 @@ def prune_logic(node: Any, dropped: Iterable[str] = (), depth: int = 0) -> Any:
             else:
                 out[key] = pruned
     return out
+
+
+def _negated(node: Dict[str, Any]) -> Dict[str, Any]:
+    """not(node) -- a not's own arg when node is a not (no double negation)."""
+    if node.get("op") == "not" and isinstance(node.get("arg"), dict) and "ref" not in node:
+        return node["arg"]
+    return {"op": "not", "arg": node}
+
+
+def _prune_conditional(node: Dict[str, Any], gone: Set[str], depth: int) -> Any:
+    """v79.12.5 (item 0): a conditional's if / then / else pruned exactly as an all_of's or any_of's args -- each branch
+    pruned (a dropped element's ref removed, a branch left with one child collapsed into it, an emptied branch gone),
+    then the node collapsed or dropped, never kept with a branch missing (a branch the model left out reads the same):
+    if + then (+ else) live: the conditional, a dead else left out;
+    no then: with an else, «if not(if) then else» (the else holds where the condition fails); without, None -- a
+    condition with no consequence requires nothing (its elements then uncited: logic_incomplete, never dangling);
+    no if: the consequence can no longer be told from the alternative -- then alone is then (collapsed into it), then
+    and else are an any_of of the two (one of them, the condition unread; marked "da": "conditional", never read as
+    an all_of for want of an «o» in the text), else alone is else; nothing live, None.
+    Never a ref to a dropped element (prune_logic's rule for every node)."""
+    live = {}
+    for key in ("if", "then", "else"):
+        if node.get(key) is not None:
+            got = prune_logic(node[key], gone, depth + 1)
+            if got is not None:
+                live[key] = got
+    rest = {k: v for k, v in node.items() if k not in ("if", "then", "else", "op")}
+    if "if" in live and "then" in live:
+        return {"op": "conditional", **rest, **live}
+    if "if" in live and "else" in live:
+        return {"op": "conditional", **rest, "if": _negated(live["if"]), "then": live["else"]}
+    branches = [] if "if" in live else [live[k] for k in ("then", "else") if k in live]
+    got = None if not branches else branches[0] if len(branches) == 1 else \
+        {"op": "any_of", "args": branches, "da": "conditional"}
+    if "ref" in node:                           # a live ref on the node itself (one with both ref and op) stays cited
+        ref = {"ref": node["ref"]}
+        return ref if got is None else {"op": "all_of", "args": [ref, got]}
+    return got
 
 
 class DanglingRefError(AssertionError):
@@ -1699,7 +1912,8 @@ def _any_to_all(node: Any, by_id: Dict[str, Dict[str, Any]], ctx: _Text, scope: 
     for key in ("arg", "if", "then", "else"):
         if isinstance(node.get(key), dict):
             out[key] = _any_to_all(node[key], by_id, ctx, scope, actions, depth + 1)
-    if out.get("op") == "any_of" and len(out.get("args") or []) >= 2 and not has_alternative(_any_span(out, by_id, ctx)):
+    if out.get("op") == "any_of" and out.get("da") != "conditional" and len(out.get("args") or []) >= 2 and \
+            not has_alternative(_any_span(out, by_id, ctx)):   # v79.12.5: a conditional's then/else are alternatives
         refs: List[str] = []
         _refs(out, refs)
         out["op"] = "all_of"

@@ -144,9 +144,18 @@ def reason(sentence: str) -> str:
             "pronunce " + (f"per {', '.join(named)}" if named else "nella risposta"))
 
 
-def check(text: str, src: Dict[str, Any], log: Optional[List[Dict[str, str]]] = None) -> str:
+def _kept(sentence: str, keep: Sequence[str]) -> bool:
+    """v79.12.5 (item 10): the sentence is part of a code-written line (keep: the stage table's closed list)."""
+    s = " ".join(sentence.split()).lstrip("-•* ").strip()
+    return bool(s) and any(s in " ".join(str(k).split()) for k in keep or ())
+
+
+def check(text: str, src: Dict[str, Any], log: Optional[List[Dict[str, str]]] = None, keep: Sequence[str] = (),
+          kept_log: Optional[List[str]] = None) -> str:
     """The text without its rule statements that trace to no source; each removal logged {sentence, reason}. Table rows
-    and headings are left as they are."""
+    and headings are left as they are. v79.12.5 (item 10): a sentence of a keep line (the stage table's closed list,
+    code-written: render_computed.stage_blocks) is never removed -- the ATP and 700 lines of the claimant's pre-filing
+    list are conditions, not rule statements the record could ground; each so kept appended to kept_log."""
     from .lawyer_method import _by_sentence
     if not text:
         return text or ""
@@ -154,6 +163,10 @@ def check(text: str, src: Dict[str, Any], log: Optional[List[Dict[str, str]]] = 
     def review(sentence: str) -> str:
         s = sentence.strip()
         if s.startswith("|") or s.startswith("#") or not is_rule(s) or source_of(s, src):
+            return sentence
+        if _kept(s, keep):
+            if kept_log is not None:
+                kept_log.append(s[:300])
             return sentence
         if log is not None:
             log.append({"sentence": s[:300], "reason": reason(s)})

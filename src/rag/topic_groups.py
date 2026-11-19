@@ -584,8 +584,57 @@ def institution_match(row: Dict[str, Any], names: Sequence[str]) -> str:
     return ""
 
 
+# v79.12.5 (item 10): what the scope gate admits by default -- the general clauses of obligations and torts and the
+# stage table's procedure articles (data/stage_procedure.json, its lines and «store»): kept, never widening the case's
+# units; what the gate still drops is counted (code_articles_out_of_scope)
+GENERAL_CLAUSES = ("1175 c.c.", "1176 c.c.", "1218 c.c.", "1223 c.c.", "2043 c.c.", "2056 c.c.")
+GENERAL_CLAUSE_WHY = "clausola generale"
+STAGE_PROCEDURE_WHY = "articolo processuale della tabella delle fasi"
+_ARTICLE_CITE_RE = re.compile(r"\bartt?\.\s*(\d+(?:-[a-z]+)?(?:\s*(?:,|e|ed)\s*\d+(?:-[a-z]+)?)*)(?:\s*,\s*co\.\s*\d+\s*,?)?"
+                              r"\s+(c\.p\.c\.|c\.p\.p\.|c\.c\.|c\.p\.)", re.IGNORECASE)
+
+
+def _labels_in(text: str) -> List[str]:
+    """«art. 696 c.p.c.», «artt. 1168 e 1170 c.c.» -> their labels (the gate's: _label of (number, topic_step._code))."""
+    out: List[str] = []
+    for m in _ARTICLE_CITE_RE.finditer(text or ""):
+        for number in re.findall(r"\d+(?:-[a-z]+)?", m.group(1)):
+            label = _label((number, topic_step._code(m.group(2))))
+            if label not in out:
+                out.append(label)
+    return out
+
+
+def stage_procedure_articles() -> List[str]:
+    """v79.12.5 (item 10): every article the stage table (render_computed.stage_list) names -- its blocks' «store» and
+    the citations in their lines, every family, stage and role."""
+    from .render_computed import stage_list
+    out: List[str] = []
+    for stages in stage_list().values():
+        if not isinstance(stages, dict):
+            continue
+        for blocks in stages.values():
+            for b in blocks if isinstance(blocks, list) else []:
+                for label in [str(x) for x in b.get("store") or []] + [y for line in b.get("lines") or []
+                                                                       for y in _labels_in(str(line))]:
+                    n, _, code = label.partition(" ")
+                    label = _label((n, topic_step._code(code)))
+                    if label not in out:
+                        out.append(label)
+    return out
+
+
+def default_admitted() -> Dict[str, str]:
+    """v79.12.5 (item 10): {label: why} the scope gate admits by default (GENERAL_CLAUSES, stage_procedure_articles)."""
+    out = {_label((x.split()[0], topic_step._code(x.split()[1]))): GENERAL_CLAUSE_WHY for x in GENERAL_CLAUSES}
+    for label in stage_procedure_articles():
+        out.setdefault(label, STAGE_PROCEDURE_WHY)
+    return out
+
+
 def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str], keep: Sequence[str] = (),
-                    pass_only: Sequence[str] = (), log: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+                    pass_only: Sequence[str] = (), log: Optional[Dict[str, Any]] = None,
+                    defaults: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """v79.12.1: the rows without the code articles of a Titolo / Capo (code_unit) outside the case's institutions. The
     case's units: those of the rows in scope -- an institution match (institution_match on the first read's names and
     rubricated names), a first-read whole-name hit (never a keyword hit: keyword_hit), an article in keep (the user's,
@@ -595,7 +644,8 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
     a keyword hit, never scope: «Riduzione delle ipoteche», «Porto abusivo di armi»). A row outside them stays only in scope itself or in pass_only (the rules'
     and tables' anchors: kept, never widening the scope). No first-read institution: off, nothing dropped (log «off»).
     log: «units» (the case's), «dropped» ({article, unit, hit}), «kept_by» ({article: why} for a row kept outside the
-    units)."""
+    units). v79.12.5 (item 10): defaults ({label: why}, default_admitted's when None) kept like pass_only -- logged
+    «admitted_default»."""
     from .posture import _stems
     log = log if log is not None else {}
     names = [str(n) for n in institutions or [] if str(n or "").strip()]
@@ -603,6 +653,8 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
         log["off"] = "nessun istituto dalla prima lettura"
         return list(rows or [])
     keep_set, passing = set(keep or ()), set(pass_only or ())
+    defaults = default_admitted() if defaults is None else dict(defaults)
+    by_default: Dict[str, str] = {}
 
     def in_scope(r: Dict[str, Any]) -> str:
         ref = _ref(r)
@@ -635,6 +687,8 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
             out.append(r)
             continue
         why = reasons[id(r)] or ("ancora di una regola" if _label(ref) in passing else "")
+        if not why and defaults.get(_label(ref)):           # v79.12.5 (item 10): a general clause, a stage article
+            why = by_default[_label(ref)] = defaults[_label(ref)]
         if why:
             kept_by[_label(ref)] = why
             out.append(r)
@@ -642,7 +696,7 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
         hit = ("prima lettura, per parola" if r.get("_first_read") else
                "più segnali" if r.get("_multi_signal") else "recupero")
         dropped.setdefault(_label(ref), {"article": _label(ref), "unit": unit, "hit": hit})
-    log.update(units=sorted(units), dropped=list(dropped.values()), kept_by=kept_by)
+    log.update(units=sorted(units), dropped=list(dropped.values()), kept_by=kept_by, admitted_default=by_default)
     return out
 
 

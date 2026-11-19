@@ -1,6 +1,8 @@
 {
- "_about": "v79.12.3: the element schemas' vocabulary synonyms (src/rag/element_schemas.py: normalize, canon_kind, canon_connective, canon_tipo, canon_role, canon_special). The checker maps a value the generator wrote in other words to the vocabulary's own before validating, instead of marking the schema invalid; each mapping is logged per schema (check «vocabulary_mapped», the repair's «mapped» actions) and counted by scripts/schema_show.py --recheck. Keys are matched case-, accent- and plural-insensitively (each word less its final vowel); a value with no entry stays invalid. A target must be one of the vocabulary's own values. A kind's target may be a list of rules: the first whose «if» (a regex over the element's accent-folded testo) matches, else the one without «if».",
+ "_about": "v79.12.3: the element schemas' vocabulary synonyms (src/rag/element_schemas.py: normalize, canon_kind, canon_connective, canon_tipo, canon_role, canon_special). The checker maps a value the generator wrote in other words to the vocabulary's own before validating, instead of marking the schema invalid; each mapping is logged per schema (check «vocabulary_mapped», the repair's «mapped» actions) and counted by scripts/schema_show.py --recheck. Keys are matched case-, accent- and plural-insensitively (each word less its final vowel); a value with no entry stays invalid. A target must be one of the vocabulary's own values. A kind's target may be a list of rules: the first whose «if» (a regex over the element's accent-folded testo) matches, else the one without «if». v79.12.5 (item 0): «obbligo» is a condotta, a comma speciale's «limiting» is «limite»; «ops» maps a logic op -- null is no op: the node lifted (its children in its place, several as an all_of, none: the node removed). A value no entry maps is counted by --recheck (unknown_values), so a gap shows as a count.",
  "kinds": {
+  "obbligo": "condotta",
+  "obblighi": "condotta",
   "procedural": [{"if": "querel|d'?\\s*ufficio|procedibil|si\\s+procede\\b|non\\s+si\\s+procede|autorizzazione\\s+a\\s+procedere|richiesta\\s+del\\s+ministro|istanza\\s+della\\s+persona\\s+offesa", "to": "procedibilità"}, {"to": "competenza"}],
   "processuale": [{"if": "querel|d'?\\s*ufficio|procedibil|si\\s+procede\\b|non\\s+si\\s+procede|autorizzazione\\s+a\\s+procedere|richiesta\\s+del\\s+ministro|istanza\\s+della\\s+persona\\s+offesa", "to": "procedibilità"}, {"to": "competenza"}],
   "condizione di procedibilità": "procedibilità",
@@ -92,6 +94,12 @@
   "querela": "procedibilità",
   "causa di giustificazione": "scriminante",
   "caso particolare": "caso speciale",
+  "limiting": "limite",
+  "limitazione": "limite",
   "altro": "other"
+ },
+ "ops": {
+  "other": null,
+  "altro": null
  }
 }

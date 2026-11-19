@@ -299,23 +299,22 @@ def test_an_empty_tree_is_no_logic_not_an_error():
 
 def test_a_conditional_keeps_a_live_else():
     """Review finding: a conditional whose if and then prune away but whose else holds a live ref is no node without
-    args -- kept with its else (reported logic_incomplete), the else's element still cited; a pruned branch is left
-    out, never kept as null."""
+    args -- the else's element still cited. v79.12.5 (item 0): its branches pruned exactly as args, so the node
+    collapses into its live else (no conditional left with a branch missing); a then alone, once its if is dropped,
+    is the then."""
     from src.rag import element_schemas as E
     tree = {"op": "conditional", "if": {"op": "all_of", "args": []}, "then": {"op": "all_of", "args": []},
             "else": {"ref": "E1"}}
-    assert E.prune_logic(tree) == {"op": "conditional", "else": {"ref": "E1"}}
-    assert E.prune_logic({"op": "conditional", "if": {"ref": "E1"}, "then": {"ref": "E2"}}, {"E1"}) == \
-        {"op": "conditional", "then": {"ref": "E2"}}
+    assert E.prune_logic(tree) == {"ref": "E1"}
+    assert E.prune_logic({"op": "conditional", "if": {"ref": "E1"}, "then": {"ref": "E2"}}, {"E1"}) == {"ref": "E2"}
     assert E.prune_logic({"op": "conditional", "if": {"ref": "E1"}, "else": {"ref": "E2"}}, {"E1", "E2"}) is None
     s = {"tipo": ["sanction"], "elementi": [_el("E1", "danneggia le colture altrui")], "logic": tree, "eccezioni": [],
          "commi_speciali": []}
     fixed, actions = E.repair(s, OFFENCE)
-    assert fixed["logic"] == {"op": "conditional", "else": {"ref": "E1"}}
+    assert fixed["logic"] == {"ref": "E1"}
     assert actions[-1]["why"] == "nodi vuoti o riferimenti a elementi tolti rimossi"
     checks = E.check(fixed, OFFENCE)
-    assert checks["logic_incomplete"] == ["logic: conditional senza if/then"] and E.usable({"schema": fixed,
-                                                                                           "checks": checks})
+    assert checks["logic_incomplete"] == [] and E.usable({"schema": fixed, "checks": checks})
 
 
 # --- 4. the runtime ---------------------------------------------------------------------------------------------------

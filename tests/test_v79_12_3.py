@@ -159,15 +159,20 @@ def test_connective_synonyms(raw, want):
     assert E.canon_connective(raw) == want
 
 
-def test_an_unknown_connective_or_kind_stays_invalid():
+def test_an_unknown_connective_or_kind_is_counted_not_invalid():
+    """v79.12.5 (item 0, review: «counts, not rejections»): before, an unknown connective or kind made the schema
+    invalid; now each is read as its field's neutral value (connective none, kind «other» with a kind_note naming
+    it), logged as a mapping and counted (unknown_values) -- the schema stays usable."""
     from src.rag import element_schemas as E
     assert E.canon_connective("forse") is E._UNKNOWN
     s = _hives()
     s["elementi"][0]["connective"] = "forse"
     s["elementi"][1]["kind"] = "azione"
     checks = E.check(s, HIVES)
-    assert "E1: connective 'forse' non valido" in checks["invalid"]
-    assert "E2: kind sconosciuto 'azione'" in checks["invalid"] and not E.usable({"schema": s, "checks": checks})
+    assert checks["invalid"] == [] and E.usable({"schema": s, "checks": checks})
+    assert "E1: connective 'forse' -> None" in checks["vocabulary_mapped"]
+    assert "E2: kind 'azione' -> 'other'" in checks["vocabulary_mapped"] and not checks["kind_other_unexplained"]
+    assert [(u["field"], u["value"]) for u in E.unknown_values(s)] == [("connective", "forse"), ("kind", "azione")]
 
 
 def test_the_vocabulary_file_maps_only_to_vocabulary_values_and_never_shadows_one():
@@ -327,8 +332,7 @@ def test_an_all_of_left_with_one_child_is_that_child():
     assert E.prune_logic({"op": "all_of", "args": [{"ref": "E1"}]}) == {"op": "all_of", "args": [{"ref": "E1"}]}
     cond = {"op": "conditional", "if": {"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]}, "then": {"ref": "E3"}}
     assert E.prune_logic(cond, {"E2"}) == {"op": "conditional", "if": {"ref": "E1"}, "then": {"ref": "E3"}}
-    assert E.prune_logic(cond, {"E3"}) == {"op": "conditional", "if": {"op": "all_of", "args": [
-        {"ref": "E1"}, {"ref": "E2"}]}}                                          # 79.12.2's rule: the live if kept
+    assert E.prune_logic(cond, {"E3"}) is None      # v79.12.5 (item 0): a condition with no consequence requires none
 
 
 def test_refs_to_a_dropped_element_go_wherever_they_stand():
@@ -791,14 +795,18 @@ def test_recheck_on_the_servers_failure_shapes(tmp_path, show):
     regen_file = tmp_path / "out" / "regen.jsonl"
     r = show.recheck(now="2026-11-19T00:00:00+00:00", regen_list=str(regen_file))
     # 807: every element dropped -- the runtime reads it on the text path, so it is not usable after (review)
-    assert (r["articles"], r["schemas"], r["usable_before"], r["usable_after"]) == (8, 7, 2, 3)
-    assert r["by_code"] == {"c.c.": {"articles": 4, "schemas": 3, "before": 2, "after": 1},
+    # v79.12.5 (item 0, review: counts, not rejections): 808's unknown kind «azione» is read as «other» and counted,
+    # so 808 is usable after (it was invalid, and on the regeneration list but for the lawyer's review)
+    assert (r["articles"], r["schemas"], r["usable_before"], r["usable_after"]) == (8, 7, 2, 4)
+    assert r["by_code"] == {"c.c.": {"articles": 4, "schemas": 3, "before": 2, "after": 2},
                             "c.p.": {"articles": 4, "schemas": 4, "before": 0, "after": 2}}
-    assert r["mapped"] == {"kind 'procedural' -> 'procedibilità'": 1, "connective 'ovvero' -> 'o'": 1}
-    assert (r["mapped_total"], r["mapped_schemas"]) == (2, 2)
+    assert r["mapped"] == {"kind 'procedural' -> 'procedibilità'": 1, "connective 'ovvero' -> 'o'": 1,
+                           "kind 'azione' -> 'other'": 1}
+    assert (r["mapped_total"], r["mapped_schemas"]) == (3, 3)
+    assert r["unknown"] == {"kind 'azione'": 1} and r["unknown_schemas"] == 1
     assert r["dropped"] == {"ungrounded": 2} and r["fixed"] == {"logic_incomplete": 2}
-    assert r["unusable_after"] == {"logic_errors": 2, "schema": 1, "invalid": 1, "no_elements": 1}
-    assert r["regen"] == {"logic_errors": 2, "schema": 1, "no_elements": 1} and r["reviewed_skipped"] == 1
+    assert r["unusable_after"] == {"logic_errors": 2, "schema": 1, "no_elements": 1}
+    assert r["regen"] == {"logic_errors": 2, "schema": 1, "no_elements": 1} and r["reviewed_skipped"] == 0
     keys = [json.loads(x) for x in regen_file.read_text(encoding="utf-8").splitlines()]
     assert [(k["article"], k["reason"]) for k in keys] == [("804", "logic_errors"), ("805", "logic_errors"),
                                                            ("806", "schema"), ("807", "no_elements")]
@@ -812,7 +820,7 @@ def test_recheck_on_the_servers_failure_shapes(tmp_path, show):
     collapsed = [a for a in after[2]["dropped"] if a["check"] == "logic_incomplete"]
     assert collapsed and collapsed[0]["why"] == "nodi vuoti o riferimenti a elementi tolti rimossi"
     again = show.recheck()
-    assert again["usable_before"] == again["usable_after"] == 3                 # a second run: nothing changes
+    assert again["usable_before"] == again["usable_after"] == 4                 # a second run: nothing changes
     assert keys[3]["detail"] == "ogni elemento tolto dal controllo"
     bulk = _load("article_cards_bulk")
     assert bulk.read_keys(str(regen_file)) == {(PENAL_DOC, "804"), (PENAL_DOC, "805"), (CIVIL_DOC, "806"),
@@ -825,10 +833,10 @@ def test_recheck_prints_before_after_per_code_mappings_and_the_regen_list(tmp_pa
     regen_file = tmp_path / "regen.jsonl"
     assert show.main(["--recheck", "--dry-run", "--regen-list", str(regen_file)]) == 0
     out = capsys.readouterr().out
-    assert "Schemi usabili: prima 2, dopo 3 (+1)." in out
-    assert "Per codice (usabili prima -> dopo, su articoli): c.c. 2 -> 1 su 4; c.p. 0 -> 2 su 4." in out
-    assert "Vocabolario mappato: 2 valori in 2 schemi:" in out and "kind 'procedural' -> 'procedibilità'" in out
-    assert "Da rigenerare ancora: 4 (logic_errors 2, no_elements 1, schema 1); 1 rivisti dall'avvocato esclusi." in out
+    assert "Schemi usabili: prima 2, dopo 4 (+2)." in out          # v79.12.5 (item 0, review): 808 counted, usable
+    assert "Per codice (usabili prima -> dopo, su articoli): c.c. 2 -> 2 su 4; c.p. 0 -> 2 su 4." in out
+    assert "Vocabolario mappato: 3 valori in 3 schemi:" in out and "kind 'procedural' -> 'procedibilità'" in out
+    assert "Da rigenerare ancora: 4 (logic_errors 2, no_elements 1, schema 1)." in out
     assert f"--only-keys {regen_file}" in out and "Nessun file scritto" in out
     assert (tmp_path / "schemas.jsonl").read_bytes() == before and len(regen_file.read_text().splitlines()) == 4
 

@@ -188,9 +188,11 @@ def test_the_output_check_finds_what_the_checks_would_have_removed():
     from src.rag import lawyer_method as M
     ctx = _compose_ctx()
     out = M.compose([("", "Testa.")], ctx, _plan(ctx, []), (), {})
-    bad = out.replace(f"**2. {M.title('fatti')}**", f"**2. {M.title('fatti')}**\n\nL'art. 2043 c.c. richiede un danno.")
+    # v79.12.5 (item 10): 2043 c.c., a general clause, is in the scope by default -- 2051 c.c. is not
+    bad = out.replace(f"**2. {M.title('fatti')}**", f"**2. {M.title('fatti')}**\n\nL'art. 2051 c.c. richiede un danno.")
     got = M.output_check(bad, ctx["output_sources"])
-    assert got["unsourced"] == ["L'art. 2043 c.c. richiede un danno."] and got["out_of_scope"] == ["2043 c.c."]
+    assert got["unsourced"] == ["L'art. 2051 c.c. richiede un danno."] and got["out_of_scope"] == ["2051 c.c."]
+    assert "2043 c.c." in ctx["output_sources"]["scope"]
 
 
 def test_the_nightly_check_reads_the_sources_from_the_state():

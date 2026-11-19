@@ -1,5 +1,5 @@
 {
- "_about": "v70: the nightly's five posture cells (scripts/nightly_sim.py) -- synthetic cases, none of the benchmark's, one per cell; «cell» is what intake must read and what the structural checks expect (lawyer_method.structure_checks). v79.6: a sixth, synthetic two-client cell (two co-defendants with different offences).",
+ "_about": "v70: the nightly's five posture cells (scripts/nightly_sim.py) -- synthetic cases, none of the benchmark's, one per cell; «cell» is what intake must read and what the structural checks expect (lawyer_method.structure_checks). v79.6: a sixth, synthetic two-client cell (two co-defendants with different offences). v79.12.5 (item 10): the two penal cells read at the indagini (their ids kept for the baseline), and a seventh, synthetic two-turn cell -- after the parere, «followup» («approfondisci il punto N») with the followup_scope check.",
  "cells": [
   {
    "id": "civile_attore_pre_filing",
@@ -27,7 +27,7 @@
     "family": "penale",
     "rito": "penale",
     "role": "imputato",
-    "stage": "primo_grado"
+    "stage": "indagini"
    },
    "text": "Tizio e Caia hanno convissuto more uxorio fino al gennaio 2025, quando si sono separati. Dopo la separazione Tizio ha più volte pedinato Caia, l'ha insultata davanti al suo posto di lavoro e in un'occasione l'ha spinta a terra. Caia ha sporto denuncia-querela e Tizio è ora imputato di maltrattamenti in famiglia (art. 572 c.p.); il processo di primo grado è iniziato. Sono il difensore di Tizio: quale strategia difensiva?"
   },
@@ -37,7 +37,7 @@
     "family": "penale",
     "rito": "penale",
     "role": "persona_offesa",
-    "stage": "pre_filing"
+    "stage": "indagini"
    },
    "text": "Il 5 maggio 2026, durante una partita di calcio amatoriale, Sempronio ha colpito Tizio con un violento calcio alla gamba mentre Tizio gli dava le spalle, procurandogli la frattura del perone; Tizio è guarito dopo tre mesi. Tizio non ha ancora presentato querela. Assisto Tizio: come può agire nei confronti di Sempronio?"
   },
@@ -64,6 +64,17 @@
     "Caio"
    ],
    "text": "Tizio e Caio sono imputati nello stesso processo: Tizio del reato di furto (art. 624 c.p.) per aver sottratto una bicicletta dal cortile di Sempronio il 4 aprile 2026; Caio del reato di ricettazione (art. 648 c.p.) per averla acquistata il giorno dopo, sapendo che era rubata. Il processo di primo grado è iniziato. Sono il difensore di Tizio e di Caio: quale strategia difensiva per ciascuno?"
+  },
+  {
+   "id": "civile_attore_followup",
+   "cell": {
+    "family": "civile",
+    "rito": "civile",
+    "role": "attore",
+    "stage": "pre_filing"
+   },
+   "text": "Il 2 settembre 2026 Tizio ha acquistato dalla ditta Alfa S.r.l. una lavatrice nuova per 800 euro. Dopo tre settimane la lavatrice smette di centrifugare e perde acqua; Tizio lo ha segnalato ad Alfa il giorno stesso, ma Alfa rifiuta la riparazione sostenendo che il guasto dipende da un uso scorretto. Assisto Tizio: quali azioni può intraprendere contro Alfa?",
+   "followup": "approfondisci il punto 1"
   }
  ]
 }

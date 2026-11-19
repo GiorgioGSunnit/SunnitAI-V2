@@ -1161,6 +1161,11 @@ def _last_use(facts: Dict[str, Any]) -> List[tuple]:
     return sorted(items, key=lambda item: item[0][1], reverse=True)[:1]
 
 
+# v79.12.5 (item 8): the consumer's guarantee actions the consumer code's terms bar -- the «consumo» module's own
+# (data/institution_modules.json), cited as the module cites them; their archive labels («135-bis Codice del Consumo
+# 2026») match through the citation table (same_code)
+CONSUMER_GUARANTEE_ACTIONS = ("135-bis d.lgs. 206/2005", "135-ter d.lgs. 206/2005")
+
 TERMS: List[Term] = [
     Term("possessoria", "azione possessoria (spoglio o turbativa)", "artt. 1168 e 1170 c.c.", _SPOGLIO, _ACTION,
          years=1, word="termine annuale", since="dallo spoglio o dalla turbativa",
@@ -1241,16 +1246,18 @@ TERMS: List[Term] = [
     Term("denuncia_conformita_consumo", "denuncia del difetto di conformità (consumatore)", "Codice del Consumo",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, months=2,
          applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
-         since="dalla scoperta del difetto", start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
+         since="dalla scoperta del difetto", start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida"),
+         bars=CONSUMER_GUARANTEE_ACTIONS, bars_kind="decadenza"),
     Term("responsabilita_conformita_consumo", "responsabilità del venditore per il difetto di conformità "
          "(consumatore)", "Codice del Consumo", _DELIVERY, _DISCOVERY + "|" + _DEFECT,
          years=2, word="manifestazione del difetto entro 2 anni", applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
          since="dalla consegna del bene", regimes_only=True, start_kinds=("consegna", "vendita"),
-         end_kinds=("scoperta vizio",)),
+         end_kinds=("scoperta vizio",), bars=CONSUMER_GUARANTEE_ACTIONS, bars_kind="decadenza"),
     Term("azione_conformita_consumo", "prescrizione dell'azione per il difetto di conformità non dolosamente "
          "occultato (consumatore)", "Codice del Consumo", _DELIVERY, _ACTION, months=26,
          applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
-         since="dalla consegna del bene", regimes_only=True, start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",)),
+         since="dalla consegna del bene", regimes_only=True, start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",),
+         bars=CONSUMER_GUARANTEE_ACTIONS, bars_kind="prescrizione"),
     Term("denuncia_difformita_appalto", "denuncia delle difformità e dei vizi dell'opera (appalto)", "art. 1667 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, days=60,
          applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta",
@@ -1272,6 +1279,19 @@ TERMS: List[Term] = [
          bars=("1669 c.c.",), bars_kind="decadenza"),
 ]
 
+def same_code(a: str, b: str) -> bool:
+    """v79.12.5 (item 8): two labels' codes are one -- the same sigla (plan_then_write._code_key), or the same
+    data/corpus_expected.json law by its archive name or its citation (corpus_laws.law_for: «Codice del Consumo 2026»
+    and «d.lgs. 206/2005»), so a term's citation bars the article the archive labels by its title."""
+    from . import corpus_laws
+    from .plan_then_write import _code_key
+    a, b = " ".join(str(a or "").split()), " ".join(str(b or "").split())
+    if _code_key(a) == _code_key(b):
+        return True
+    law = corpus_laws.law_for(a)
+    return bool(law) and corpus_laws.law_for(b) == law
+
+
 def term_bars(term_id: str) -> Tuple[Tuple[str, ...], str]:
     """v79.12.4 (item 7): (the articles the term bars once DECORSO, «prescrizione» / «decadenza») of TERMS' entry; ((),
     "") for a term that bars none (an usucapione, the querela) or an unknown id."""
@@ -1291,7 +1311,6 @@ def barring_terms(label: str, terms: Optional[List[Dict[str, Any]]]) -> List[Dic
     "firm"}]; [] for none. firm (review): the facts settle it -- an act they state ends the term late, or the term ends
     only by the client's own suit (_ACTION_END_KINDS), which it has not brought; a term run to the present with no
     denuncia or diffida stated is not firm (the case may just not mention one)."""
-    from .plan_then_write import _code_key
     number, _, code = _COMMA_TAIL_RE.sub("", str(label or "").strip()).partition(" ")
     out: List[Dict[str, Any]] = []
     for t in terms or []:
@@ -1300,7 +1319,7 @@ def barring_terms(label: str, terms: Optional[List[Dict[str, Any]]]) -> List[Dic
         arts, kind = term_bars(t.get("id"))
         for a in arts:
             n, _, c = a.partition(" ")
-            if n == number and _code_key(c) == _code_key(code.strip()):
+            if n == number and same_code(c, code.strip()):     # v79.12.5 (item 8): a citation or its title
                 term = next((x for x in TERMS if x.id == str(t.get("id"))), None)
                 firm = not t.get("to_now") or bool(term and term.end_kinds
                                                    and set(term.end_kinds) <= _ACTION_END_KINDS)

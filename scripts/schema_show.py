@@ -49,6 +49,14 @@ with its count, and what still needs regenerating by reason (an unusable line's 
 ref by what it names: ref_to_base, ref_to_eccezione, ref_unknown --; a line with no blocking check read with no
 element, every one dropped by the repair or none written: no_elements), the lawyer's reviewed labels never among them; --regen-list FILE writes those keys as JSONL ({"doc",
 "article", "label", "reason", "detail"}), for article_cards_bulk.py --schemas --only-keys FILE (with --dry-run too).
+v79.12.5 (item 0): --recheck also counts every value no vocabulary maps (element_schemas.unknown_values: by field --
+kind, connective, op, tipo, role, special_kind -- and by value), printed and logged with its count, in its result
+("unknown", "unknown_by_field", "unknown_total", "unknown_schemas") and on each --regen-list key ("unknown"), so a
+vocabulary gap shows as a count to map, never a rejection (review): normalize reads such a value as its field's
+neutral one (kind «other» with a kind_note naming it, tipo «other» with «tipo sconosciuto», role «altro», special kind
+«other», connective none, an op lifted as «other») and logs it as a mapping; a non-string value stays invalid. A conditional's branches are
+pruned like args (collapsed or dropped, never dangling), «obbligo» is a condotta, a comma speciale's «limiting» a
+«limite», a logic op «other» lifted, a missing tipo «other» with a note -- each a mapping.
 v79.12.3 (item 4): the procedibilità out of the offence (element_schemas.split_procedibilita) -- --recheck also prints
 the elements moved to the «procedibilita» block and the lines read with one (a line left with no element once its
 procedibilità is moved is no_elements); the article view shows the block; --edit stores the lawyer's schema split.
@@ -60,6 +68,7 @@ import argparse
 import glob
 import importlib.util
 import json
+import logging
 import os
 import re
 import sys
@@ -72,6 +81,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 NOTES_FILE = os.path.join("docs", "lawyer", "note_inquadramento.md")
 RUNS = os.path.join("diagnose_long_runs", "*", "cases", "*.json")
+logger = logging.getLogger("schema_show")
 FIELDS = ("tipo", "destinatario", "legittimato", "soggetto_passivo", "rapporto", "logic", "eccezioni", "conseguenza",
           "commi_speciali", "collegati")
 EDIT_KEYS = {"article", "doc", "reviewer", "date", "elementi", "elementi_patch", "add_elementi", "note", "testo_attuale",
@@ -846,7 +856,7 @@ def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] =
             out.append(text_line)
             if rec is not None:
                 last[_line_key(rec)] = {"before": False, "after": False, "actions": [], "text": False, "rec": rec,
-                                        "mappings": [], "no_elements": ""}
+                                        "mappings": [], "no_elements": "", "unknown": []}
             continue
         before = _usable_before(rec)
         text = str(rec.get("text") or "")
@@ -882,8 +892,10 @@ def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] =
         last[_line_key(rec)] = {"before": before, "after": es.usable(rec) and not no_elements,
                                 "actions": list(rec.get("dropped") or []),
                                 "text": bool(text.strip()), "rec": rec, "mappings": es.normalize(rec["schema"])[1],
-                                "no_elements": no_elements, "block": block}
+                                "no_elements": no_elements, "block": block,
+                                "unknown": es.unknown_values(rec["schema"])}     # v79.12.5 (item 0)
     dropped, fixed, unusable, mapped, regen = Counter(), Counter(), Counter(), Counter(), Counter()
+    unknown, unknown_by_field = Counter(), Counter()     # v79.12.5 (item 0): the values no vocabulary maps
     moved = 0                                   # v79.12.3: elements moved to the procedibilità block
     by_code: Dict[str, Counter] = defaultdict(Counter)
     reviewed_labels = {label for label, x in es.reviewed().items() if is_reviewed(x)}
@@ -900,6 +912,9 @@ def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] =
                 fixed[str(a.get("check"))] += 1
         for m in v["mappings"]:
             mapped[es.mapping_text(m)] += 1
+        for u in v["unknown"]:
+            unknown[es.unknown_text(u)] += 1
+            unknown_by_field[str(u.get("field"))] += 1
         if not v["after"]:
             unusable.update(es.blocking(rec)[:1] or (["no_elements"] if v["no_elements"] else []))
         c = by_code[_code_of(rec)]
@@ -915,12 +930,19 @@ def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] =
             skipped += 1                        # the lawyer's schema is read: never regenerated
             continue
         regen[reason] += 1
-        regen_keys.append({"doc": rec.get("doc") or "", "article": rec.get("article") or "", "label": label,
-                           "reason": reason, "detail": detail[:200]})
+        key = {"doc": rec.get("doc") or "", "article": rec.get("article") or "", "label": label,
+               "reason": reason, "detail": detail[:200]}
+        if v["unknown"]:                        # v79.12.5 (item 0): the line's values no vocabulary maps
+            key["unknown"] = list(dict.fromkeys(es.unknown_text(u) for u in v["unknown"]))
+        regen_keys.append(key)
     reviewed = [x for x in es.reviewed().values() if is_reviewed(x)]
     sound_before = sum(1 for x in reviewed if not es.raised(x.get("checks"), es.STRUCTURAL))
     sound_after = sum(1 for x in reviewed if not es.raised(es.current_checks(x["schema"], x.get("checks"),
                                                                              x.get("text")), es.STRUCTURAL))
+    if unknown:                                 # v79.12.5 (item 0): logged, each value with its count
+        logger.warning("schema recheck: %d values no vocabulary maps in %d schemas -- %s", sum(unknown.values()),
+                       sum(1 for v in last.values() if v["unknown"]),
+                       "; ".join(f"{k}: {n}" for k, n in sorted(unknown.items(), key=lambda kv: (-kv[1], kv[0]))))
     written = False
     if write and raw:
         with open(path + ".tmp", "w", encoding="utf-8") as fh:
@@ -940,6 +962,9 @@ def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] =
             "dropped": dict(dropped), "fixed": dict(fixed), "unusable_after": dict(unusable),
             "mapped": dict(mapped), "mapped_total": sum(mapped.values()),
             "mapped_schemas": sum(1 for v in last.values() if v["mappings"]),
+            "unknown": dict(unknown), "unknown_total": sum(unknown.values()),
+            "unknown_by_field": dict(unknown_by_field),
+            "unknown_schemas": sum(1 for v in last.values() if v["unknown"]),
             "procedibilita_moved": moved,
             "procedibilita_blocks": sum(1 for v in last.values() if v.get("block")),
             "by_code": {k: dict(v) for k, v in sorted(by_code.items(), key=lambda kv: _code_order(kv[0]))},
@@ -970,6 +995,11 @@ def recheck_lines(r: Dict[str, Any], top_mapped: int = 20) -> List[str]:
         L.append(f"  {v:>6}  {k}")
     if len(mapped) > top_mapped:
         L.append(f"  … e altre {len(mapped) - top_mapped} mappature")
+    unknown = r.get("unknown") or {}           # v79.12.5 (item 0): every one, with its count
+    L.append(f"Valori fuori vocabolario: {r.get('unknown_total', 0)} in {r.get('unknown_schemas', 0)} schemi" +
+             (f" (per campo: {_counts(r.get('unknown_by_field') or {})}):" if unknown else "."))
+    for k, v in sorted(unknown.items(), key=lambda kv: (-kv[1], kv[0])):
+        L.append(f"  {v:>6}  {k}")
     L.append(f"Procedibilità: {r.get('procedibilita_moved', 0)} elementi spostati nel blocco, "
              f"{r.get('procedibilita_blocks', 0)} schemi con il blocco.")
     L += [f"Inutilizzabili dopo, per controllo: {_counts(r['unusable_after'])}.",

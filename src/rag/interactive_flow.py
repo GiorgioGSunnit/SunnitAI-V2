@@ -1001,7 +1001,9 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
         # anchors' included, and the area gate's «altri profili» rows (family_gate)
         fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides),
-               "modules_active": dict(fam_ctx.get("modules_active") or {})}        # v79.12.1: each with its signal
+               "modules_active": dict(fam_ctx.get("modules_active") or {}),        # v79.12.1: each with its signal
+               # v79.12.5 (item 10): the counterparty's qualification -- professional, and the word that made it
+               "professional": bool(fam_ctx.get("professional")), "qualifier": str(fam_ctx.get("qualifier") or "")}
         if special_overrides:
             _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
         # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
@@ -6070,6 +6072,16 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
                 answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
+        # v79.12.5 (item 2): the answers kept in ten sections with no admitted claim, and §1's corpus line
+        composed = [c for _, c, _ in method_clients] if method_clients else [method_ctx]
+        counters = state.setdefault("block_counters", {})
+        counters["no_claim_sections"] = sum(1 for c in composed if c.get("no_claim_sections"))
+        counters["corpus_line"] = sum(1 for c in composed if c.get("corpus_line"))
+        # v79.12.5 (item 10): §8's closed-list sentences (the ATP, the 700 lines) kept from the rule check
+        counters["closed_list_kept"] = sum(int(c.get("closed_list_kept") or 0) for c in composed)
+        # v79.12.5 (item 10): the written sentences compose's scope check still removed (the general clauses and the
+        # stage table's articles are in the scope by default)
+        counters["articles_out_of_scope"] = sum(int(c.get("articles_out_of_scope") or 0) for c in composed)
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
         # v79.10.6 (E1): §1's summary too, wherever a thesis text could replace the charge
         refused = [log_.get(k) for log_ in [compose_log] + list((compose_log.get("clients") or {}).values())
@@ -6110,7 +6122,11 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         draft += "\n\n" + closing
     # v79.10.5 (E3): the ledger and the final text agree -- every sentence logged as removed is absent (settled)
     draft = _isolated("ledger_settle", lambda: ledger_settled(state, draft), draft) or draft
+    # v79.12.5 (item 8): never a document title in the text -- each mapped special law's in its legal citation; after
+    # the settle, which reads the ledger's sentences as they were written
+    draft = _isolated("law_titles", lambda: law_titles_cited(state, draft, documents), draft) or draft
     _isolated("names_counted", lambda: names_counted(state, draft))         # v79.10.5 (E2): names left in passages
+    _isolated("text_counted", lambda: text_counted(state, draft))           # v79.12.5 (items 8, 9)
     for n in numbers:
         state.setdefault("answers", {})[str(n)] = {"version": state.get("version"), "chars": len(draft)}
     mark("citations")
@@ -6368,7 +6384,9 @@ def ledger_settled(state: Dict[str, Any], draft: str) -> str:
     code's own text) is «kept», never «removed». v79.10.6 (E3): a copy outside the removal's scope (another section for
     the one check's per-section rules, another client's block, the sentence a repetition repeated) is no presence
     (answer_ledger.misplaced): never struck, never relabelled -- the entry stays «removed». The counters ledger_struck, ledger_kept and ledger_removed_present (what is still there after it:
-    must be 0, the nightly's ledger_removed_absent); logged (ledger_settle)."""
+    must be 0, the nightly's ledger_removed_absent); logged (ledger_settle). v79.12.5 (item 9): ledger_kept_contained
+    and ledger_kept_code (why each kept one stays), ledger_settle_failed (entries the settle could not read: 0), each
+    set only when not 0; a settle that raises leaves the counts computed on the text as it is, never stale."""
     from . import answer_ledger
     ledger = state.get("ledger")
     entries = (ledger or {}).get("entries") or []
@@ -6377,8 +6395,12 @@ def ledger_settled(state: Dict[str, Any], draft: str) -> str:
         counters.update({"ledger_struck": 0, "ledger_kept": 0, "ledger_removed_present": 0})
         return draft
     code = ((state.get("output_sources") or {}).get("code") or [])
-    removed = [e for e in entries if e.get("kind") == "removed"]
-    out, report = answer_ledger.settle(draft, entries, code)
+    removed = [e for e in entries if isinstance(e, dict) and e.get("kind") == "removed"]
+    try:
+        out, report = answer_ledger.settle(draft, entries, code)
+    except Exception as exc:            # noqa: BLE001 -- v79.12.5 (item 9): never a stale count over an unsettled text
+        _log("step_failed", {"step": "ledger_settle", "error": f"{type(exc).__name__}: {exc}"[:500]})
+        out, report = draft, {"struck": [], "kept": [], "present": [], "failed": ["*"]}
     by_step = dict(ledger.get("removed_by_step") or {})
     for e in removed:
         if e.get("kind") == "kept" and by_step.get(e.get("step")):
@@ -6387,9 +6409,66 @@ def ledger_settled(state: Dict[str, Any], draft: str) -> str:
     counters["ledger_struck"] = len(report["struck"])
     counters["ledger_kept"] = len(report["kept"])
     counters["ledger_removed_present"] = len(answer_ledger.removed_present(out, entries))
-    if report["present"]:
+    # v79.12.5 (item 9): why each kept one stays («contained»: part of a longer sentence or a heading; «code»), and
+    # the entries the settle could not read (must be 0)
+    kept_why: Dict[str, int] = {}
+    for e in entries:
+        if isinstance(e, dict) and e.get("kind") == "kept" and e.get("was") == "removed":
+            kept_why[str(e.get("kept_why") or "")] = kept_why.get(str(e.get("kept_why") or ""), 0) + 1
+    for key, n in (("ledger_kept_contained", kept_why.get("contained", 0)), ("ledger_kept_code", kept_why.get("code", 0)),
+                   ("ledger_settle_failed", len(report.get("failed") or []))):
+        if n:                           # set only when there is one (0 is their state, and the table's absence)
+            counters[key] = n
+    if report["present"] or report.get("failed"):
         _log("ledger_settle", {**report, "removed_present": counters["ledger_removed_present"]})
     return out
+
+
+def law_titles_cited(state: Dict[str, Any], draft: str, documents: Sequence[Dict[str, Any]] = ()) -> str:
+    """v79.12.5 (item 8): the answer with every special law's document title in its legal citation
+    (corpus_laws.cite_titles: data/corpus_expected.json's archive names -- «Testo Unico sugli Stupefacenti 2026» ->
+    «d.P.R. 309/1990», «Riforma del Lavoro Fornero 2026» -> «L. 92/2012»); the counters law_titles_cited (the titles
+    replaced) and law_titles_left (an answer document's name still printed, a code's aside -- a title no entry maps:
+    must be 0, else a mapping to add); logged."""
+    from . import corpus_laws
+    from .defensive_generation import _CODE_PREFIXES
+    log: List[Dict[str, str]] = []
+    out = corpus_laws.cite_titles(draft, log)
+    left = []
+    for d in documents or []:
+        name = " ".join(str((d or {}).get("name") or "").split())
+        if not name or any(name.lower().startswith(p.lower()) for p in _CODE_PREFIXES.values()) \
+                or name.lower().startswith("costituzione"):
+            continue
+        # review: the title with or without its year, in any case -- the forms a writer prints
+        if any(re.search(r"(?<!\w)" + r"\s+".join(re.escape(w) for w in form.split()) + r"(?!\w)", out, re.IGNORECASE)
+               for form in corpus_laws.title_forms(name)):
+            left.append(name)
+    counters = state.setdefault("block_counters", {})
+    counters["law_titles_cited"] = len(log)
+    counters["law_titles_left"] = len(dict.fromkeys(left))
+    if log or left:
+        _log("law_titles", {"cited": log[:20], "left": list(dict.fromkeys(left))[:10]})
+    return out
+
+
+# v79.12.5 (item 8): «v. punto 3», «(v. punti 2 e 4)» -- a reference to another point of the answer
+_SEE_POINT_RE = re.compile(r"\bv\.\s*punt[oi]\s+\d+", re.IGNORECASE)
+_TO_VERIFY_RE = re.compile(r"\bda\s+verificare\b", re.IGNORECASE)
+_DATE_ND = "(data n.d.)"
+
+
+def text_counted(state: Dict[str, Any], draft: str) -> None:
+    """v79.12.5 (item 8): the counters see_point (the «v. punto N» references) and to_verify (the «da verificare») per
+    answer; (item 9) rulings_printed (the rulings' estremi printed) and rulings_date_nd (those printed «data n.d.»),
+    so the nightly reads «data n.d.» against the rulings printed, never alone."""
+    from . import rulings
+    counters = state.setdefault("block_counters", {})
+    counters["see_point"] = len(_SEE_POINT_RE.findall(draft or ""))
+    counters["to_verify"] = len(_TO_VERIFY_RE.findall(draft or ""))
+    printed = rulings.estremi_printed(draft or "")
+    counters["rulings_printed"] = len(printed)
+    counters["rulings_date_nd"] = sum(1 for x in printed if x.endswith(_DATE_ND))
 
 
 def names_counted(state: Dict[str, Any], draft: str) -> None:
@@ -8767,6 +8846,7 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # v79.10.2 (B1): the client read as resisting a demand (its role the defending one, never the claimant); the
     # answer's posture sets it (block_counters), else the intake's
     out["role_resisting"] = int(bool((state.get("intake") or {}).get("resisting")))
+    out.update(role_counters(state.get("intake") or {}))                                           # v79.12.5 (item 6)
     for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed",       # v79.9 (A3)
               "candidates_out_of_family", "candidates_family_dropped",                             # v79.9 (C2)
               "requalify_event_mismatch", "requalify_refused_event"):                              # v79.10.3 (C2)
@@ -8779,7 +8859,15 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # case's institutions kept from grading (topic_groups.code_scope_gate)
     out["modules_active"] = dict(fam.get("modules_active") or {})
     out["code_articles_out_of_scope"] = len((state.get("code_scope") or {}).get("dropped") or [])
+    # v79.12.5 (item 10): the general clauses and the stage table's procedure articles the gate kept by default
+    out["code_articles_admitted_default"] = len((state.get("code_scope") or {}).get("admitted_default") or {})
     out["family_gate_dropped"] = len(fam.get("dropped") or [])
+    # v79.12.5 (item 10): the counterparty professional (by a qualifier word anywhere in the case), and the consumer
+    # code's sale block (128-135) kept out of a case that is no sale
+    from . import lawyer_method as _lm
+    out["counterparty_professional"] = int(bool(fam.get("professional")))
+    out["counterparty_by_qualifier"] = int(bool(fam.get("qualifier")))
+    out["consumer_sale_block_out"] = sum(1 for x in fam.get("dropped") or [] if x.get("why") == _lm.CONSUMER_SALE_ONLY)
     out["family_admitted_outside_codes"] = len(fam.get("admitted") or [])
     out["family_overrides"] = len(fam.get("overrides") or [])                                       # v79.10 (A5)
     shadow_run = fam.get("shadow_grading") or {}            # (review) the shadow grading's own cost, never the pipeline's
@@ -8795,6 +8883,18 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out["questions_extracted"] = len(asked_questions(state))                                        # v79.10.2 (B2)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out
+
+
+def role_counters(got: Dict[str, Any]) -> Dict[str, int]:
+    """v79.12.5 (item 6, row 54): role_threat_not_claim -- a named demanding party's «agire / citare in giudizio» read
+    as its threat (the client resisting), never the client's claim; role_unknown_on_demand -- a payment demand in the
+    text, no client named and no task deciding the side: the role left unknown (never the claimant by default). From
+    the intake's why (the rule's) or resolve's (role_why)."""
+    from . import intake
+    said = " ".join([str((got.get("why") or {}).get("role") or ""), str(got.get("role_why") or "")])
+    return {"role_threat_not_claim": int(intake.THREAT_WHY.split("»: ")[1] in said),
+            "role_unknown_on_demand": int(intake.UNKNOWN_DEMAND_WHY in said
+                                          and str(got.get("role") or "") in ("", intake.UNKNOWN))}
 
 
 def asked_questions(state: Dict[str, Any]) -> List[str]:

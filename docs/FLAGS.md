@@ -393,6 +393,25 @@ not an environment variable. The new options belong to the operator scripts:
 | `--only-keys FILE` | none | `scripts/article_cards_bulk.py --schemas` | Only these keys (the `--regen-list` JSONL, or `doc<TAB>article` lines), each made again (`asked`). A reviewed label is never made. |
 | `--regen-prompt` | off | `scripts/article_cards_bulk.py --schemas` | Also makes again the lines whose prompt alone changed (`prompt`). Without it they are kept and counted (`prompt_kept`), so a new `SCHEMA_SYSTEM` never remakes the whole file unasked. |
 
+v79.12.5 (79.12.3 item 7: standalone surnames after an article, rule «article») adds no flag either: it reads the role list from
+`data/redaction_stoplist.json` «role_nouns» (`src/rag/rulings.py:REDACTION_STOPLIST_FILE`, a fixed path), and
+`RULINGS_PARTY_NAMES=keep` still leaves every name, this one too.
+
+v79.12.5 item 0 (the element schemas' logic pruner and vocabulary) adds no flag or option: the new synonyms and the
+«ops» map are in `data/schema_vocabulary.json` (`src/rag/element_schemas.py:VOCABULARY_FILE`, a fixed path), and a
+`--regen-list` key now also carries `"unknown"` (the line's values no vocabulary maps) when it has any.
+
+v79.12.5 items 2, 6, 10 and 11 add no flag: the no-claim sections, the role rules, the counterparty's qualification
+and the consumer code's scope, the scope defaults (`src/rag/topic_groups.py:GENERAL_CLAUSES` and the stage table,
+`data/stage_procedure.json`), the closed list kept in §8 and the main-outside rule are unconditional (the method's parts
+under `LAWYER_METHOD`, as before); the nightly's two-turn cell is a «followup» key in `tests/data/nightly_cells.json`,
+and `--answers DIR` reads its second answer from `DIR/<cell id>.followup.md`.
+
+v79.12.5 items 8 and 9 add no flag: the citation table is `data/corpus_expected.json`'s archive names
+(`src/rag/corpus_laws.py:EXPECTED_FILE`, a fixed path), the 168-bis draft status stays in `data/lawyer_method.json`
+«status», and the ledger and the rulings' date fixes are unconditional (`RULINGS_RECORD` still decides whether §5
+prints rulings at all).
+
 ## 5d. v79.10 addition (addendum A5)
 
 | Name | Default | Read in | What it does |

@@ -44,6 +44,21 @@ def _norm(sentence: str) -> str:
     return " ".join(re.sub(r"[*_«»\"“”]", "", text).lower().split()).strip(" .;:")
 
 
+def _full(whole: Any) -> Dict[str, str]:
+    """v79.12.5 (item 9): {"full": the sentence whole} when SENTENCE_CHARS cut its logged text, else {} -- the log keeps
+    its 300 characters, the settle and the checks read the sentence whole."""
+    whole = " ".join(str(whole or "").split())
+    return {"full": whole} if len(whole) > SENTENCE_CHARS else {}
+
+
+def sentence_of(entry: Dict[str, Any]) -> str:
+    """v79.12.5 (item 9): an entry's sentence whole -- «full» when the log cut it, else «sentence»; "" when neither is a
+    text. Before, a sentence of more than SENTENCE_CHARS was matched by its first 300 characters only: reprinted, it
+    was found as part of a longer sentence, never struck, and left in the text as «kept» («contained»)."""
+    value = entry.get("full") or entry.get("sentence") or ""
+    return value if isinstance(value, str) else ""
+
+
 def _stems(text: str) -> set:
     return {w[:5] for w in re.findall(r"[a-zà-ü]{4,}", (text or "").lower())}
 
@@ -82,6 +97,7 @@ def tracked(text: str, numbering: Sequence[Tuple[str, str]] = (), documents: Seq
         if not arts and head:
             arts = [head]
         out.append({"start": s, "end": e, "text": " ".join(sentence.split())[:SENTENCE_CHARS], "norm": _norm(sentence),
+                    "whole": " ".join(sentence.split()),
                     "articles": [f"{a} {b}" for a, b in dict.fromkeys(arts)], "heading": f"{head[0]} {head[1]}"
                     if head else ""})
     return out
@@ -111,8 +127,8 @@ class Ledger:
         return out
 
     def _section_sentences(self, title: str, text: str) -> List[Dict[str, Any]]:
-        return [{"section": title, "text": x["text"], "norm": x["norm"], "articles": x["articles"]}
-                for x in tracked(text, self.numbering, self.documents)]
+        return [{"section": title, "text": x["text"], "norm": x["norm"], "articles": x["articles"],
+                 **_full(x["whole"])} for x in tracked(text, self.numbering, self.documents)]
 
     # -- one step ------------------------------------------------------------------------------------------------
     def record(self, step: str, before: Sequence[Tuple[str, str]], after: Sequence[Tuple[str, str]]
@@ -135,7 +151,7 @@ class Ledger:
                 if new_norms[s["norm"]]["section"] != s["section"]:
                     self.entries.append({"step": step, "kind": "moved", "section": s["section"],
                                          "to": new_norms[s["norm"]]["section"], "sentence": s["text"],
-                                         "articles": s["articles"]})
+                                         "articles": s["articles"], **_full(s.get("full"))})
                 continue
             mine = _stems(s["norm"])
             best, share = None, 0.0
@@ -151,14 +167,16 @@ class Ledger:
                 used.add(best)
                 rewrites[s["norm"]] = fresh[best]["norm"]
                 self.entries.append({"step": step, "kind": "rewritten", "section": s["section"], "sentence": s["text"],
-                                     "now": fresh[best]["text"], "articles": s["articles"]})
+                                     "now": fresh[best]["text"], "articles": s["articles"], **_full(s.get("full")),
+                                     **({"now_full": fresh[best]["full"]} if fresh[best].get("full") else {})})
             elif defer:
                 gone.append(s)
                 self.entries.append({"step": step, "kind": "proposed", "section": s["section"], "sentence": s["text"],
-                                     "articles": s["articles"]})
+                                     "articles": s["articles"], **_full(s.get("full"))})
             else:
                 self.entries.append({"step": step, "kind": "removed", "section": s["section"], "sentence": s["text"],
-                                     "articles": s["articles"], "reason": WRITING_STEPS.get(step, step)})
+                                     "articles": s["articles"], "reason": WRITING_STEPS.get(step, step),
+                                     **_full(s.get("full"))})
         if not gone:
             return list(after)
         return restore(before, after, gone, rewrites)
@@ -168,14 +186,15 @@ class Ledger:
         """A removal of the one check (record_check), with its reason."""
         self.entries.append({"step": CHECK_STEP, "kind": "removed", "section": section,
                              "sentence": " ".join(sentence.split())[:SENTENCE_CHARS], "articles": list(articles),
-                             "reason": reason, "rule": rule, "proposed_by": list(proposed_by)})
+                             "reason": reason, "rule": rule, "proposed_by": list(proposed_by),
+                             **_full(" ".join(sentence.split()))})
 
     def proposals(self) -> List[Dict[str, Any]]:
         return [e for e in self.entries if e["kind"] == "proposed"]
 
     def proposed_by(self, norm: str) -> List[str]:
         return list(dict.fromkeys(e["step"] for e in self.entries if e["kind"] == "proposed"
-                                  and _norm(e["sentence"]) == norm))
+                                  and _norm(sentence_of(e)) == norm))
 
     # -- the invariant --------------------------------------------------------------------------------------------
     def unaccounted(self, final_sections: Sequence[Tuple[str, str]]) -> List[str]:
@@ -183,8 +202,9 @@ class Ledger:
         if self.baseline is None:
             return []
         final = {s["norm"] for s in self._sentences(final_sections)}
-        removed = {_norm(e["sentence"]) for e in self.entries if e["kind"] == "removed"}
-        rewritten = {_norm(e["sentence"]): _norm(e["now"]) for e in self.entries if e["kind"] == "rewritten"}
+        removed = {_norm(sentence_of(e)) for e in self.entries if e["kind"] == "removed"}
+        rewritten = {_norm(sentence_of(e)): _norm(e.get("now_full") or e["now"]) for e in self.entries
+                     if e["kind"] == "rewritten"}
         out = []
         for s in self._sentences(self.baseline):
             norm, seen = s["norm"], set()
@@ -427,8 +447,8 @@ def removed_present(answer: str, entries: Sequence[Dict[str, Any]]) -> List[Dict
     only where the removing rule says it is absent (misplaced: the one check's section, a repetition's occurrences
     after the first, the client's own text) -- a copy the rule never removed is no presence, and the entry stays
     «removed»."""
-    return [e for e in entries or [] if e.get("kind") == "removed"
-            and len(_norm(e.get("sentence") or "")) >= MIN_CHECKED and misplaced(answer or "", e)]
+    return [e for e in entries or [] if isinstance(e, dict) and e.get("kind") == "removed"
+            and len(_norm(sentence_of(e))) >= MIN_CHECKED and misplaced(answer or "", e)]
 
 
 def misplaced(text: str, entry: Dict[str, Any]) -> List[int]:
@@ -436,7 +456,7 @@ def misplaced(text: str, entry: Dict[str, Any]) -> List[int]:
     absent: inside its scope (_scope: the one check's section, the client's own text; anywhere for another step), and
     for a repetition («ripetizione») every in-scope occurrence after the first -- the first is the sentence it
     repeated, which the rule keeps."""
-    needle = _norm(entry.get("sentence") or "")
+    needle = _norm(sentence_of(entry))
     if not needle:
         return []
     hay, where = _norm_map(text or "")
@@ -453,7 +473,7 @@ def _keeps_first(text: str, entry: Dict[str, Any], first: int) -> bool:
     if entry.get("rule") != REPEAT_RULE:
         return False
     from . import repetition_guard as rg
-    sentence = entry.get("sentence") or ""
+    sentence = sentence_of(entry)
     mine = rg.stems(sentence)
     if len(mine) < rg.MIN_STEMS:
         return True
@@ -612,34 +632,46 @@ def settle(text: str, entries: List[Dict[str, Any]], code_texts: Sequence[str] =
     outside the removal's scope (another section for the one check's per-section rules, another client's own block,
     the first occurrence a repetition repeated) is never struck and never relabelled: the entry stays «removed» --
     misplaced does not count it. After it, removed_present(text, entries) is empty. The report: {"struck", "kept",
-    "present"} (the sentences)."""
+    "present"; "failed" when an entry failed} (the sentences). v79.12.5 (item 9): each entry is read whole (sentence_of: a sentence longer
+    than SENTENCE_CHARS by its «full» text, never its cut log text, which a reprint only ever «contained») and settled
+    apart -- an entry that raises is that entry's failure («failed», its «settle_error»), never the whole settle's."""
     report: Dict[str, List[str]] = {"struck": [], "kept": [], "present": []}
-    code = [_norm(x) for x in code_texts or [] if x]
+    code = [_norm(x) for x in code_texts or [] if isinstance(x, str) and x]
     for e in removed_present(text, entries):
-        if not misplaced(text, e):          # an earlier entry's strike took it
-            continue
-        needle = _norm(e.get("sentence") or "")
-        report["present"].append(str(e.get("sentence"))[:200])
-        held: List[str] = []
-        if any(needle in c for c in code):
-            why = "code"
-        else:
-            allow = _scope(e, text)
-            first = misplaced(text, {**e, "rule": ""})
-            text, n, held = strike(text, e.get("sentence") or "", allow,
-                                   bool(first) and _keeps_first(text, e, first[0]))
-            if n:
-                e["struck"] = n
-            if not misplaced(text, e):
-                e["settled"] = "struck"
-                report["struck"].append(str(e.get("sentence"))[:200])
-                continue
-            why = "contained"
-        e.update({"kind": "kept", "was": "removed", "kept_why": why})
-        if held:
-            e["now"] = held[0]
-        report["kept"].append(str(e.get("sentence"))[:200])
+        try:
+            text = _settle_one(text, e, code, report)
+        except Exception as exc:        # noqa: BLE001 -- v79.12.5 (item 9): one entry never voids the whole settle
+            e["settle_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            report.setdefault("failed", []).append(str(sentence_of(e))[:200])
     return text, report
+
+
+def _settle_one(text: str, e: Dict[str, Any], code: Sequence[str], report: Dict[str, List[str]]) -> str:
+    """settle's work on one «removed» entry still present (v79.12.5: apart, so a failure is that entry's only)."""
+    if not misplaced(text, e):          # an earlier entry's strike took it
+        return text
+    sentence = sentence_of(e)
+    needle = _norm(sentence)
+    report["present"].append(sentence[:200])
+    held: List[str] = []
+    if any(needle in c for c in code):
+        why = "code"
+    else:
+        allow = _scope(e, text)
+        first = misplaced(text, {**e, "rule": ""})
+        text, n, held = strike(text, sentence, allow, bool(first) and _keeps_first(text, e, first[0]))
+        if n:
+            e["struck"] = n
+        if not misplaced(text, e):
+            e["settled"] = "struck"
+            report["struck"].append(sentence[:200])
+            return text
+        why = "contained"
+    e.update({"kind": "kept", "was": "removed", "kept_why": why})
+    if held:
+        e["now"] = held[0]
+    report["kept"].append(sentence[:200])
+    return text
 
 
 def _finds(hay: str, needle: str) -> List[int]:

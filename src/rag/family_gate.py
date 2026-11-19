@@ -182,6 +182,8 @@ def context(case: str, words: str = "", institutions: Sequence[Any] = ()) -> Dic
     return {"case": case or "", "words": words or case or "", "signals": special_laws.signals(words or case or ""),
             "module_laws": sorted({x for m in mods for x in m.get("laws") or []}),
             "modules": [m["id"] for m in mods], "professional": lawyer_method.professional_counterparty(mctx),
+            "sale": lawyer_method.sale_contract(case or ""),                   # v79.12.5 (item 10)
+            "qualifier": lawyer_method.counterparty_qualifier(mctx),           # v79.12.5 (item 10)
             "modules_active": lawyer_method.modules_active(mods),                  # v79.12.1: each with its signal
             "institutions": insts}
 
@@ -266,31 +268,37 @@ def own_number(doc: str) -> Tuple[str, str]:
     return m.group(3), year.group(0) if year else ""
 
 
-def admitted(code: Any, doc: Any, ctx: Dict[str, Any]) -> Tuple[bool, str, str]:
+def admitted(code: Any, doc: Any, ctx: Dict[str, Any], number: str = "") -> Tuple[bool, str, str]:
     """(admitted, family, by): by -- «codice», «default», the module, the signal's words, «nominata dall'utente»;
-    v79.10 (A5): «override: …» for a first-read institution naming the document (decide)."""
-    d = decide(code, doc, ctx)
+    v79.10 (A5): «override: …» for a first-read institution naming the document (decide). v79.12.5 (item 10): number,
+    the article's (the consumer code's scope)."""
+    d = decide(code, doc, ctx, number=number)
     return d["ok"], d["family"], d["by"]
 
 
-def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any]] = None,
+           number: str = "") -> Dict[str, Any]:
     """v79.10 (A5): {ok, family, by, door, signal} -- the family rules (the codes, the defaults, a module's law, a table
     law's signal); a document they refuse admitted through an override door: the user naming the law («utente», by
     «nominata dall'utente» as in v79.9 -- which also wins the by when the rules admit it, then no override), a first-read
     institution naming it («istituto»: ctx["institutions"]), the row a first-read whole-name hit («nome intero»: row).
-    door "" when the family rules admitted it (or nothing did)."""
+    door "" when the family rules admitted it (or nothing did). v79.12.5 (item 10): number (else the row's) -- the
+    consumer code's sale block outside a sale is no default (its «why»: consumer_scope's)."""
     family, law = classify(code, doc)
+    if not number and row is not None and row.get("_article"):
+        number = str(row["_article"][0])
     out = {"ok": True, "family": family, "by": CODE, "door": "", "signal": ""}
     if family == CODE:
         return out
     is_table = bool(law) and law not in (corpus_expected_laws())
     law_id, exp_law, text = (law if is_table else ""), ("" if is_table else law), _text(code, doc)
-    rule = _family_rule(family, law, is_table, ctx)
+    rule = _family_rule(family, law, is_table, ctx, number)
     said = naming(ctx.get("case") or "", law_id, exp_law, text)
     if said:
         return {**out, "by": "nominata dall'utente", "door": "" if rule else DOOR_USER, "signal": "" if rule else said}
     if rule:
         return {**out, "by": rule}
+    scope = _consumer_scope(family, number, ctx) if ctx.get("professional") else ""
     for inst in ctx.get("institutions") or []:
         got = naming(str(inst), law_id, exp_law, text, aliases=True)
         if got:
@@ -301,14 +309,24 @@ def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any
         if not topic_groups.keyword_hit(row):
             signal = f"«{row['_first_read']}»"
             return {**out, "by": OVERRIDE + signal, "door": DOOR_WHOLE_NAME, "signal": signal}
-    return {**out, "ok": False, "by": ""}
+    return {**out, "ok": False, "by": "", **({"why": scope} if scope else {})}
 
 
-def _family_rule(family: str, law: str, is_table: bool, ctx: Dict[str, Any]) -> str:
+def _consumer_scope(family: str, number: str, ctx: Dict[str, Any]) -> str:
+    """v79.12.5 (item 10): why a consumer-code article is out of the default family's scope (lawyer_method.consumer_scope:
+    the sale block only for a sale), "" otherwise."""
+    if family != "consumo" or not number:
+        return ""
+    from . import lawyer_method
+    return lawyer_method.consumer_scope(number, bool(ctx.get("sale", True)))
+
+
+def _family_rule(family: str, law: str, is_table: bool, ctx: Dict[str, Any], number: str = "") -> str:
     """The family rule admitting the document (its by), "" when none: a default family (consumo with a professional
-    counterparty), an active module's law, a table law's signal or its number/year among the module's laws."""
+    counterparty; v79.12.5 item 10: the sale block only for a sale), an active module's law, a table law's signal or its
+    number/year among the module's laws."""
     if family in DEFAULT_FAMILIES:
-        if family == "consumo" and not ctx.get("professional"):
+        if family == "consumo" and (not ctx.get("professional") or _consumer_scope(family, number, ctx)):
             return ""
         return "default"
     if not is_table and law and law in (ctx.get("module_laws") or []):
@@ -348,7 +366,7 @@ def gate(rows: Sequence[Dict[str, Any]], ctx: Dict[str, Any], named: set, source
             kept.append(r)
             continue
         doc = str((r.get("d") or {}).get("name") or "")
-        d = decide(ref[1], doc, ctx, None if _key(ref) in named else r)
+        d = decide(ref[1], doc, ctx, None if _key(ref) in named else r, number=str(ref[0]))
         ok, family, by = d["ok"], d["family"], d["by"]
         door, signal = d["door"], d["signal"]
         if not ok and _key(ref) in named:
@@ -358,7 +376,8 @@ def gate(rows: Sequence[Dict[str, Any]], ctx: Dict[str, Any], named: set, source
             if item not in overrides:
                 overrides.append(item)
         if not ok:
-            dropped.append({"article": _label(ref), "doc": doc or str(ref[1]), "family": family, "source": source})
+            dropped.append({"article": _label(ref), "doc": doc or str(ref[1]), "family": family, "source": source,
+                            **({"why": d["why"]} if d.get("why") else {})})      # v79.12.5 (item 10)
             continue
         if family != CODE:
             item = {"doc": doc or str(ref[1]), "family": family, "by": by}
@@ -390,7 +409,7 @@ def label_admitted(label: str, ctx: Dict[str, Any], named: Sequence[str] = ()) -
         return True, "", "articolo nominato dall'utente"
     number, _, code = str(label or "").partition(" ")
     code = _LABEL_TAIL_RE.sub("", _LABEL_HEAD_RE.sub("", code))     # «61 n. 11 c.p.», «2051 c.c. co. 2»
-    got = admitted(code, "", ctx)
+    got = admitted(code, "", ctx, number)                           # v79.12.5 (item 10): the consumer scope
     if not got[0]:                                                  # v79.10 (A5, review): the retrieval's doors
         carried = carried_override(number, code, ctx)
         if carried:

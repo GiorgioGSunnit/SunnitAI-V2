@@ -101,11 +101,12 @@ def test_a_clean_schemas_raise_nothing():
 
 
 @pytest.mark.parametrize("over,needle", [
-    ({"tipo": []}, "tipo mancante"),
-    ({"tipo": ["punitiva"]}, "tipo sconosciuto"),                  # v79.12.3: «incriminatrice» maps to «reato»
-    ({"legittimato": [{"ruolo": "il danneggiato", "condizione": None}]}, "ruolo sconosciuto"),
+    ({"tipo": {"reato": True}}, "tipo mancante"),    # v79.12.5 (item 0): an empty tipo is «other» with a note
+    # v79.12.5 (item 0, review): a word no vocabulary maps is counted, not invalid -- a non-string value still is
+    ({"tipo": [5]}, "tipo sconosciuto"),                  # v79.12.3: «incriminatrice» maps to «reato»
+    ({"legittimato": [{"ruolo": 7, "condizione": None}]}, "ruolo sconosciuto"),
     ({"collegati": "583 c.p."}, "collegati"),
-    ({"commi_speciali": [{"comma": "1", "kind": "boh", "schema": {"tipo": ["sanction"], "elementi": [],
+    ({"commi_speciali": [{"comma": "1", "kind": 3, "schema": {"tipo": ["sanction"], "elementi": [],
                                                                     "logic": None}}]}, "kind speciale"),
 ])
 def test_a_invalid_structure(over, needle):
@@ -117,7 +118,7 @@ def test_a_invalid_structure(over, needle):
 def test_a_invalid_elements_kind_ids_grounding():
     from src.rag import element_schemas as E
     s = _penal()
-    s["elementi"][0]["kind"] = "azione"
+    s["elementi"][0]["kind"] = None                    # v79.12.5 (item 0, review): «azione» is counted, not invalid
     s["elementi"][1]["id"] = "E1"                      # duplicate
     s["elementi"][2]["grounding"] = "supposto"
     s["elementi"].append(_el("", "cagiona ad alcuno una lesione personale"))
@@ -239,7 +240,7 @@ def test_a_logic_nested_trees_are_valid():
 
 
 @pytest.mark.parametrize("logic,key,needle", [
-    ({"op": "xor", "args": [{"ref": "E1"}]}, "invalid", "op sconosciuto"),
+    ({"op": 7, "args": [{"ref": "E1"}]}, "invalid", "op sconosciuto"),     # v79.12.5 (review): «xor» lifted, counted
     ({"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E9"}]}, "logic_errors",
      "ref E9 senza elemento"),
     ({"op": "all_of", "args": [{"op": "any_of", "args": [{"ref": "E1"}]}, {"ref": "E2"}, {"ref": "E3"}]},
@@ -463,7 +464,7 @@ def test_a_reviewed_stale_is_never_used(monkeypatch, tmp_path):
 def test_a_reviewed_but_structurally_broken_is_not_read(monkeypatch, tmp_path):
     from src.rag import element_schemas as E
     _on(monkeypatch)
-    _write(tmp_path / "reviewed.jsonl", [_overlay(schema=_penal(tipo=["boh"]))])
+    _write(tmp_path / "reviewed.jsonl", [_overlay(schema=_penal(tipo=[5]))])   # v79.12.5: «boh» is counted, read
     assert E.for_row(_row()) == (None, "unusable:invalid")
 
 

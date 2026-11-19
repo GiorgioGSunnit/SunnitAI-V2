@@ -20,6 +20,10 @@ mapped the same way. «number», «year» and «aliases» only read the user's o
   law_for(text)            a label's code: law_of_name, the sigla, else the law the text cites as a whole («l.
                            241/1990», «d.P.R. 309/1990»), "" when none
   status(key, names)       «present» / «NOT IN ARCHIVE» (mapped, none of its names read) / «UNMAPPED»
+  citation_of(name)        v79.12.5 (item 8): a document's legal citation -- the law (or code) whose archive names hold
+                           its name exactly («Testo Unico sugli Stupefacenti 2026» -> «d.P.R. 309/1990»), "" when none
+  cite_titles(text)        v79.12.5 (item 8): the text with every mapped document title -- its archive name, or the
+                           bracketed name without its year article_codes.law_label prints -- in its legal citation
 
 scripts/corpus_gaps.py --env .env prints, per module and for the defaults, each law -> its archive names -> its status.
 
@@ -156,6 +160,90 @@ def _law_for(text: Any) -> str:
         return ""
     return next((k for k, s in laws.items() if str(s.get("number") or "") == number
                  and str(s.get("year") or "") == year), "")
+
+
+def citation_of(name: Any) -> str:
+    """v79.12.5 (item 8): how an article of this document is cited in the text -- the corpus_expected law (or code)
+    whose archive names hold the name exactly (law_of_name: «Testo Unico sugli Stupefacenti 2026» -> «d.P.R.
+    309/1990», «Riforma del Lavoro Fornero 2026» -> «L. 92/2012», «Codice del processo amministrativo 2025» -> «c.p.a.»);
+    "" for a name no entry maps (never guessed from a number or an expression). Cached per name (the table read
+    once; issue_spotting reads it for every document it searches)."""
+    key = (id(expected()), norm(name))
+    if key not in _CITED:
+        if len(_CITED) > 4096:
+            _CITED.clear()
+        _CITED[key] = law_of_name(name)
+    return _CITED[key]
+
+
+_CITED: Dict[Tuple[int, str], str] = {}
+
+
+def cited_label(label: Any) -> str:
+    """v79.12.5 (item 8): an article label («73 Testo Unico sugli Stupefacenti 2026», «2 Codice del Consumo 2026 co.
+    1») with its document title in its legal citation («73 d.P.R. 309/1990»); unchanged when the code is no mapped
+    title."""
+    text = norm(label)
+    number, _, rest = text.partition(" ")
+    tail = re.search(r"\s+co(?:mma|\.)\s*\d+.*$", rest, re.IGNORECASE)
+    code = rest[:tail.start()] if tail else rest
+    cited = citation_of(code)
+    return f"{number} {cited}{tail.group(0) if tail else ''}" if cited else text
+
+
+_TITLES: Dict[int, List[Tuple["re.Pattern", str]]] = {}
+
+
+def _title_patterns() -> List[Tuple["re.Pattern", str]]:
+    """Every mapped archive name -- and its bracketed form without the trailing edition year («(Testo Unico sugli
+    Stupefacenti)», article_codes.law_label's) -- with its citation, longest first; any run of blanks between words."""
+    exp = expected()
+    if id(exp) not in _TITLES:
+        pairs: List[Tuple[str, str, bool]] = []
+        for table in (exp.get("laws") or {}, exp.get("codes") or {}):
+            for key in table:
+                for name in archive_names(key):
+                    pairs.append((name, key, False))
+                    bare = re.sub(r"\s+(?:Edizione\s+)?(?:19|20)\d{2}$", "", name)
+                    if bare and bare != name:
+                        pairs.append((bare, key, True))
+                        if len(bare.split()) >= 2:      # review: the title without its year, unbracketed too
+                            pairs.append((bare, key, False))
+        out = []
+        # longest first; at one length the bracketed form first (its parentheses go with it). Review fix: any case
+        # («Testo unico sugli stupefacenti 2026») -- the writer reads the archive titles and may print them so
+        for name, key, bracket in sorted(pairs, key=lambda x: (-len(x[0]), not x[2])):
+            words = r"\s+".join(re.escape(w) for w in name.split())
+            rx = rf"\(\s*{words}\s*\)" if bracket else rf"(?<![\w]){words}(?![\w])"
+            out.append((re.compile(rx, re.IGNORECASE), key))
+        _TITLES.clear()
+        _TITLES[id(exp)] = out
+    return _TITLES[id(exp)]
+
+
+def cite_titles(text: str, log: Optional[List[Dict[str, str]]] = None) -> str:
+    """v79.12.5 (item 8): the text with every mapped document title in its legal citation (_title_patterns: the
+    archive name exactly, whitespace aside, or the bracketed name without its year) -- never a document title in the
+    printed text; each replacement into log ({"title", "citation"})."""
+    out = text or ""
+    for rx, key in _title_patterns():
+        def sub(m: "re.Match", key: str = key) -> str:
+            if log is not None:
+                log.append({"title": " ".join(m.group(0).split()), "citation": key})
+            return key
+        out = rx.sub(sub, out)
+        # review: a title the text gave beside its own citation («d.lgs. 206/2005 (Codice del Consumo)») -- once
+        k = r"\s+".join(re.escape(w) for w in key.split())
+        out = re.sub(rf"(?<![\w.]){k}(?:\s*,)?\s+(?:\(\s*{k}(?![\w/])\s*\)|{k}(?![\w/]))", key, out)
+    return out
+
+
+def title_forms(name: Any) -> List[str]:
+    """v79.12.5 (item 8, review): a document title's printed forms -- the name, and the name without its trailing
+    edition year («Testo Unico sugli Stupefacenti»)."""
+    name = " ".join(str(name or "").split())
+    bare = re.sub(r"\s+(?:Edizione\s+)?(?:19|20)\d{2}$", "", name)
+    return [x for x in dict.fromkeys([name, bare]) if x and (x == name or len(x.split()) >= 2)]
 
 
 def reserved(number: str, year: str) -> bool:
