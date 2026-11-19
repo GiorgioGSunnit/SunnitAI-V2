@@ -384,6 +384,10 @@ def claim_from_read(state: Dict[str, Any], posture: Optional[Dict[str, Any]], ro
     return out
 
 
+# v79.12.4 (item 3): the decomposition's reason for a first read's hypothesis other than its main one (decompose_records)
+# -- every hypothesis is split so the charge rule can score it; one not chosen is graded, never printed (mark_sides)
+READ_CANDIDATE_WHY = "ipotesi della prima lettura"
+
 # v79.10.5 (E1): the rules that choose the charge, in their order
 CHARGE_RULES = ("user_article", "read_hypothesis", "rubrica_match")
 NO_CHARGE_RULE = "none"
@@ -446,6 +450,68 @@ def rubricated_match(state: Dict[str, Any], records: Dict[str, Dict[str, Any]]) 
     return out
 
 
+VICTIM_ROLES = ("persona_offesa", "parte_civile")         # lawyer_method.VICTIM_ROLES (no import cycle at load)
+
+
+def victim(posture: Optional[Dict[str, Any]]) -> bool:
+    """v79.12.4 (item 1): the client is the persona offesa or the parte civile."""
+    return str((posture or {}).get("role") or "") in VICTIM_ROLES
+
+
+# v79.12.4 (item 3, review): an attempt -- the offence's event, by definition, did not happen (a tentato omicidio with
+# the victim injured and alive): the event table never refuses its hypothesis
+_ATTEMPT_RE = re.compile(r"\btentat\w*|\bart(?:icolo|\.)?\s*56\b(?:\s*c\.\s*p\.)?", re.IGNORECASE)
+
+
+def attempted(hypothesis: Optional[Dict[str, Any]]) -> bool:
+    """v79.12.4 (item 3, review): the first read's hypothesis names an attempt (its claim, institutions or any word of
+    it: «tentato omicidio», «art. 56») -- the event table never refuses it (event_refuses)."""
+    words = " ".join(str(v) for v in (hypothesis or {}).values() if isinstance(v, str)) + " " + " ".join(
+        str(x) for x in (hypothesis or {}).get("institutions") or [])
+    return bool(_ATTEMPT_RE.search(words))
+
+
+def event_refuses(label: str, event: str, hypothesis: Optional[Dict[str, Any]] = None) -> bool:
+    """v79.12.4 (item 3): the certain facts' event does not fit the article (lawyer_method.event_mismatch: a death and
+    590) -- never for a hypothesis naming an attempt (attempted: injuries fit a tentato omicidio)."""
+    from . import lawyer_method
+    return not attempted(hypothesis) and lawyer_method.event_mismatch(label, event)
+
+
+def certain_event(state: Optional[Dict[str, Any]], case: str = "") -> str:
+    """v79.12.4 (item 3): the event the case's certain facts narrate (lawyer_method.event_of: «morte», «lesioni», "") --
+    the state's sentences when it has them (interactive_flow.certain_event), else the case's own stated as accertato."""
+    from . import interactive_flow, lawyer_method
+    if (state or {}).get("sentences"):
+        return interactive_flow.certain_event(state)
+    return lawyer_method.event_of(lawyer_method.certain_text({"case": case or ""}))
+
+
+def max_pena(label: str, rows: Sequence[Dict[str, Any]]) -> Optional[float]:
+    """v79.12.4 (item 3): the article's maximum pena in years from the procedural store (lawyer_method.charge_pena and
+    pena_of) -- inf for the ergastolo, None when the store states none (another code's article, no row, no pena)."""
+    from . import lawyer_method
+    text, _ = lawyer_method.charge_pena(label, rows or [])
+    if not text:
+        return None
+    p = lawyer_method.pena_of(text)
+    if not p.get("known"):
+        return None
+    return float("inf") if p.get("ergastolo") else float(p.get("high") or 0.0)
+
+
+def heaviest(labels: Sequence[str], rows: Sequence[Dict[str, Any]]) -> str:
+    """v79.12.4 (item 3): among several charged articles the one with the highest maximum pena from the store -- never
+    the list's order; an article whose pena the store does not state ranks below every known one; ties, and none
+    known, keep the given order. "" for no label."""
+    labels = [x for x in dict.fromkeys(labels or []) if x]
+    if not labels:
+        return ""
+    ranked = sorted(enumerate(labels), key=lambda x: (-(max_pena(x[1], rows) if max_pena(x[1], rows) is not None
+                                                       else float("-inf")), x[0]))
+    return ranked[0][1]
+
+
 def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], records: Dict[str, Dict[str, Any]],
                   case: str, rows: Sequence[Dict[str, Any]] = (), user: Sequence[str] = (),
                   repealed: Sequence[str] = (), read_log: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -462,12 +528,27 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
                        rubricated (rubricated_match);
       none             else nothing.
     order: the charge first, then the other charged articles (the user's, the chosen hypothesis's, those named by
-    rubrica). Logged (charge_rule) and kept in state["charge"] {article, rule}; the counter charge_rule."""
+    rubrica). Logged (charge_rule) and kept in state["charge"] {article, rule}; the counter charge_rule.
+    v79.12.4: (item 1) the persona offesa's or the parte civile's charge is the querela's offence and only it -- a civil
+    article the charge or claim sentences name (2043 c.c. …) is a remedy under it («remedies»), never the charge, and
+    every rule reads penal articles only; (item 3) a first read's hypothesis (and a rubrica match) whose offence the
+    certain facts' event does not fit (lawyer_method.event_mismatch: a death and 590) is never the charge
+    («event_refused»); among the charged articles the one with the highest maximum pena from the store («exposure»:
+    heaviest) sets the exposure and the riti, never the order. Counters charge_event_mismatch (must be 0 off the
+    user's article), charge_event_refused, charge_victim_remedies."""
     from . import issue_records
     repealed = set(repealed or [])
     records = records or {}
+    is_victim = victim(posture)
     user = [x for x in dict.fromkeys(user or []) if x not in repealed]
     by_name = [x for x in charged_by_name(case, records, rows) if x not in repealed]
+    remedies: List[str] = []
+    if is_victim:               # v79.12.4 (item 1): the querela's offence only -- a civil article is its remedy
+        remedies = [x for x in dict.fromkeys(user + by_name) if not penal_article(x)]
+        user = [x for x in user if penal_article(x)]
+        by_name = [x for x in by_name if penal_article(x)]
+    event = certain_event(state, case)
+    refused: List[str] = []
     scores: Dict[str, List[int]] = {}
     article, rule, extra = "", NO_CHARGE_RULE, []
     if user or by_name:
@@ -479,30 +560,54 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
             rec = records.get(label)
             if label in repealed or not rec or not issue_records.counted(label, str(rec.get("rubrica") or "")):
                 continue
+            if is_victim and not penal_article(label):
+                continue
+            if event_refuses(label, event, h):          # v79.12.4 (item 3): never 590 where the victim died
+                refused.append(label)
+                continue
             proved, excluded, total = element_score(rec)
             scores[label] = [proved, excluded, total]
             key = (-proved, excluded, 0 if total else 1, _LINE_RANK.get(str(h.get("line") or ""), 3), label)
             if best is None or key < best[0]:
-                best = (key, label, [x for x in labels if x in records and x not in repealed])
+                best = (key, label, [x for x in labels if x in records and x not in repealed
+                                     and not event_refuses(x, event, h)
+                                     and (not is_victim or penal_article(x))], h)
+    chosen_h: Optional[Dict[str, Any]] = None
     if not article and best is not None:
-        article, rule, extra = best[1], "read_hypothesis", best[2]
+        article, rule, extra, chosen_h = best[1], "read_hypothesis", best[2], best[3]
     if not article:
         named = [x for x in rubricated_match(state, records) if x not in repealed
                             and issue_records.counted(x, str(records[x].get("rubrica") or ""))
-                            and (str((posture or {}).get("family") or "") != "penale" or penal_article(x))]
+                            and (str((posture or {}).get("family") or "") != "penale" or penal_article(x))
+                            and (not is_victim or penal_article(x))]
+        attempt = {"case": case} if _ATTEMPT_RE.search(case or "") else None    # (review) a stated attempt
+        refused += [x for x in named if event_refuses(x, event, attempt) and x not in refused]
+        named = [x for x in named if not event_refuses(x, event, attempt)]
         if named:
-            article, rule, extra = named[0], "rubrica_match", named
+            article, rule, extra, chosen_h = named[0], "rubrica_match", named, attempt
     order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))
+    # v79.12.4 (item 3): the heaviest charged fattispecie -- (review) never a circumstance (583 c.p., counted False),
+    # the same filter main_threat and charge_rites read
+    exposure = heaviest([x for x in order if x in records
+                         and issue_records.counted(x, str(records[x].get("rubrica") or ""))], rows) or article
     out = {"article": article, "rule": rule, "order": order, "scores": scores, "by_name": by_name,
-           "from_read": list(dict.fromkeys([article] + extra)) if rule == "read_hypothesis" else []}
+           "from_read": list(dict.fromkeys([article] + extra)) if rule == "read_hypothesis" else [],
+           "exposure": exposure, "event": event, "event_refused": refused, "remedies": remedies}
     if isinstance(state, dict):
-        state["charge"] = {"article": article, "rule": rule}
+        state["charge"] = {"article": article, "rule": rule,             # v79.12.4 (item 3): a heavier charged one
+                           **({"exposure": exposure} if exposure and exposure != article else {})}
         counters = state.setdefault("block_counters", {})
         if not (state.get("client_scope") or {}).get("others") or "charge_rule" not in counters:
             counters["charge_rule"] = rule
+            # v79.12.4 (item 3): a chosen charge the certain facts' event does not fit (the user's own article only can
+            # be one) and the read's hypotheses refused for it; (item 1) the victim's civil articles kept as remedies
+            counters["charge_event_mismatch"] = int(event_refuses(article, event, chosen_h))
+            counters["charge_event_refused"] = len(refused)
+            counters["charge_victim_remedies"] = len(remedies)
     from . import interactive_flow
     interactive_flow._log("charge_rule", {"article": article, "rule": rule, "order": order, "scores": scores,
-                                          "user": user, "by_name": by_name,
+                                          "user": user, "by_name": by_name, "exposure": exposure, "event": event,
+                                          "event_refused": refused, "remedies": remedies,
                                           "client": (state.get("client_scope") or {}).get("name", "")
                                           if isinstance(state, dict) else ""})
     return out
@@ -511,8 +616,12 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
 def penal_article(label: str) -> bool:
     """v79 (C4): an article a criminal charge can be -- the c.p.'s, or a special law's (data/special_laws.json)."""
     from . import special_laws
-    code = str(label or "").partition(" ")[2]
+    # v79.12.4 (item 1, review): a comma label («582 c.p. co. 2», a special comma's record) is its article's code
+    code = _COMMA_TAIL_RE.sub("", str(label or "").strip()).partition(" ")[2].strip()
     return code == "c.p." or bool(special_laws.law_of(code))
+
+
+_COMMA_TAIL_RE = re.compile(r"\s+co(?:mma|\.)\s*\d+.*$", re.IGNORECASE)        # lawyer_method._COMMA_TAIL_RE
 
 
 def _stems(text: str) -> set:
@@ -632,11 +741,20 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
         own = (label in alt or alternative_record(rec, alternatives)) and label != first
         for key, value in (("charged", order.index(label) + 1 if label in charged else 0), ("alternative", own),
                            ("alternative_facts", alt_facts.get(label, "") if own else ""),     # v65: the read's verdict
-                           ("charge_hypothesis", hypothesis and label in charged)):            # v79 (C4)
+                           ("charge_hypothesis", hypothesis and label in charged),             # v79 (C4)
+                           # v79.12.4 (item 3): the charged article with the highest maximum pena -- main_threat's
+                           ("exposure", label in charged and label == choice.get("exposure") and len(charged) > 1),
+                           # v79.12.4 (item 1): the victim's civil article, a remedy under the querela's offence
+                           ("remedy_of", choice["article"] if label in (choice.get("remedies") or []) else "")):
             if value:
                 rec[key] = value
             else:
                 rec.pop(key, None)
+        if rec.get("decomposed_for") == READ_CANDIDATE_WHY:    # v79.12.4 (item 3): a hypothesis not chosen is graded,
+            if label in charged:                               # never printed
+                rec.pop("unprinted", None)
+            else:
+                rec["unprinted"] = True
         why = ""
         if label in named:                  # v65: the user's own words decide -- invoked by the client, or used against it
             why = f"usata contro il cliente («{named[label].get('verb')}»)" if named[label]["use"] == "threat" else ""
@@ -651,6 +769,14 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
         else:
             rec["side"] = "weapon"
             rec.pop("side_why", None)
+    # v79.12.4 (item 3): every charged article decomposed -- the charge's articles with no record split into elements
+    # (must be 0; the record's absence logged as charge_unmarked too)
+    from . import issue_records as issue_records_
+    undecomposed = [x for x in order if x not in records or not issue_records_.decomposed(records[x])]
+    if isinstance(state, dict):
+        counters_ = state.setdefault("block_counters", {})
+        if not (scope and scope.get("others")) or "charged_undecomposed" not in counters_:
+            counters_["charged_undecomposed"] = len(undecomposed)
     out = {"role": role, "charged": order, "alternatives": sorted(x for x, r in records.items()
                                                                             if r.get("alternative")),
            "threats": threats, "charge_from": {"intake": from_intake, "case": from_case,       # v73
@@ -658,6 +784,9 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
                                                **({"hypothesis": True} if hypothesis else {}),    # v79
                                                **({"aliases": aliases} if aliases else {})},
            "charge_unmarked": [x for x in from_intake + from_case if x not in records],
+           "charged_undecomposed": undecomposed, "exposure": choice.get("exposure") or "",        # v79.12.4 (item 3)
+           "event_refused": list(choice.get("event_refused") or []),
+           "remedies": list(choice.get("remedies") or []),                                       # v79.12.4 (item 1)
            "charge_rule": {k: choice.get(k) for k in ("article", "rule", "scores")}}               # v79.10.5 (E1)
     # v79.10.4 (D3): on the client's records, whose each deontic element is -- the counterparty's never contradicted
     try:

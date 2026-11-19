@@ -706,8 +706,8 @@ def main_threat(records: Dict[str, Dict[str, Any]]) -> str:
     from . import issue_records
     charged = [x for x in _charged(records) if records[x].get("side") == "threat" and _live(records[x])
                and issue_records.counted(x, str(records[x].get("rubrica") or ""))]      # v74: a fattispecie only
-    if charged:
-        return charged[0]
+    if charged:     # v79.12.4 (item 3): the charged article with the highest maximum pena (posture.mark_sides' mark)
+        return next((x for x in charged if records[x].get("exposure")), charged[0])
     return next((x for x, r in records.items() if r.get("side") == "threat" and _live(r)
                  and issue_records.counted(x, str(r.get("rubrica") or ""))), "")
 
@@ -766,14 +766,17 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
                            f"la maggior parte degli elementi dell'art. {label} risulta provata"}
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PIENO, "article": label,
                 "why": f"la maggior parte degli elementi dell'art. {label} resta da provare"}
-    # v78: a victim's outcome is the offence of the querela -- the charge (rec["charged"]), whatever the main topic
-    victim_charge = next((x for x in _charged(records) if _live(records[x])), "") if role in VICTIM_ROLES else ""
-    if article in records and role not in VICTIM_ROLES:          # v79 (E1): the main line's article
+    # v78: a victim's outcome is the offence of the querela -- the charge (rec["charged"]), whatever the main topic;
+    # v79.12.4 (item 1): a penal article only -- a civil one is a remedy under it, never the outcome's article
+    from . import issue_records, posture as posture_mod
+    victim = role in VICTIM_ROLES
+    penal_ok = (lambda x: posture_mod.penal_article(x)) if victim else (lambda x: True)
+    victim_charge = next((x for x in _charged(records) if _live(records[x]) and penal_ok(x)), "") if victim else ""
+    if article in records and not victim:                       # v79 (E1): the main line's article
         victim_charge = article
-    from . import issue_records
-    label = victim_charge or (main if main in records else next((x for x, r in records.items()
-                                                                if r.get("side") != "threat" and _live(r)
-                                                                and not issue_records.defence_article(x)), ""))
+    label = victim_charge or (main if main in records and penal_ok(main) else next(
+        (x for x, r in records.items() if r.get("side") != "threat" and _live(r) and penal_ok(x)
+         and not issue_records.defence_article(x)), ""))
     if not label:
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                 "why": f"i fatti narrati non indicano la norma su cui {who} fonda la pretesa"}
@@ -1220,8 +1223,13 @@ def charge_rites(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, An
     status carries them («attenuanti»)."""
     if _family_key(posture or {}) != "penale":
         return []
-    from . import posture as posture_mod
-    label = main_threat(records or {}) or article or next(iter(posture_mod.intake_charges(posture)), "")
+    from . import posture as posture_mod, issue_records
+    # v79.12.4 (item 3): among several charged articles the one with the highest maximum pena from the store sets the
+    # riti, never the list's order (posture.heaviest; main_threat's, then the order, when the store states none)
+    threats = [x for x in _charged(records or {}) if (records or {})[x].get("side") == "threat" and _live(records[x])
+               and issue_records.counted(x, str(records[x].get("rubrica") or ""))]
+    label = posture_mod.heaviest([main_threat(records or {})] + threats, rows) if threats else ""
+    label = label or main_threat(records or {}) or article or next(iter(posture_mod.intake_charges(posture)), "")
     pena_text, number = charge_pena(label, rows)
     held = held_attenuanti(circumstances)
     return [{**x, "charge": label, "pena": pena_text, "attenuanti": held}
@@ -2000,6 +2008,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     ctx["candidates_trace"] = trace
     contests = {"excluded": [], "open": [], "integrated": []}
     in_order: List[Tuple[str, Dict[str, Any]]] = []
+    expired_out: List[str] = []         # v79.12.4 (item 7): the claims refused on a DECORSO term
     for label in threats:
         for r in _live(records[label]):
             if not r.get("id"):
@@ -2066,6 +2075,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     for label, rec in records.items():     # v79 (D1): a general-part defence (causation, fault, excess, attempt,
         if not offender:                    # aberratio, tenuità) with its elements proven and none excluded
             break
+        if never_defence(label):            # v79.12.4 (item 5): 40, 43 -- their elements proven are the accusation's
+            trace.setdefault("never_defence", []).append(label)
+            continue
         if issue_records.defence_article(label) and not issue_records.justification(label):
             proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
             ids = proven or (_ids(rec) if by_concept(rec) else [])     # v79.7 (item 3): named by the facts
@@ -2102,40 +2114,74 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 continue
             admitted.append((rank, label, rec, rule, group, proven, open_))
         admitted.sort(key=lambda x: x[0])
-        module_proven = any(g == "module" and p for _, _, _, _, g, p, _ in admitted)
+        # v79.12.4 (item 7): the action the computed terms mark DECORSO -- a decadenza refuses the claim (and a module
+        # line so refused gives no proven line: general obligations law follows), a prescrizione (the counterparty must
+        # raise it, art. 2938 c.c.) keeps it, minoritaria
+        # (review) a decadenza refuses only when the facts settle it (barring_terms' «firm»: not a denuncia the case
+        # may just not mention, nor one the statute excuses -- the defect acknowledged or concealed, artt. 1495 co. 2,
+        # 1667 co. 2 c.c.); else the claim is kept, minoritaria. A module line barred by any DECORSO term gives no
+        # proven line: general obligations law follows -- minoritaria under the module's terms (the general remedies
+        # for the same defect follow the special terms), never sustainable
+        from . import fact_signals
+        barring = {x[1]: fact_signals.barring_terms(x[1], ctx.get("terms")) for x in admitted}
+        excused = bool(_DEFECT_EXCUSED_RE.search(str(ctx.get("case") or "") + " " + str(ctx.get("certain_text") or "")))
+        decaduto = {x for x, e in barring.items() if any(
+            t["kind"] != "prescrizione" and t.get("firm", True) and not (excused and t["id"] in EXCUSABLE_TERMS)
+            for t in e)}
+        module_proven = any(g == "module" and p and not barring[x] for _, x, _, _, g, p, _ in admitted)
+        inherited = [] if module_proven else list({t["id"]: {**t, "inherited": True} for _, x, _, _, g, p, _ in admitted
+                                                  if g == "module" and p for t in barring[x]}.values())
         claims = []
+        ctx["claims_expired_minority"] = []
         for _, label, rec, rule, group, proven, open_ in admitted:
             if group == "general" and module_proven:     # B2: general obligations law, subordinate to the module
                 refused[label] = CLAIM_REFUSED["subordinate"]
                 continue
+            expired = barring[label] or (inherited if group == "general" else [])
+            if label in decaduto:
+                refused[label] = CLAIM_REFUSED["expired"].format(terms=", ".join(
+                    f"{e['id']}, {e['ref']}" if e.get("ref") else e["id"] for e in expired))
+                expired_out.append(label)
+                continue
+            standing = MINORITY if expired else SUSTAINABLE
+            if expired:
+                ctx["claims_expired_minority"].append(label)
             if proven:
                 add(own_kind, CANDIDATE_TEXTS[own_kind].format(art=label, rubrica=_rubrica_tail(rec)),
-                    poggia_su=proven, article=label, admitted_by=rule)
-                claims.append((label, proven))
+                    poggia_su=proven, article=label, admitted_by=rule, label=standing,
+                    **({"expired": [e["id"] for e in expired]} if expired else {}))
+                claims.append((label, proven, expired))
             elif (role == "attore" or named(rec)) and open_ and not rec.get("ranked_candidate"):   # v75b; v76: named
                 add(own_kind, CANDIDATE_TEXTS[f"{own_kind}_open"].format(      # article always, when decomposed
                     art=label, rubrica=_rubrica_tail(rec),
                     open=", ".join(f"«{_short(r.get('text'), 60)}» ({r['id']})" for r in open_[:3])),
-                    poggia_su=[r["id"] for r in open_], article=label, admitted_by=rule)
-                claims.append((label, []))
+                    poggia_su=[r["id"] for r in open_], article=label, admitted_by=rule, label=standing,
+                    **({"expired": [e["id"] for e in expired]} if expired else {}))
+                claims.append((label, [], expired))
+        ctx["claims_expired"] = expired_out
+        if expired_out:
+            _log("claims_refused_expired", {x: refused[x] for x in expired_out})
         ctx["claims_refused"] = refused
         ctx["claims_refused_family"] = sorted(x for x, why in refused.items() if why.startswith(FAMILY_REFUSED_HEAD))
         # v79.8.5: does any article of the client's confer an action, whatever its elements' status? v79.10.1 (A2):
         # admitted as the claims are -- an article outside the institution or its family confers none here
-        ctx["claims_any_admitted"] = bool(admitted) or any(
+        ctx["claims_any_admitted"] = any(x[1] not in expired_out for x in admitted) or any(
             family_admission(x, modules, consumer, families)[0] for x, r in records.items()
-            if r.get("side") != "threat" and fatt(x))
+            if r.get("side") != "threat" and fatt(x) and x not in expired_out)      # v79.12.4 (item 7)
         if refused:
             _log("claims_refused", refused)
         if ctx["claims_refused_family"]:
             _log("claims_refused_family", {"families": families, "articles": {
                 x: article_family(x) for x in ctx["claims_refused_family"]}})
         if role == "attore":    # v75: the remedies of the claim's matter
-            for label, proven in claims[:1]:
+            for label, proven, expired in claims[:1]:
                 matter = matter_of(label)
                 for r in (matter.get("remedies") or []):
+                    # v79.12.4 (item 7, review): a claim kept minoritaria on a DECORSO term -- its remedies too (a
+                    # remedy's «label» is its own text: the standing rides on «minority», is_minority)
                     add("remedy", CANDIDATE_TEXTS["remedy"].format(**r), poggia_su=proven, article=label,
-                        admitted_by=f"remedies.json: {matter.get('id')}", **r)
+                        admitted_by=f"remedies.json: {matter.get('id')}", **r,
+                        **({"minority": True, "expired": [e["id"] for e in expired]} if expired else {}))
     if role == "convenuto":     # v75: the eccezioni of the claim's matter (the claim against the client)
         claim = next((x for x in threats if matter_of(x)), "")
         # v79.6: the eccezione di prescrizione stays (E4: claims only -- a prescription article is never a claim,
@@ -2147,7 +2193,14 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 claim=claim, reduction=bool(own), **{k: r[k] for k in ("label", "articles", "requires") if k in r})
         add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
     ctx.pop("no_action", None)
-    if known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
+    if known_role and not victim and role not in ACCUSED and not out and expired_out:
+        # v79.12.4 (item 7, review): the norm confers the action, the term has run -- said so, never «nessuna
+        # attribuisce un'azione»
+        ctx["no_action"] = NO_ACTION_EXPIRED_LINE.format(istituto=action_subject(ctx), terms=expired_terms_text(
+            [t for x in expired_out for t in fact_signals_barring(x, ctx)]))
+        _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {}),
+                           "expired": list(expired_out)})
+    elif known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
         # v79.8.5 (B1): no norm confers an action. v79.10.1 (A1): never a candidate, never «Linea principale» -- the
         # method steps aside to the prose answer as 79.6 did (no candidate: the placeholder, method_refusal), and the
         # sentence is said once, in v76's note (a norm that does, with an element excluded, keeps v76's own why)
@@ -2195,6 +2248,37 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 # (no «registro») absolute; v79.10.1 (A1): never the main line -- the sentence of v76's note in the prose answer, once
 NO_ACTION_LINE = "Tra le norme esaminate per {istituto} nessuna attribuisce un'azione al cliente"
 NO_ACTION_CORE = "nessuna attribuisce un'azione al cliente"
+# v79.12.4 (item 7, review; my draft): every claim refused on a DECORSO decadenza -- the action exists, the term barred it
+NO_ACTION_EXPIRED_LINE = "Tra le norme esaminate per {istituto} l'azione del cliente è preclusa dal termine decorso: {terms}"
+# v79.12.4 (item 7, review): the statute excuses a late denuncia when the defect was acknowledged or concealed (artt.
+# 1495 co. 2, 1667 co. 2 c.c.) -- the denuncia terms then never refuse a claim (kept, minoritaria)
+_DEFECT_EXCUSED_RE = re.compile(r"\b(?:riconosc\w*|riconobb\w*|ammess[oaie]\b|ammett\w*|ammise|occult\w*|nascost\w*|"
+                                r"celat\w*)", re.IGNORECASE)
+EXCUSABLE_TERMS = ("denuncia_vizi_vendita", "denuncia_difformita_appalto")
+
+
+def fact_signals_barring(label: str, ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.12.4 (item 7): fact_signals.barring_terms of the article on the context's computed terms."""
+    from . import fact_signals
+    return fact_signals.barring_terms(label, ctx.get("terms"))
+
+
+def expired_terms_text(entries: Sequence[Dict[str, Any]]) -> str:
+    """v79.12.4 (item 7): the DECORSO terms in words, each once -- «<label> (<ref>)» from fact_signals.TERMS."""
+    from . import fact_signals
+    out: List[str] = []
+    for e in entries or []:
+        term = next((t for t in fact_signals.TERMS if t.id == e.get("id")), None)
+        text = f"{term.label} ({e.get('ref') or term.ref})" if term else str(e.get("ref") or e.get("id") or "")
+        if text and text not in out:
+            out.append(text)
+    return "; ".join(out)
+
+
+def is_minority(c: Dict[str, Any]) -> bool:
+    """v79.12.4 (item 7, review): the candidate is minoritaria -- its label (the code's standing), or «minority» on a
+    remedy (whose «label» is its own text) of a claim kept minoritaria on a DECORSO term."""
+    return c.get("label") == MINORITY or bool(c.get("minority"))
 NO_ACTION_SUBJECT = "i fatti narrati"
 
 
@@ -2227,7 +2311,8 @@ CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, neve
     "subordinate": "norma generale, subordinata: il modulo dell'istituto dà una linea provata",
     "non_action": "{why}: non conferisce un'azione al cliente",             # v79.9 (B2)
     "consumer": "codice del consumo: nessuna controparte professionale tra i fatti certi",     # v79.9 (B3)
-    "family": "fuori dalla famiglia dell'istituto della prima lettura ({family}; prima lettura: {read})"}  # v79.10.1 (A2)
+    "family": "fuori dalla famiglia dell'istituto della prima lettura ({family}; prima lettura: {read})",  # v79.10.1 (A2)
+    "expired": "termine decorso ({terms}): l'azione è preclusa"}                                       # v79.12.4 (7)
 FAMILY_REFUSED_HEAD = CLAIM_REFUSED["family"].split(" (")[0]
 MODULES_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_modules.json")
 _MODULES: Dict[str, Any] = {}
@@ -2650,10 +2735,14 @@ def _victim_candidates(ctx: Dict[str, Any], add: Callable[..., None], fatt: Call
     records = ctx.get("records") or {}
     circ = ctx.get("circumstances") or {}
     posture = ctx.get("posture") or {}
-    charged = [x for x in _charged(records) if fatt(x) and _live(records[x])]
+    from . import posture as posture_mod
+    # v79.12.4 (item 1): the charge is the querela's offence and only it -- a civil article (2043 c.c. …) is a remedy
+    # under it, never the claim's article, whatever its elements
+    charged = [x for x in _charged(records) if fatt(x) and _live(records[x]) and posture_mod.penal_article(x)]
     event = event_of(ctx.get("certain_text") or "")          # v79.10.3 (C2): an uncharged offence fits the event --
     proven = [x for x, r in records.items() if fatt(x) and r.get("side") != "threat"       # (review) preferred, never
-              and any(q.get("status") == PROVATO for q in _live(r))]                     # the victim left with none
+              and posture_mod.penal_article(x)                                           # the victim left with none
+              and any(q.get("status") == PROVATO for q in _live(r))]
     main = charged[0] if charged else next((x for x in proven if not event_mismatch(x, event)), proven[0] if proven
                                            else "")
     if not main:
@@ -2834,13 +2923,13 @@ def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Option
         v = code or model                   # v74: a code-argued candidate's argument is never the model's
         given = _plain(model.get("realismo")).lower()
         real = given if given in REALISMO else _plain(code.get("realismo")).lower()
-        real = real if real in REALISMO else (BASSO if c["label"] == MINORITY else MEDIO)
+        real = real if real in REALISMO else (BASSO if is_minority(c) else MEDIO)
         if code.get("realismo") == BASSO and real == ALTO:
             real = MEDIO
-        if c["label"] == MINORITY:
+        if is_minority(c):
             real = BASSO
         out.append({"tesi": c["tesi"], "pro": _plain(v.get("pro")), "contro": _plain(v.get("contro")), "realismo": real,
-                    "argomento": _plain(v.get("argomento")), "minoritaria": c["label"] == MINORITY,
+                    "argomento": _plain(v.get("argomento")), "minoritaria": is_minority(c),
                     "contesta": list(c["contesta"]), "poggia_su": list(c["poggia_su"]), "candidate": c["id"],
                     "kind": c["kind"], "argued": c.get("argued") or "model", "valued": given in REALISMO,
                     **({"fallback": True} if c.get("fallback") else {})})
@@ -2880,7 +2969,7 @@ def score_sample(raw: Any, candidates: Sequence[Dict[str, Any]], known: Dict[str
             score -= 1.0
             why.append(f"{c['id']}: no realismo")
             continue
-        if real != BASSO and c["label"] == MINORITY:
+        if real != BASSO and is_minority(c):
             score -= 2.0
             why.append(f"{c['id']}: minority rated {real}")
         if real != BASSO and any((known.get(x) or {}).get("status") == NON_RISULTA for x in c.get("poggia_su") or []):
@@ -3332,6 +3421,7 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
                 c["article"], family_context(ctx), [str((ctx.get("assessment") or {}).get("article") or "")] +
                 [x for x, r in (ctx.get("records") or {}).items() if r.get("side") == "threat"])),
             "candidates_family_dropped": len(ctx.get("family_dropped") or [])}
+    out.update(item_counts(ctx, sols, main, m))                                     # v79.12.4 (items 1, 4, 5, 7)
     # v79.11 (6): the rule admitting the main line's candidate ("" when none: a fallback, no candidate) -- always; the
     # schemas' shadow admission in numbers (ELEMENT_SCHEMAS: only when method_plan computed it)
     out["main_admitted_by"] = str(main_cand.get("admitted_by") or "")
@@ -3339,6 +3429,53 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
         out["schema_shadow"] = {k: (len(v) if isinstance(v, list) else v) for k, v in shadow.items()
                                 if k in ("agree", "false_exclusions", "extra", "recall_hit", "recall_of")}
     return out
+
+
+def item_counts(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, m: Dict[str, Any]) -> Dict[str, int]:
+    """v79.12.4: the nightly's counters of items 1, 4, 5 and 7, from the selection --
+      victim_charge_civil         the persona offesa's or parte civile's outcome on a civil article (must be 0);
+      main_fragment               the main line a fragment contest (escluso_fragment) while another line was eligible
+                                  (must be 0);
+      main_other_threat           the main line a contest of a threat record that is not the charge while a line of the
+                                  charge's was eligible (must be 0);
+      event_narrated_proven       the elements naming the certain facts' event set «provato» (narrated_event_proven);
+      event_narrated_unproven     those still «da provare» (must be 0);
+      event_narrated_causal       the elements stating the narrated event with its cause («cagiona la morte»), still
+                                  «da provare»: the causal link is what remains to prove (informative);
+      defence_lines_40_43         a defence or scriminante candidate on art. 40 or 43 c.p. (must be 0);
+      main_weak_defence           the main line a defence or scriminante with fewer than half its elements proven while
+                                  another line was eligible (must be 0);
+      claims_refused_expired      the client's claims refused on a term DECORSO (a decadenza);
+      claims_expired_minority     those kept minoritaria (a prescrizione; a decadenza the facts do not settle or the
+                                  statute excuses; general obligations law under a barred module's terms);
+      claims_expired_sustainable  a claim on an article a DECORSO term bars offered as sustainable (must be 0)."""
+    from . import fact_signals, posture as posture_mod
+    cands = ctx.get("candidates") or []
+    records = ctx.get("records") or {}
+    known = elements_by_id(records, ctx.get("circumstances"))
+    a = ctx.get("assessment") or {}
+    charges = charge_articles(records, a, ctx)
+    others = [t for i, t in enumerate(sols) if i != main and eligible(t)]
+    role = str((ctx.get("posture") or {}).get("role") or "")
+    claims = [c for c in cands if c.get("kind") in ("claim", "riconvenzionale", "remedy") and c.get("article")]
+    return {
+        "victim_charge_civil": int(role in VICTIM_ROLES and bool(a.get("article"))
+                                   and not posture_mod.penal_article(str(a.get("article")))),
+        "main_fragment": int(bool(m) and escluso_fragment(m, known) and any(
+            not escluso_fragment(t, known) and t.get("kind") not in CIRCUMSTANCE_KINDS for t in others)),
+        "main_other_threat": int(bool(m) and other_threat_contest(m, known, charges) and any(
+            not other_threat_contest(t, known, charges) for t in others)),
+        "event_narrated_proven": len(ctx.get("event_proven") or []),
+        "event_narrated_unproven": event_unproven(records, str(ctx.get("certain_text") or "")),
+        "event_narrated_causal": event_causal_open(records, str(ctx.get("certain_text") or "")),
+        "defence_lines_40_43": sum(1 for c in cands if c.get("kind") in DEFENCE_KINDS
+                                   and never_defence(str(c.get("article") or ""))),
+        "main_weak_defence": int(bool(m) and m.get("kind") in DEFENCE_KINDS and not half_proven(m, known)
+                                 and bool(others)),
+        "claims_refused_expired": len(ctx.get("claims_expired") or []),
+        "claims_expired_minority": len(ctx.get("claims_expired_minority") or []),
+        "claims_expired_sustainable": sum(1 for c in claims if not is_minority(c) and (
+            fact_signals.barring_terms(c["article"], ctx.get("terms")) or c.get("expired")))}
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------
@@ -3651,33 +3788,108 @@ MAIN_DEMOTED_WHY = {"circumstance": "circostanza: mai linea principale finché e
                     "attenuante": "attenuante: sempre subordinata",
                     # review: v79.7's containment line on a charge not fully integrato is the subordinate line
                     "containment": "contenimento con l'addebito non integrato: subordinato a una contestazione, a una "
-                                   "difesa o a una riqualificazione sostenibile"}
+                                   "difesa o a una riqualificazione sostenibile",
+                    # v79.12.4 (items 4, 5): my drafts -- logged, never printed
+                    "other_threat": "contestazione di una norma contro il cliente diversa dall'addebito: mai linea "
+                                    "principale finché l'addebito ha una linea ammissibile",
+                    "never_defence": "artt. 40 e 43 c.p.: i loro elementi provati sono dell'accusa, mai una difesa",
+                    "weak_defence": "scriminante o difesa con meno della metà degli elementi provati: mai linea "
+                                    "principale finché un'altra linea è ammissibile"}
 
 
 def escluso_fragment(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> bool:
     """v79.10.1 (A3): a contest of an «escluso» element whose text is a fragment, no condition (rule_quote.fragment_why:
-    a bare subject or object, a connective, a saving or scope clause, a modal permission)."""
+    a bare subject or object, a connective, a saving or scope clause, a modal permission). v79.12.4 (item 4): a contest
+    of an open element («da provare») too -- contest_open as well as contest_excluded."""
     from . import rule_quote
-    return t.get("kind") == "contest_excluded" and any(
+    return t.get("kind") in ("contest_excluded", "contest_open") and any(
         rule_quote.fragment_why((known.get(x) or {}).get("text") or "") for x in t.get("contesta") or [])
 
 
+# v79.12.4 (item 5): the general-part articles whose elements proven are the accusation's (causation, fault) -- never a
+# defence line (the scriminante's or the defence's candidates, never_main)
+NEVER_DEFENCE = ("40", "43")
+DEFENCE_KINDS = ("defence", "scriminante")
+
+
+def never_defence(label: str) -> bool:
+    """v79.12.4 (item 5): art. 40 or 43 c.p. (any comma) -- its elements proven establish the charge, never a defence."""
+    from .plan_then_write import _code_key
+    number, _, code = _COMMA_TAIL_RE.sub("", str(label or "").strip()).partition(" ")
+    return _code_key(code.strip()) == "c.p." and number in NEVER_DEFENCE
+
+
+def line_article(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> str:
+    """v79.12.4 (item 5): the line's own article -- its «article» when it carries one (a candidate), else (review: the
+    soluzioni clean_method builds carry none) the article of the first element it rests on (poggia_su), else of the
+    first it contests; "" for none."""
+    return str(t.get("article") or "") or next((str((known.get(x) or {}).get("article") or "")
+                                                for x in list(t.get("poggia_su") or []) + list(t.get("contesta") or [])
+                                                if (known.get(x) or {}).get("article")), "")
+
+
+def _line_elements(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> Tuple[int, int]:
+    """v79.12.4 (item 5): (proven, total) of the elements of the line's own article (a scriminante's, a defence's)."""
+    art = line_article(t, known)
+    own = [e for e in known.values() if art and e.get("article") == art]
+    return sum(1 for e in own if e.get("status") == PROVATO), len(own)
+
+
+def half_proven(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> bool:
+    """v79.12.4 (item 5): a scriminante or a defence line with at least half its elements proven (one with no element
+    known is not judged: True)."""
+    proved, total = _line_elements(t, known)
+    return not total or proved * 2 >= total
+
+
+def charge_articles(records: Dict[str, Dict[str, Any]], a: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None
+                    ) -> List[str]:
+    """v79.12.4 (item 4): the charge's articles -- the assessment's, the charge rule's (state["charge"]: its article and
+    its exposure) and every charged record (rec["charged"]); [] when none is known."""
+    charge = dict((ctx or {}).get("charge") or {})
+    return [x for x in dict.fromkeys([str((a or {}).get("article") or ""), str(charge.get("article") or ""),
+                                      str(charge.get("exposure") or "")] + _charged(records or {})) if x]
+
+
+def other_threat_contest(t: Dict[str, Any], known: Dict[str, Dict[str, Any]], charges: Sequence[str]) -> bool:
+    """v79.12.4 (item 4): a contest of a threat record that is not the charge -- every element it contests is on a
+    record marked «threat» other than the charge's (charges: the charge, its exposure article)."""
+    if not str(t.get("kind") or "").startswith("contest_") or not charges:
+        return False
+    arts = [(known.get(x) or {}) for x in t.get("contesta") or []]
+    return bool(arts) and all(e.get("side") == "threat" and e.get("article") not in charges for e in arts)
+
+
 def never_main(sols: Sequence[Dict[str, Any]], eligible: Sequence[int], known: Dict[str, Dict[str, Any]],
-               all_integrated: bool = True) -> Dict[int, str]:
+               all_integrated: bool = True, charges: Sequence[str] = ()) -> Dict[int, str]:
     """v79.10.1 (A3): {index: why} of the eligible lines kept out of the main line -- with one sample the realism is the
     model's alone (an attenuante's code argument «alto» led over a contest «medio»), so the kind decides first: while a
     contest, a defence or a riqualificazione is eligible, no circumstance (attenuante, aggravante) and no «elemento
     escluso» fragment leads; an attenuante never leads while any other line is eligible (the imputato's containment
     line always is). They stay among the soluzioni, subordinate. Review: with the charge not fully integrato
     (all_integrated False) the containment line -- v79.7's subordinate line there -- never leads over a non-minority
-    contest, defence or riqualificazione either: the brief's test holds whatever the one sample's realism."""
+    contest, defence or riqualificazione either: the brief's test holds whatever the one sample's realism.
+    v79.12.4: (item 4) a fragment contest (escluso_fragment: an open element's too) never leads while any other line is
+    eligible -- the containment line counts, so a fragment never leads alone --; a contest of a threat record that is
+    not the charge (other_threat_contest; charges: the charge's articles) never leads while the charge has an eligible
+    line; (item 5) a defence or scriminante line on art. 40 or 43 c.p. never leads (never_defence), nor one with fewer
+    than half its elements proven while another line is eligible (half_proven)."""
     circ = {i for i in eligible if sols[i].get("kind") in CIRCUMSTANCE_KINDS}
     frag = {i for i in eligible if escluso_fragment(sols[i], known)}
-    lead = [i for i in eligible if sols[i].get("kind") in LEAD_KINDS and i not in frag]
-    out: Dict[int, str] = {}
+    other = {i for i in eligible if other_threat_contest(sols[i], known, charges)} - frag
+    defences = {i for i in eligible if sols[i].get("kind") in DEFENCE_KINDS}
+    not_def = {i for i in defences if never_defence(line_article(sols[i], known))}      # (review): by its elements
+    weak = {i for i in defences - not_def if not half_proven(sols[i], known)}
+    lead = [i for i in eligible if sols[i].get("kind") in LEAD_KINDS and i not in frag | other | not_def | weak]
+    out: Dict[int, str] = {i: MAIN_DEMOTED_WHY["never_defence"] for i in not_def}
     if lead:
         out.update({i: MAIN_DEMOTED_WHY["circumstance"] for i in circ})
+    if any(i not in frag | circ for i in eligible):     # v79.12.4 (item 4): the containment line counts as eligible
         out.update({i: MAIN_DEMOTED_WHY["fragment"] for i in frag})
+    if any(i not in other | frag | circ | not_def for i in eligible):     # the charge has an eligible line
+        out.update({i: MAIN_DEMOTED_WHY["other_threat"] for i in other if i not in out})
+    if any(i not in weak | out.keys() for i in eligible):
+        out.update({i: MAIN_DEMOTED_WHY["weak_defence"] for i in weak if i not in out})
     if not all_integrated and any(not sols[i].get("minoritaria") for i in lead):
         out.update({i: MAIN_DEMOTED_WHY["containment"] for i in eligible if sols[i].get("kind") == "contenimento"})
     others = [i for i in eligible if i not in circ and i not in out]
@@ -3727,7 +3939,11 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
             if log is not None:
                 log.append({"tesi": t["tesi"][:160], "barred": hit, "elements": {x: known[x]["text"] for x in hit}})
     eligible = [i for i, t in enumerate(sols) if not t.get("barred") and not t.get("unverifiable")]
-    out_of_main = never_main(sols, eligible, known, bool(a.get("all_integrated")))     # v79.10.1 (A3): kind first
+    charges = charge_articles(records, a, ctx)              # v79.12.4 (item 4): the charge's articles
+    for t in sols:      # v79.12.4 (item 4): a contest of another threat record ranks after the charge's (subordinate_of)
+        if other_threat_contest(t, known, charges):
+            t["other_threat"] = True
+    out_of_main = never_main(sols, eligible, known, bool(a.get("all_integrated")), charges)     # v79.10.1 (A3)
     for i, why in out_of_main.items():
         sols[i]["main_demoted"] = why
         if log is not None:
@@ -3857,6 +4073,8 @@ def promote_by_pertinence(sols: List[Dict[str, Any]], main: int, pool: Sequence[
     objection or a reply of the plan naming its article, else among the soluzioni -- and logged."""
     if not ctx or main not in pool:
         return main
+    if str((ctx.get("posture") or {}).get("role") or "") in VICTIM_ROLES:
+        return main             # v79.12.4 (item 1): the victim's line is on the querela's offence -- never replaced
     have = line_pertinence(sols[main], ctx)
     if have is None:
         return main
@@ -4444,7 +4662,9 @@ def eligible(t: Dict[str, Any]) -> bool:
 def subordinate_of(sols: Sequence[Dict[str, Any]], main: int) -> Optional[int]:
     """The subordinate line: the most realistic eligible thesis after the main one that is not the same line."""
     pool = [i for i, t in enumerate(sols) if i != main and eligible(t) and not same_line(t["tesi"], sols[main]["tesi"])]
-    return sorted(pool, key=lambda i: REALISMO.index(sols[i]["realismo"]))[0] if pool else None
+    # v79.12.4 (item 4): a contest of a threat record that is not the charge ranks after the charge's lines
+    return sorted(pool, key=lambda i: (bool(sols[i].get("other_threat")), REALISMO.index(sols[i]["realismo"])))[0] \
+        if pool else None
 
 
 def _open_ids(ctx: Dict[str, Any]) -> List[str]:
@@ -5251,6 +5471,14 @@ def family_words(state: Dict[str, Any], case: str) -> str:
     return special_laws.read_text(read) if isinstance(read, dict) and read else (case or "")
 
 
+def computed_terms(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.12.4 (item 7): the terms the facts computed (fact_signals.compute_terms' entries: id, ref, status …) -- the
+    analysis' fact_signals; [] without them."""
+    analysis = state.get("analysis") or {}
+    terms = ((analysis.get("fact_signals") or {}).get("terms") or []) if isinstance(analysis, dict) else []
+    return [t for t in terms if isinstance(t, dict)]
+
+
 def fact_events(state: Dict[str, Any]) -> List[str]:
     """v79.9 (B1): the kinds of the events the facts extraction read (fact_signals: consegna, fine lavori, scoperta
     vizio, denuncia/reclamo …) -- the ones the terms of §8 start from."""
@@ -5275,6 +5503,9 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     notes, note_sources = attach_notes(all_records, {}, rows)       # v72: the lawyer's notes, into the records
     view_log: Dict[str, List[str]] = {}
     every = method_records(all_records, view_log)                   # v74: the decomposed fattispecie only
+    # v79.12.4 (item 4): an element naming the event the certain facts narrate is never «da provare»
+    event_proven = narrated_event_proven(every, " ".join(str(x.get("text") or "") for x in sentences
+                                                         if issue_records_certain(x)))
     # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
     # assesses (the record below: §2, §4, the assessment, the objections' fallback)
     records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
@@ -5328,7 +5559,9 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "certain_text": certain,
            "events": fact_events(state),
            "family_words": family_words(state, case),                        # v79.9 (C1)
-           "charge": dict(state.get("charge") or {})}                         # v79.10.5 (E1): held, by its rule
+           "charge": dict(state.get("charge") or {}),                         # v79.10.5 (E1): held, by its rule
+           "event_proven": event_proven,                                      # v79.12.4 (item 4)
+           "terms": computed_terms(state)}                                    # v79.12.4 (item 7)
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti),
@@ -5422,6 +5655,94 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
                 out[x]["unprinted"] = True
         out = {x: r for x, r in out.items() if x not in noise or r.get("unprinted")}
     return out
+
+
+EVENT_PROVEN_WHY = "evento narrato dai fatti certi ({event})"        # v79.12.4 (item 4), my draft
+# v79.12.4 (item 4, review): the event as an element's whole wording -- the bare event («la morte di una persona», «una
+# lesione personale», «una malattia nel corpo o nella mente», «l'evento lesivo»), never one with a qualifier (gravity:
+# «lesioni gravi», «superiore ai quaranta giorni»; means: «con armi»), nor a conduct that only mentions the victim's
+# state (593: «trovando una persona ferita … omette»)
+_DET_RE = r"(?:(?:la|le|il|lo|l['’]|una|un|uno|un['’])\s*)?"
+_VICTIM_RE = (r"(?:\s+(?:di|del|della|dello|dell['’]|d['’])\s*" + _DET_RE +
+              r"(?:uomo|donna|persona|person[ae]\s+offes[ae]|vittima|altr[oaie]|soggetto|individuo|minore|"
+              r"lavorator[ei]|passeggero|pedone))?")
+_BARE_EVENT = {
+    "morte": r"(?:l['’]\s*evento\s+(?:morte|mortale|letale)|" + _DET_RE + r"(?:morte|decesso)" + _VICTIM_RE + ")",
+    "lesioni": (r"(?:l['’]\s*evento\s+lesivo|" + _DET_RE + r"(?:lesion[ei](?:\s+personal[ei])?|malattia(?:\s+nel\s+"
+                r"corpo\s+o\s+nella\s+mente)?)" + _VICTIM_RE + ")")}
+# the causal link stated with it: a leading cause («cagiona [per colpa] [ad alcuno]»), a «dalla quale deriva» joining
+# two bare events (582), a trailing consequence («come conseguenza degli atti»)
+_CAUSAL_HEAD_RE = re.compile(r"^(?:chiunque\s+)?(?:(?:che\s+)?(?:cagion|caus|provoc|determin)\w*(?:\s+(?:per\s+colpa|"
+                             r"ad\s+alcuno|a\s+taluno|ad\s+altri|a\s+una\s+persona|involontariamente))*\s+)",
+                             re.IGNORECASE)
+_CAUSAL_JOIN_RE = r",?\s+(?:dalla\s+quale|dal\s+quale|da\s+cui|dalle\s+quali|dai\s+quali)\s+deriv\w*\s+"
+_CAUSAL_TAIL_RE = re.compile(r",?\s+(?:come|quale)\s+conseguenz\w*\b.*$|,?\s+(?:conseguent|derivant|cagionat|"
+                             r"causat|provocat)\w*\s+(?:a|da|dal|dalla|dagli|dai|dall['’]).*$", re.IGNORECASE)
+
+
+def event_element(text: str, event: str) -> str:
+    """v79.12.4 (item 4, review): how the element states the event -- «bare» (its whole wording, _BARE_EVENT),
+    «causal» (the bare event with its cause, _CAUSAL_*: «cagiona la morte di un uomo», «la morte come conseguenza
+    degli atti»: the narration proves the event, never the causal link), "" otherwise (no event, a qualifier, a
+    conduct)."""
+    bare = _BARE_EVENT.get(str(event or ""))
+    if not bare:
+        return ""
+    t = " ".join(str(text or "").lower().split()).strip(" .;:,«»\"'")
+    if re.fullmatch(bare, t):
+        return "bare"
+    rest = _CAUSAL_TAIL_RE.sub("", _CAUSAL_HEAD_RE.sub("", t)).strip(" .;:,")
+    if rest != t and re.fullmatch(f"{bare}(?:{_CAUSAL_JOIN_RE}{bare})?", rest):
+        return "causal"
+    return ""
+
+
+def names_event(text: str, event: str) -> bool:
+    """v79.12.4 (item 4): the element's whole wording is the event the certain facts narrate (event_element «bare»)."""
+    return event_element(text, event) == "bare"
+
+
+def narrated_event_proven(records: Dict[str, Dict[str, Any]], certain: str) -> List[str]:
+    """v79.12.4 (item 4): an event the certain facts narrate is never «non provato» -- each live element «da provare»
+    whose own words name that event (names_event: «la morte di un uomo», «l'evento lesivo» with a death or injuries
+    among the certain facts; never one that joins it to its cause, «cagiona la morte», whose causal link the narration
+    does not prove) is «provato», its why EVENT_PROVEN_WHY and r["event_narrated"]; an element «non risulta» (a fact
+    against it) stays. Returns «<article>: <id or text>» of each, logged."""
+    event = event_of(certain or "")
+    if not event:
+        return []
+    out: List[str] = []
+    causal: List[str] = []
+    for label, rec in (records or {}).items():
+        for r in _live(rec):
+            if r.get("status") != DA_PROVARE:
+                continue
+            how = event_element(str(r.get("text") or ""), event)
+            if how == "bare":
+                r.update(status=PROVATO, event_narrated=event, why=EVENT_PROVEN_WHY.format(event=event))
+                out.append(f"{label}: {r.get('id') or _short(r.get('text'), 60)}")
+            elif how == "causal":       # (review) the event narrated, the causal link still to prove -- marked, logged
+                r["event_narrated"] = event
+                causal.append(f"{label}: {r.get('id') or _short(r.get('text'), 60)}")
+    if out or causal:
+        _log("event_narrated_proven", {"event": event, "elements": out, "causal_open": causal})
+    return out
+
+
+def event_causal_open(records: Dict[str, Dict[str, Any]], certain: str) -> int:
+    """v79.12.4 (item 4, review): the live elements stating the narrated event with its cause (event_element «causal»)
+    still «da provare» -- the causal link is what remains to prove; the nightly's event_narrated_causal (informative)."""
+    event = event_of(certain or "")
+    return 0 if not event else sum(1 for rec in (records or {}).values() for r in _live(rec)
+                                   if r.get("status") == DA_PROVARE
+                                   and event_element(str(r.get("text") or ""), event) == "causal")
+
+
+def event_unproven(records: Dict[str, Dict[str, Any]], certain: str) -> int:
+    """v79.12.4 (item 4): the live elements naming the event the certain facts narrate still «da provare» -- must be 0."""
+    event = event_of(certain or "")
+    return 0 if not event else sum(1 for rec in (records or {}).values() for r in _live(rec)
+                                   if r.get("status") == DA_PROVARE and names_event(str(r.get("text") or ""), event))
 
 
 def fact_free(rec: Dict[str, Any]) -> bool:

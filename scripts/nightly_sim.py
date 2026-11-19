@@ -125,6 +125,18 @@ schema_procedibilita_moved (the elements the checker moved out of the offence in
 element_schemas.split_procedibilita) and procedibilita_from_schema (the records whose procedibilità took a key from that
 block: procedural_facts.with_schema).
 
+v79.12.4 (items 1, 3, 4, 5, 7), in the counters table (interactive_flow.case_counters; the run's state only): item 1
+charge_victim_remedies (the victim's civil articles kept as remedies under the querela's offence) and
+victim_charge_civil (must be 0: the persona offesa's outcome on a civil article); item 3 charge_event_mismatch (must be
+0 off the user's own article: a charge the certain facts' event does not fit), charge_event_refused (the read's
+hypotheses refused for it) and charged_undecomposed (must be 0: a charged article with no element); item 4
+main_fragment and main_other_threat (both 0: a fragment, or a contest of a threat record that is not the charge, as the
+main line while another line was eligible), event_narrated_proven and event_narrated_unproven (must be 0: an element
+naming the event the certain facts narrate still «da provare»), event_narrated_causal (informative: an element stating
+the narrated event with its cause, still «da provare» for the causal link); item 5 defence_lines_40_43 and main_weak_defence (both
+0); item 7 claims_refused_expired, claims_expired_minority and claims_expired_sustainable (must be 0: a claim on an
+article a DECORSO term bars offered as sustainable).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json

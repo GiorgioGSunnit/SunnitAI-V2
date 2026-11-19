@@ -6751,7 +6751,8 @@ def general_part_out(refs: Sequence[tuple], named: set) -> List[tuple]:
 DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativa", "named": "nominata dall'utente",
                  "defence": "difesa di parte generale", "ranked": "candidata dalla classifica del recupero",   # v79
                  "claim": "domanda (ipotesi principale della prima lettura)",
-                 "hypothesis": "addebito (ipotesi di reato della prima lettura)"}      # v79 (C4)
+                 "hypothesis": "addebito (ipotesi di reato della prima lettura)",      # v79 (C4)
+                 "remedy": "rimedio civile della persona offesa"}                     # v79.12.4 (item 1)
 
 
 def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
@@ -6771,13 +6772,25 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     analysis = _restored_analysis(state["analysis"])
     case = case_text(state)
     wanted: Dict[str, str] = {}
+    victim = posture_mod.victim(posture)
     for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
-        wanted.setdefault(x, DECOMPOSE_WHY["charge"])
-    if not wanted:              # v75: a civil claim naming no article -- the first read's principal hypothesis for it;
-        why = DECOMPOSE_WHY["hypothesis" if str(posture.get("family") or "") == "penale" else "claim"]      # v79 (C4)
+        # v79.12.4 (item 1): the victim's charge is the querela's offence -- a civil article its remedy, never decisive
+        wanted.setdefault(x, DECOMPOSE_WHY["remedy"] if victim and not posture_mod.penal_article(x)
+                          else DECOMPOSE_WHY["charge"])
+    if not any(why == DECOMPOSE_WHY["charge"] for why in wanted.values()):
+        # v75: a civil claim naming no article -- the first read's principal hypothesis for it; v79 (C4)
+        why = DECOMPOSE_WHY["hypothesis" if str(posture.get("family") or "") == "penale" else "claim"]
         for x in posture_mod.claim_from_read(state, posture, rows):
             wanted.setdefault(x, why)
-    charged = bool(wanted)
+        if str(posture.get("family") or "") == "penale":
+            # v79.12.4 (item 3): every hypothesis of the first read split too, so the charge rule scores each
+            # (posture.choose_charge) -- never one the certain facts' event does not fit
+            event = posture_mod.certain_event(state, case)
+            for h, labels in posture_mod.read_hypotheses(state, posture, rows):
+                for x in labels:
+                    if not posture_mod.event_refuses(x, event, h):     # (review) an attempt's never refused
+                        wanted.setdefault(x, posture_mod.READ_CANDIDATE_WHY)
+    charged = any(why != DECOMPOSE_WHY["remedy"] for why in wanted.values())
     for x in posture_mod.alternative_labels(state, rows):
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
     for ref in user_named(state):
@@ -8745,7 +8758,11 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # where the method steps aside (block_counters); (A2) the matter articles refused outside the read's family; (A3)
     # the circumstances and «elemento escluso» fragments kept out of the main line
     for k in ("claims_refused_family", "main_demoted", "reductions_offered",     # v79.10.2 (B1): the reductions
-              "promoted_by_pertinence"):                                          # v79.12.1 (row 16)
+              "promoted_by_pertinence",                                           # v79.12.1 (row 16)
+              # v79.12.4 (items 1, 4, 5, 7: lawyer_method.item_counts)
+              "victim_charge_civil", "main_fragment", "main_other_threat", "event_narrated_proven",
+              "event_narrated_unproven", "event_narrated_causal", "defence_lines_40_43", "main_weak_defence",
+              "claims_refused_expired", "claims_expired_minority", "claims_expired_sustainable"):
         out[k] = sum(int(c.get(k) or 0) for c in counts)
     # v79.10.2 (B1): the client read as resisting a demand (its role the defending one, never the claimant); the
     # answer's posture sets it (block_counters), else the intake's

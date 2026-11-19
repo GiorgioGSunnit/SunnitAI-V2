@@ -294,7 +294,17 @@ FRAGMENT_WHY = {"subject": "soggetto senza condizione", "connective": "connettiv
                 "object": "oggetto senza condizione", "scope": "clausola di ambito",
                 "category": "categoria di soggetti o di attività, non condizione",                     # v79.10.4 (D4)
                 "confiscation": "clausola di confisca, non condizione",
-                "medicinal": "clausola sui medicinali, non condizione"}
+                "medicinal": "clausola sui medicinali, non condizione",
+                # v79.12.4 (item 4): a clause opening on «ovvero / oppure» (the other branch of an element, never one of
+                # its own) and a definition («consiste nella …»)
+                "alternative": "alternativa che apre la clausola («ovvero», «oppure»), non condizione",
+                "definition": "definizione, non condizione"}
+# v79.12.4 (item 4): a clause opening on «ovvero» or «oppure»; a definition -- «consiste nel / nella / in …», «si
+# intende / si considera …»
+_ALTERNATIVE_HEAD_RE = re.compile(r"^\W*(?:ovvero|oppure)\b", re.IGNORECASE)
+_DEFINITION_RE = re.compile(r"\bconsist(?:e|ono|ente|enti)\s+(?:nel|nella|nello|nell['’]|nei|negli|nelle|in)\b|"
+                            r"^\W*(?:(?:agli|ai)\s+(?:fini|effetti)\s+[^,]{0,80},\s*)?si\s+(?:intend|consider)\w*\s+"
+                            r"(?:per|come)\b", re.IGNORECASE)
 # v79.10.4 (D4): statutory wording naming a category -- persons by their plural («i precettori», «i genitori e i
 # tutori»), «coloro che» with an activity, a trade or an art («un mestiere o un'arte») -- with no condition in it
 _DET = r"(?:(?:i|gli|le|il|lo|la|l['’]|un|uno|una|un['’])\s*)"
@@ -345,6 +355,10 @@ def fragment_kind(text: str, wider: bool = True) -> str:
         return "confiscation"
     if wider and _MEDICINAL_RE.search(t):
         return "medicinal"
+    if wider and _ALTERNATIVE_HEAD_RE.match(t):             # v79.12.4 (item 4)
+        return "alternative"
+    if wider and _DEFINITION_RE.search(t):
+        return "definition"
     if not wider:
         if _PERMISSION_RE.search(t) and not _CONDITION_RE.search(t):
             return "modal"

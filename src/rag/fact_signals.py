@@ -1016,8 +1016,12 @@ class Term:
                  days: int = 0, applies: Optional[Callable[[Dict[str, Any]], bool]] = None, word: str = "",
                  start_items: Optional[Callable[[Dict[str, Any]], List[tuple]]] = None, since: str = "",
                  family: str = "civile", regimes_only: bool = False, start_kinds: Tuple[str, ...] = (),
-                 end_kinds: Tuple[str, ...] = (), both: bool = False):
+                 end_kinds: Tuple[str, ...] = (), both: bool = False, bars: Tuple[str, ...] = (),
+                 bars_kind: str = ""):
         self.id, self.label, self.ref, self.start, self.end = id, label, ref, start, end
+        # v79.12.4 (item 7): the articles whose action the term bars once DECORSO, and how -- «prescrizione» (the
+        # counterparty must raise it, art. 2938 c.c.: a claim on it is kept, minoritaria) or «decadenza» (refused)
+        self.bars, self.bars_kind = tuple(bars), bars_kind
         # The kinds of event (EVENT_KINDS) it runs from and to: a typed event is read by its kind, an untyped one by
         # the patterns; both: a typed one must match the start pattern too (a road accident among accidents).
         self.start_kinds, self.end_kinds, self.both = start_kinds, end_kinds, both
@@ -1160,10 +1164,12 @@ def _last_use(facts: Dict[str, Any]) -> List[tuple]:
 TERMS: List[Term] = [
     Term("possessoria", "azione possessoria (spoglio o turbativa)", "artt. 1168 e 1170 c.c.", _SPOGLIO, _ACTION,
          years=1, word="termine annuale", since="dallo spoglio o dalla turbativa",
-         start_kinds=("spoglio", "turbativa", "chiusura/ostruzione accesso"), end_kinds=("azione giudiziaria",)),
+         start_kinds=("spoglio", "turbativa", "chiusura/ostruzione accesso"), end_kinds=("azione giudiziaria",),
+         bars=("1168 c.c.", "1170 c.c."), bars_kind="decadenza"),
     Term("non_uso_servitu", "estinzione della servitù per non uso (non è il termine dell'usucapione)", "art. 1073 c.c.", "", _ACTION, years=20,
          word="ventennio di non uso", start_items=_last_use, applies=_right_of_way, since="dall'ultimo uso",
-         end_kinds=("azione giudiziaria",)),
+         end_kinds=("azione giudiziaria",),
+         bars=("1079 c.c.",), bars_kind="decadenza"),
     Term("usucapione_ordinaria", "usucapione ordinaria di beni immobili", "art. 1158 c.c.", "", "", years=20,
          word="ventennio di possesso", start_items=lambda f: _usucapione_starts(f),
          since="di possesso continuato"),
@@ -1178,14 +1184,17 @@ TERMS: List[Term] = [
          since="di possesso continuato"),
     Term("prescrizione_circolazione", "prescrizione del risarcimento da circolazione di veicoli", "art. 2947 c.c.",
          _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts"), since="dal fatto",
-         start_kinds=("incidente",), end_kinds=("diffida", "azione giudiziaria"), both=True),
+         start_kinds=("incidente",), end_kinds=("diffida", "azione giudiziaria"), both=True,
+         bars=("2054 c.c.",), bars_kind="prescrizione"),
     Term("prescrizione_extracontrattuale", "prescrizione del risarcimento del danno extracontrattuale",
          "art. 2947 c.c.", _DAMAGE, _INTERRUPT, years=5, applies=lambda f: not f.get("contracts"), since="dal fatto",
-         start_kinds=("incidente", "lesione", "decesso", "danneggiamento"), end_kinds=("diffida", "azione giudiziaria")),
+         start_kinds=("incidente", "lesione", "decesso", "danneggiamento"), end_kinds=("diffida", "azione giudiziaria"),
+         bars=("2043 c.c.", "2050 c.c.", "2051 c.c.", "2052 c.c.", "2053 c.c.", "2054 c.c."), bars_kind="prescrizione"),
     Term("prescrizione_ordinaria", "prescrizione ordinaria (diritti da contratto)", "art. 2946 c.c.",
          r"inadempi|non (?:ha )?pagat|scadenz|ritard|mancat\w* (?:pagament|consegn)", _INTERRUPT, years=10,
          applies=lambda f: bool(f.get("contracts")), since="dal giorno in cui il diritto può essere fatto valere",
-         start_kinds=("inadempimento",), end_kinds=("diffida", "azione giudiziaria")),
+         start_kinds=("inadempimento",), end_kinds=("diffida", "azione giudiziaria"),
+         bars=("1218 c.c.", "1453 c.c."), bars_kind="prescrizione"),
     Term("querela", "querela", "art. 124 c.p.", _OFFENCE, r"querel|denunci", months=3,
          since="dalla notizia del fatto che costituisce il reato", family="penale",
          start_kinds=("reato", "lesione", "danneggiamento"), end_kinds=("querela", "denuncia/reclamo")),
@@ -1194,13 +1203,15 @@ TERMS: List[Term] = [
          applies=lambda f: any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
                                for e in (f.get("events") or []) + (f.get("proceedings") or [])),
          since="dalla comunicazione o conoscenza dell'atto", family="amministrativo",
-         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",)),
+         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",),
+         bars=("120 c.p.a.",), bars_kind="decadenza"),
     Term("ricorso_tar", "ricorso al TAR per l'annullamento", "artt. 29 e 41 c.p.a.", _ACT, _TAR, days=60,
          applies=lambda f: not any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
                                    for e in (f.get("events") or []) + (f.get("proceedings") or []))
          and _has_role(f, r"pubblica amministrazione|comune|ente"),
          since="dalla notificazione, comunicazione o piena conoscenza dell'atto", family="amministrativo",
-         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",)),
+         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",),
+         bars=("29 c.p.a.",), bars_kind="decadenza"),
     # v57 (I: v56-h10 §1 said 60 days, §5 ten years): the judgment's two terms -- the nullity of an act violating or
     # eluding it, 180 days from that act (art. 31 co. 4 c.p.a.); the ottemperanza, ten years from the judgment (art.
     # 114 co. 1 c.p.a.). The articles' commi are in the labels (a ref's numbers are its articles: term_institutions).
@@ -1209,20 +1220,24 @@ TERMS: List[Term] = [
          applies=lambda f: bool(re.search(_JUDGMENT, _texts(f, ("events", "proceedings"))))
          and _has_role(f, r"pubblica amministrazione|comune|ente"),
          since="dall'adozione o dalla conoscenza del provvedimento in contrasto con il giudicato", family="amministrativo",
-         end_kinds=("azione giudiziaria",)),
+         end_kinds=("azione giudiziaria",),
+         bars=("31 c.p.a.",), bars_kind="decadenza"),
     Term("ottemperanza", "azione di ottemperanza (art. 114, co. 1)", "art. 114 c.p.a.", _JUDGMENT,
          r"ottemperanz\w*[^.]{0,30}(?:propost|depositat|notificat)|ricors\w* (?:per|in) ottemperanz", years=10,
          applies=lambda f: bool(re.search(_JUDGMENT, _texts(f, ("events", "proceedings"))))
          and _has_role(f, r"pubblica amministrazione|comune|ente"),
-         since="dal passaggio in giudicato della sentenza", family="amministrativo", end_kinds=("azione giudiziaria",)),
+         since="dal passaggio in giudicato della sentenza", family="amministrativo", end_kinds=("azione giudiziaria",),
+         bars=("114 c.p.a.",), bars_kind="prescrizione"),
     Term("denuncia_vizi_vendita", "denuncia dei vizi della cosa venduta", "art. 1495 c.c.", _DISCOVERY + "|" + _DEFECT,
          _DENOUNCE, days=8, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
          and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla scoperta del vizio",
-         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida"),
+         bars=("1490 c.c.", "1492 c.c.", "1495 c.c."), bars_kind="decadenza"),
     Term("azione_vizi_vendita", "azione di garanzia per i vizi della cosa venduta", "art. 1495 c.c.", _DELIVERY,
          _ACTION, years=1, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
          and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla consegna",
-         start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",)),
+         start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",),
+         bars=("1490 c.c.", "1492 c.c.", "1495 c.c."), bars_kind="prescrizione"),
     Term("denuncia_conformita_consumo", "denuncia del difetto di conformità (consumatore)", "Codice del Consumo",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, months=2,
          applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
@@ -1239,19 +1254,60 @@ TERMS: List[Term] = [
     Term("denuncia_difformita_appalto", "denuncia delle difformità e dei vizi dell'opera (appalto)", "art. 1667 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, days=60,
          applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta",
-         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida"),
+         bars=("1667 c.c.", "1668 c.c."), bars_kind="decadenza"),
     Term("azione_garanzia_appalto", "azione di garanzia nell'appalto", "art. 1667 c.c.", _WORKS_DONE, _ACTION, years=2,
          applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla consegna dell'opera",
-         start_kinds=("fine lavori", "consegna"), end_kinds=("azione giudiziaria",)),
+         start_kinds=("fine lavori", "consegna"), end_kinds=("azione giudiziaria",),
+         bars=("1667 c.c.", "1668 c.c."), bars_kind="prescrizione"),
     Term("manifestazione_gravi_difetti", "manifestazione dei gravi difetti entro dieci anni dal compimento dell'opera",
          "art. 1669 c.c.", _WORKS_DONE, _DISCOVERY + "|" + _DEFECT, years=10, word="decennio dal compimento",
          applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dal compimento dell'opera",
-         start_kinds=("fine lavori", "consegna"), end_kinds=("scoperta vizio",)),
+         start_kinds=("fine lavori", "consegna"), end_kinds=("scoperta vizio",),
+         bars=("1669 c.c.",), bars_kind="decadenza"),
     Term("denuncia_gravi_difetti", "denuncia dei gravi difetti dell'immobile", "art. 1669 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, years=1,
          applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta",
-         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida"),
+         bars=("1669 c.c.",), bars_kind="decadenza"),
 ]
+
+def term_bars(term_id: str) -> Tuple[Tuple[str, ...], str]:
+    """v79.12.4 (item 7): (the articles the term bars once DECORSO, «prescrizione» / «decadenza») of TERMS' entry; ((),
+    "") for a term that bars none (an usucapione, the querela) or an unknown id."""
+    term = next((t for t in TERMS if t.id == str(term_id or "")), None)
+    return (term.bars, term.bars_kind) if term else ((), "")
+
+
+# v79.12.4 (item 7, review): the kinds of act that end a term only by the client's suing -- one the client has not
+# brought yet (it is asking now); a denuncia or a diffida the case may simply not mention
+_ACTION_END_KINDS = {"azione giudiziaria"}
+_COMMA_TAIL_RE = re.compile(r"\s+co(?:mma|\.)\s*\d+.*$", re.IGNORECASE)        # lawyer_method._COMMA_TAIL_RE
+
+
+def barring_terms(label: str, terms: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """v79.12.4 (item 7): the computed terms (compute_terms' entries) marked DECORSO whose table entry bars the article
+    («1168 c.c.»: the possessoria's; a comma label, «1168 c.c. co. 2», its article's) -- [{"id", "ref", "kind",
+    "firm"}]; [] for none. firm (review): the facts settle it -- an act they state ends the term late, or the term ends
+    only by the client's own suit (_ACTION_END_KINDS), which it has not brought; a term run to the present with no
+    denuncia or diffida stated is not firm (the case may just not mention one)."""
+    from .plan_then_write import _code_key
+    number, _, code = _COMMA_TAIL_RE.sub("", str(label or "").strip()).partition(" ")
+    out: List[Dict[str, Any]] = []
+    for t in terms or []:
+        if not isinstance(t, dict) or t.get("status") != "DECORSO":
+            continue
+        arts, kind = term_bars(t.get("id"))
+        for a in arts:
+            n, _, c = a.partition(" ")
+            if n == number and _code_key(c) == _code_key(code.strip()):
+                term = next((x for x in TERMS if x.id == str(t.get("id"))), None)
+                firm = not t.get("to_now") or bool(term and term.end_kinds
+                                                   and set(term.end_kinds) <= _ACTION_END_KINDS)
+                out.append({"id": str(t.get("id")), "ref": str(t.get("ref") or ""), "kind": kind, "firm": firm})
+                break
+    return out
+
 
 # Criminal appeals run from the deposit of the reasons (art. 585 c.p.p.): 15 days with the reasons read in
 # court, 30 when deposited within 15 days, 45 within a longer term (at most 90 days).
@@ -1320,6 +1376,7 @@ def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool)
             why.append(f"materia {term.family} fuori dalle aree del caso")
         return trace
     start = starts[0]
+    to_now = False
     if len(start) > 3 and start[3]:
         status = term_status(start[0], start[3], term.years, term.months, term.days)
         end_what, end_written = "fine del possesso", start[4]
@@ -1334,8 +1391,11 @@ def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool)
         else:
             status, end_what, end_written = _status_to_now(facts, start[0], term.years, term.months, term.days)
             why.append(f"nessun atto che lo interrompa: fino a {end_what} {end_written}".rstrip())
+            to_now = True
     trace["entry"] = _term_entry(term.id, term.label, term.ref, term.word or f"termine di {term.length()}",
                                  term.length(), status, start, end_what, end_written)
+    if to_now:      # v79.12.4 (item 7, review): no act the facts state ends it -- run to the present (barring_terms)
+        trace["entry"]["to_now"] = True
     if term.id == "non_uso_servitu":
         expiry = start[0][1].year + term.years
         if feature_flags.enabled(TERM_EXPIRY_TEXT_FLAG):

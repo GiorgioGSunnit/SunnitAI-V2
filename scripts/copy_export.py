@@ -62,6 +62,8 @@ EXTRA = (
     ("lawyer_method", "PENAL_ROUTE_UNKNOWN", "Metodo, la via penale: procedibilità non letta (v79.8)"),
     ("lawyer_method", "NO_ACTION_LINE", "Risposta, la nota del metodo non applicato: nessuna norma d'azione (le parole "
                                         "del PO, v79.8.6; v79.10.1: mai linea principale)"),
+    ("lawyer_method", "NO_ACTION_EXPIRED_LINE", "Risposta, la nota del metodo non applicato: ogni domanda preclusa da "
+                                                "un termine decorso (v79.12.4, voce 7)"),
     ("lawyer_method", "MISSING_LAWS_LINE", "Metodo, «Sintesi» e «Conclusioni»: la disciplina speciale assente "
      "dall'archivio (le parole del PO, v79.9)"),
     ("lawyer_method", "NO_ACTION_SUBJECT", "Risposta, la nota senza norma d'azione: nessun istituto nominato (v79.8.5)"),
