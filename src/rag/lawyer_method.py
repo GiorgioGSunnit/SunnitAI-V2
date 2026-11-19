@@ -470,6 +470,9 @@ def subsumption_rows(rec: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> L
             fact = _sentence_text(r.get("supporting") or [], by_id) or "i fatti estratti dal caso"
         elif status == NON_RISULTA:
             fact = _sentence_text(r.get("contradicting") or [], by_id) or "i fatti estratti lo escludono"
+        elif r.get("fit_open") and _fit_on():   # v79.13.0: the applicability judgment's «dipende» -- the question
+            from .applicability import FIT_OPEN_ROW                                                    # decides it
+            fact = FIT_OPEN_ROW.format(question=_short(r["fit_open"], 160))
         else:
             fact = "nessun fatto del caso" + (f": manca {_short(r.get('missing'), 120)}" if r.get("missing") else "")
         text = _short(r.get("text"), 160)
@@ -1858,7 +1861,10 @@ def article_scope(ctx: Dict[str, Any], texts: Sequence[str] = ()) -> set:
     written = [ctx.get("case") or "", ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""]
     written += [f"{c.get('tesi') or ''} {c.get('articles') or ''}" for c in ctx.get("candidates") or []]
     written += list(ctx.get("litisconsorzio") or []) + list(ctx.get("riti") or []) + list(texts or [])
-    return {_norm_label(x) for x in labels} | {citations.label(r) for t in written for r in citations.article_refs(t)}
+    scope = {_norm_label(x) for x in labels} | {citations.label(r) for t in written for r in citations.article_refs(t)}
+    if ctx.get("fit_removed"):          # v79.13.0: a norm the applicability judgment removed is never in the scope
+        scope -= {_norm_label(x) for x in ctx["fit_removed"]}
+    return scope
 
 
 _CITATION_ABBREV_RE = re.compile(r"\b(?:Sez|Cass|n|nn|art|artt|co|pen|civ|Un|sent|ord|Rv|dep|cfr)\.$", re.IGNORECASE)
@@ -2189,6 +2195,13 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
         "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
     art = c.get("article") or ""
     texts = CODE_ARGUMENTS.get(c["kind"]) or {}
+    if c["kind"] == "contest_fit":              # v79.13.0: the applicability judgment's «no» on a kept norm
+        from .applicability import FIT_CONTEST_ARGUMENT, clause
+        return {"pro": _sentence_join([FIT_CONTEST_ARGUMENT["pro"].format(passage=f"«{c.get('passage') or ''}»")]),
+                "contro": _sentence_join([FIT_CONTEST_ARGUMENT["contro"].format(who=who)]),
+                "argomento": _sentence_join([FIT_CONTEST_ARGUMENT["argomento"].format(
+                    perche=clause(c.get("perche")))]),
+                "realismo": MEDIO}
     if c["kind"] == "transazione":              # v79.8 (B3): the convenuto's way out of the claim
         return {"pro": _sentence_join([TRANSAZIONE_ARGUMENT["pro"]]),
                 "contro": _sentence_join([TRANSAZIONE_ARGUMENT["contro"]]),
@@ -2570,6 +2583,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         ctx["no_action"] = NO_ACTION_LINE.format(istituto=action_subject(ctx))
         ctx["no_action_kind"] = "none"                      # v79.12.5 (item 2)
         _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {})})
+    for e in ctx.get("fit_contests") or []:     # v79.13.0: a charged or named norm the judgment says does not govern
+        add("contest_fit", fit_contest_tesi(e), article=e["article"], passage=e.get("passage") or "",   # the facts
+            perche=e.get("perche_printed") or "", fit_facts=list(e.get("facts") or []))
     if not offender:
         for label, r in contests["integrated"]:
             contest(label, r)
@@ -2612,6 +2628,62 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 JURISPRUDENTIAL_ADMITTED = "elemento di fonte giurisprudenziale dell'addebito"       # v79.12.7 (item 1)
+
+
+def _fit_on() -> bool:
+    """v79.13.0 (review): APPLICABILITY_FIT -- a «dipende» mark read only with the flag on."""
+    from .applicability import enabled
+    return enabled()
+
+
+def fit_contest_tesi(e: Dict[str, Any]) -> str:
+    """v79.13.0: the thesis line of a kept norm the applicability judgment says does not govern the facts."""
+    from .applicability import FIT_CONTEST_TESI, clause
+    return FIT_CONTEST_TESI.format(art=e["article"], perche=clause(e.get("perche_printed")))
+
+
+def fit_kept(state: Dict[str, Any], records: Dict[str, Dict[str, Any]]) -> List[Tuple[str, Dict[str, Any]]]:
+    """v79.13.0: each «no» the applicability judgment gave a norm the user names or the text charges (kept), as
+    ("contest", item) -- the client's line: a charged norm (the judgment's «charged», a record charged) or a threat's
+    record -- or ("objection", item): the other side's against the client's own norm. item: the judgment with its
+    «perche_printed» (fact ids out). With or without a method record."""
+    from . import applicability
+    fit = state.get("applicability") or {}
+    charged = set(_charged(records)) | {str(x) for x in fit.get("charged") or []}
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    for e in fit.get("kept_named") or []:
+        label = str(e.get("article") or "")
+        if not label:
+            continue
+        rec = records.get(label) or {}
+        item = {**e, "article": label,
+                "perche_printed": applicability.printable(e.get("perche"), fit.get("facts") or [])}
+        out.append(("contest" if label in charged or rec.get("side") == "threat" else "objection", item))
+    return out
+
+
+def fit_kept_lines(state: Dict[str, Any], posture: Dict[str, Any], records: Dict[str, Dict[str, Any]]) -> List[str]:
+    """v79.13.0 (review): the kept named or charged norms' «no» as the prose answer prints them -- the contest's thesis,
+    or the objection with its answer; [] with the flag off."""
+    from . import applicability
+    if not applicability.enabled():
+        return []
+    out = []
+    for kind, item in fit_kept(state, records):
+        if kind == "contest":
+            out.append(fit_contest_tesi(item).rstrip(".") + ".")
+        else:
+            q, ans = applicability.FIT_OBJECTION
+            out.append(q.format(who=_other_side(posture or {}), art=item["article"],
+                                perche=applicability.clause(item["perche_printed"])).rstrip(".") + ". "
+                       + ans.format(passage=f"«{item.get('passage') or ''}»").rstrip(".") + ".")
+    return out
+
+
+def _other_side(posture: Dict[str, Any]) -> str:
+    """v79.13.0: who contests the client's own norm -- code_argument's «who»."""
+    return "La controparte" if not criminal(posture) else (
+        "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
 
 
 def post_fact_lines(ctx: Dict[str, Any]) -> List[str]:
@@ -2762,7 +2834,8 @@ def no_claim_solutions(ctx: Dict[str, Any], kind: str) -> str:
 
 # v79.8 (B1): every candidate records the rule that admits it -- a claim, a riconvenzionale and a remedy theirs
 # (claim_admission, remedies.json); the others by their kind. A candidate with none is counted (must be 0).
-ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "contest_open": "elemento dell'addebito o "
+ADMITTED_BY = {"contest_fit": "giudizio di applicabilità sul testo della norma",              # v79.13.0
+               "contest_excluded": "elemento dell'addebito o della domanda", "contest_open": "elemento dell'addebito o "
                "della domanda", "contest_integrated": "elemento dell'addebito o della domanda (tesi minoritaria)",
                "requalify": "qualificazione alternativa", "scriminante": "difesa di parte generale",
                "defence": "difesa di parte generale", "attenuante": "circostanza con elementi provati",
@@ -3263,7 +3336,8 @@ def family_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bo
 
 
 CONTAINMENT_LINE ="Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena"   # my draft
-CAP_PRIORITY = {"contest_excluded": 0, "contest_open": 0, "requalify": 1, "scriminante": 2, "defence": 2,
+CAP_PRIORITY = {"contest_excluded": 0, "contest_open": 0, "contest_fit": 0,                # v79.13.0: contest_fit
+                "requalify": 1, "scriminante": 2, "defence": 2,
                 "attenuante": 3, "contest_integrated": 4}       # v79.7: what the cap keeps first (the containment always)
 NO_THREAT_WHY = {   # v79.7 (item 2): why no record is the charge's -- logged and counted, never printed
     "no_record": "nessuna scheda dell'addebito (art. {art}) tra le schede del metodo",
@@ -6523,6 +6597,26 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     unknown = [x["name"] for x in rites if x["status"] == TO_VERIFY_RITE] if riti else []
     if unknown:                 # v79.10.3 (C1): the rito «da verificare sulla pena edittale» -- its point in §10
         when_points = list(when_points) + [RITE_POINT.format(names=" e ".join(unknown))]
+    from . import applicability as applicability_
+    # v79.13.0 (APPLICABILITY_FIT): the judgment's effects, when it ran -- (review) read only with the flag on
+    fit = (state.get("applicability") or {}) if applicability_.enabled() else {}
+    fit_contests: List[Dict[str, Any]] = []
+    fit_objections: List[Dict[str, str]] = []
+    if fit:
+        # a «dipende»: its condizione in §10 as the user's question (its norm still in the answer)
+        when_points = list(when_points) + applicability_.questions(fit.get("open") or [], list(records),
+                                                                   fit.get("facts") or [])
+        # a «no» on a norm the user names or the text charges: kept -- the judgment the defence's contest (the
+        # client's line against a threat or a charge; else the other side's objection to the client's own norm);
+        # (review) also when the norm has no method record (gated, undecomposed, no fattispecie)
+        for kind, item in fit_kept(state, records):
+            if kind == "contest":
+                fit_contests.append(item)
+            else:
+                q, ans = applicability_.FIT_OBJECTION
+                fit_objections.append({"obiezione": q.format(who=_other_side(posture or {}), art=item["article"],
+                                                            perche=applicability_.clause(item["perche_printed"])),
+                                       "risposta": ans.format(passage=f"«{item.get('passage') or ''}»")})
     ctx = {"case": case, "case_id": case_id_, "client": client, "rito": (posture or {}).get("rito") or "",
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
            "notes": notes,
@@ -6535,7 +6629,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "stragiudiziale": stragiudiziale_line(posture or {}, procedibilita.get(a.get("article") or "", "")),
            "rulings": [r for r in rulings if isinstance(r, dict) and r.get("id") and r.get("massima")],
            "lines": list(lines),
-           "objections_fallback": objections_fallback(records, a, penal, by_id, objections),
+           "objections_fallback": fit_objections + objections_fallback(records, a, penal, by_id, objections),
            "open_questions": [point_sentence(str(q.get("text") or "")) for q in questions or []      # v75b: §10
                               if isinstance(q, dict) and q.get("text")],
            "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
@@ -6560,6 +6654,9 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "attenuanti_log": att_log,
            "refresh_inputs": {"main": main, "order": list(order), "aggravante_note": note,
                               "id_floor": max_element_id(all_records, every)}}
+    if fit:                     # v79.13.0: the kept-named contests (thesis_candidates), the removed (out of scope)
+        ctx["fit_contests"] = fit_contests
+        ctx["fit_removed"] = [str(x.get("article")) for x in state.get("fit_removed") or [] if x.get("article")]
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti),
@@ -6715,7 +6812,7 @@ def narrated_event_proven(records: Dict[str, Dict[str, Any]], certain: str) -> L
     causal: List[str] = []
     for label, rec in (records or {}).items():
         for r in _live(rec):
-            if r.get("status") != DA_PROVARE:
+            if r.get("status") != DA_PROVARE or (r.get("fit_open") and _fit_on()):   # v79.13.0: a «dipende» stays
                 continue
             how = event_element(str(r.get("text") or ""), event)
             if how == "bare":

@@ -213,6 +213,17 @@ case_counters adds them to rites_computation_mismatch and rites_without_computat
 too). absorbed_as_autonomous also reads the flow's records (state["records"]), which prepare makes agree with the
 absorption.
 
+v79.13.0 (APPLICABILITY_FIT): the run sets APPLICABILITY_FIT=true (--no-applicability-fit skips it): for every
+admitted candidate the model judges whether the provision governs the facts and the code verifies each word of the
+judgment (src/rag/applicability.py). In the counters table (block_counters): fit_judged, fit_si, fit_no, fit_dipende,
+fit_unverified (must stay low: a rise means the prompt drifted), fit_added_content (judgments rejected for unquoted
+legal content), fit_added_content_in_effects (must be 0), norms_removed_by_fit, fit_kept_named (a «no» on a norm the
+user names or the text charges: kept, printed as the defence's contest), fit_seconds, fit_removed_stripped and
+fit_removed_left (the last pass: must be 0). The section «Applicability judgment» lists, per cell, every removed norm
+with its quoted passage and perché, every kept-named «no», every «dipende» with its question, the prompt hash and the
+step's seconds; check applicability_fit -- no judgment with added content had an effect and no removed norm is cited
+in the delivered answer (a cell where the step did not run passes, «not run»).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -327,6 +338,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(clients_once_check(out["answer"]))                                 # v79.10.2 (B3)
         out["checks"].append(rites_fit_check(out["counters"]))                                  # v79.10.3 (C3)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
+        out["applicability"] = fit_of(st)                                                       # v79.13.0
+        out["checks"].append(fit_check(out["answer"], st))
         if spec.get("followup"):                                                                # v79.12.5 (10)
             run_followup(spec, out["answer"], result.get("state") or {}, out)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
@@ -453,6 +466,9 @@ def run_followup(spec: Dict[str, Any], first: str, state: Dict[str, Any], out: D
     out["followup_answer"] = str(got.get("answer") or "")
     out["checks"].append(followup_check(first, out["followup_answer"], spec["followup"], before,
                                         sorted((after_state.get("records") or {}).keys())))
+    if after_state.get("applicability"):                # v79.13.0 (review): the follow-up's answer checked too
+        check = fit_check(out["followup_answer"], after_state)
+        out["checks"].append({**check, "check": "applicability_fit_followup"})
 
 
 def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -498,6 +514,70 @@ def rites_fit_check(counters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     why = [f"{k}={counters.get(k)}" for k in ("rites_unavailable_offered", "requalify_event_mismatch")
            if int(counters.get(k) or 0)]
     return {"check": "rites_and_alternatives_fit", "ok": not why, "why": "; ".join(why)}
+
+
+def fit_of(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.13.0: what the applicability judgment did in the cell -- {ran, prompt_hash, seconds, removed: [{article,
+    passage, perche}], kept_named, open: [{article, condizione}], unverified: [{article, reason}]}; {"ran": False}
+    when the step did not run."""
+    fit = state.get("applicability") or {}
+    if not fit:
+        return {"ran": False}
+    pick = lambda items, keys: [{k: e.get(k) for k in keys} for e in items or []]
+    return {"ran": True, "prompt_hash": fit.get("prompt_hash"),
+            "seconds": (fit.get("timing") or {}).get("total_s"),
+            "removed": pick(state.get("fit_removed"), ("article", "passage", "perche")),
+            "kept_named": pick(fit.get("kept_named"), ("article", "passage", "perche")),
+            "open": pick(fit.get("open"), ("article", "condizione")),
+            "unverified": [{"article": j.get("article"), "reason": j.get("reason")}
+                           for j in fit.get("judgments") or [] if not j.get("verified")]}
+
+
+def fit_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.13.0: check applicability_fit -- no judgment with added content had an effect, and no norm the judgment
+    removed is cited in the delivered answer. A cell where the step did not run passes («not run»)."""
+    from src.rag import applicability, interactive_flow
+    if not state.get("applicability"):
+        return {"check": "applicability_fit", "ok": True, "why": "not run"}
+    counters = state.get("block_counters") or {}
+    added = int(counters.get("fit_added_content_in_effects") or 0)
+    cited = applicability.removed_cited(answer, interactive_flow.fit_removed_keys(state), interactive_flow._key)
+    # (review) the last pass strips a removed norm whatever path printed it -- so a path that brought one back shows in
+    # what the pass found (fit_removed_stripped) and in what it left (fit_removed_left): both must be 0
+    stripped = int(counters.get("fit_removed_stripped") or 0)
+    left = int(counters.get("fit_removed_left") or 0)
+    why = "; ".join(x for x in (f"{added} effects from a judgment with added content" if added else "",
+                                f"removed norms cited: {', '.join(cited)}" if cited else "",
+                                f"{stripped} sentences citing a removed norm stripped by the last pass "
+                                f"(a path brings it back)" if stripped else "",
+                                f"{left} removed norms still cited after the last pass" if left else "") if x)
+    return {"check": "applicability_fit", "ok": not (added or cited or stripped or left), "why": why, "cited": cited}
+
+
+def fit_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.13.0: per cell, the applicability judgment -- the counters, every removed norm with its quoted passage and
+    its perché (a wrong removal visible), every kept-named «no», every «dipende» with its question."""
+    rows = [c for c in results if (c.get("applicability") or {}).get("ran")]
+    if not rows:
+        return []
+    keys = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
+            "fit_added_content_in_effects", "norms_removed_by_fit", "fit_kept_named", "fit_seconds")
+    lines = ["", "## Applicability judgment (APPLICABILITY_FIT)", "",
+             "| cell | " + " | ".join(keys) + " | prompt |", "|---" * (len(keys) + 2) + "|"]
+    for c in rows:
+        k = c.get("counters") or {}
+        lines.append(f"| {c['id']} | " + " | ".join(str(k.get(x, "—")) for x in keys)
+                     + f" | {c['applicability'].get('prompt_hash') or '—'} |")
+    for c in rows:
+        fit = c["applicability"]
+        lines += ["", f"**{c['id']}** — removed: {len(fit.get('removed') or [])}"]
+        lines += [f"- removed {e['article']}: «{e.get('passage') or ''}» — {e.get('perche') or ''}"
+                  for e in fit.get("removed") or []] or ["- no norm removed"]
+        lines += [f"- kept (named or charged) {e['article']}: «{e.get('passage') or ''}» — {e.get('perche') or ''}"
+                  for e in fit.get("kept_named") or []]
+        lines += [f"- dipende {e['article']}: {e.get('condizione') or ''}" for e in fit.get("open") or []]
+        lines += [f"- unverified {e['article']}: {e.get('reason') or ''}" for e in fit.get("unverified") or []]
+    return lines
 
 
 def alternatives_check(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1117,6 +1197,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
     lines += counts_lines(results, baseline)
     lines += counter_lines(results, baseline)
+    lines += fit_lines(results)                     # v79.13.0
     lines += headline_lines(results, baseline)      # v79.11
     lines += ranked_lines(results)
     lines += family_lines(results)                  # v79.9 (C2)
@@ -1145,6 +1226,8 @@ def main(argv=None) -> int:
                     help="v79.11: ELEMENT_SCHEMAS on for this run (compare with a flag-off run as --baseline)")
     ap.add_argument("--no-family-shadow-grade", action="store_true",
                     help="v79.10 (A5): skip the family gate's shadow grading (the alarm on a proxy count)")
+    ap.add_argument("--no-applicability-fit", action="store_true",
+                    help="v79.13.0: run the cells with APPLICABILITY_FIT off (the judgment is on by default here)")
     args = ap.parse_args(argv)
     if not args.answers and os.path.isfile(args.env):
         from dotenv import load_dotenv
@@ -1157,6 +1240,8 @@ def main(argv=None) -> int:
         os.environ["ELEMENT_SCHEMAS"] = "true"
     # v79.10 (A5): the family gate's dropped rows graded in shadow, for the alarm -- over the env file's, for this run
     os.environ["FAMILY_GATE_SHADOW_GRADE"] = "false" if args.no_family_shadow_grade else "true"
+    # v79.13.0: the applicability judgment on for the cells -- over the env file's, for this run
+    os.environ["APPLICABILITY_FIT"] = "false" if args.no_applicability_fit else "true"
     baseline = read_baseline(args.baseline)             # v79.7: before any cell runs
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]

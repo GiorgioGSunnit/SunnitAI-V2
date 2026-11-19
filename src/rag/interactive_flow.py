@@ -5786,13 +5786,39 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     from .article_text import row_abrogated, row_misaligned     # v60c: an abrogated article is never written; v60e:
     dead = {_key(r["_article"]) for r in all_rows if r.get("_article") and (row_abrogated(r) or row_misaligned(r))}
     state["abrogated"] = abrogated_labels(all_rows)         # v79.6 (item 3): never a charge, a line, a candidate
+    from . import applicability
+    if applicability.enabled():         # v79.13.0 (review): a removal the user now names, or made on other facts, back
+        _isolated("fit_readmit", lambda: fit_readmit(state, posture))
+    elif state.get("fit_removed") or state.get("applicability"):    # the flag off after an answer with it on: the
+        _isolated("fit_clear", lambda: fit_clear(state))            # earlier judgment's effects undone
     records = state.get("records") or {}
     extra: List[str] = []
+    fit_on = bool(records) and applicability.enabled()      # v79.13.0: the applicability judgment (default off)
+    def judged(wanted, have):                   # v79.13.0: the step, on its own stage of the meter
+        mark("applicability_fit")
+        try:
+            return _isolated("applicability_fit", lambda: applicability_fit(state, posture, all_rows, dead, wanted,
+                                                                              have), set())
+        finally:
+            mark("decompose_records")
+    fit_hook = judged if fit_on else None
+    if fit_on:                  # an earlier answer's removals stay removed; each answer judges its candidates anew
+        dead |= fit_removed_keys(state)
     if records and method_mode(state):      # v74: every record decomposed -- the charge, the alternatives, the named
-        extra, fetched = _isolated("decompose_records", lambda: decompose_records(state, posture, all_rows, dead),
+        extra, fetched = _isolated("decompose_records", lambda: decompose_records(state, posture, all_rows, dead,
+                                                                                    fit=fit_hook),
                                    ([], [])) or ([], [])
         all_rows = all_rows + [r for r in fetched if _key(r["_article"]) not in
                                {_key(x["_article"]) for x in all_rows if x.get("_article")}]
+    elif fit_hook is not None:  # v79.13.0: no decomposition step -- the records' candidates alone
+        fit_hook([], {})
+    if fit_on:                  # v79.13.0: the «dipende» elements «da provare», on the records as decomposed now
+        _isolated("applicability_force", lambda: fit_force(state))
+        keys = fit_removed_keys(state)
+        topics = [t for t in topics if t.get("articles") or "articles" not in t]    # one left with no article: gone
+        if not topics:
+            return C.NO_TOPIC_TO_ANSWER, []
+        all_rows = [r for r in all_rows if not (r.get("_article") and _key(r["_article"]) in keys)]
     mark("records_link")        # v60f: each chosen topic's requisites linked to the case's sentences, in parallel
     _isolated("records_link", lambda: link_records(state, topics, dead, extra))
     if records:                 # v60i (2): the counterparty's articles whose elements fail are the client's argument
@@ -6103,6 +6129,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         # client by compose_clients (another client's own block may keep the sentence)
         merge_removals(state, method_ctx.get("compose_removals") or [])
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
+    if fit_on and method_ctx is None:           # v79.13.0 (review): the prose answer -- a kept named or charged norm's
+        draft = _isolated("fit_prose", lambda: fit_prose(state, posture, draft), draft) or draft     # «no», printed
     # v79.10.3 (C1): no rito the charge does not admit offered anywhere (the prose path's writer, the method's §8 as
     # written) -- dropped into the ledger, «removed»; what is left counted (rites_unavailable_offered, must be 0)
     draft = _isolated("rites_out", lambda: rites_checked(state, draft, rites, method_ctx, method_clients, posture),
@@ -6141,6 +6169,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     # a path that bypassed compose's checks (the head, the answers, the step-aside prose) or by a later step
     method_ctxs = [c for _, c, _ in method_clients] if method_clients else ([method_ctx] if method_ctx else [])
     draft = _isolated("text_residue", lambda: text_residue(state, draft, method_ctxs), draft) or draft
+    if fit_on:                  # v79.13.0: a removed norm never in the delivered answer, whatever path printed it
+        draft = _isolated("fit_removed_out", lambda: fit_removed_out(state, draft), draft) or draft
     _isolated("names_counted", lambda: names_counted(state, draft))         # v79.10.5 (E2): names left in passages
     _isolated("text_counted", lambda: text_counted(state, draft))           # v79.12.5 (items 8, 9)
     for n in numbers:
@@ -6915,8 +6945,247 @@ DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativ
                  "remedy": "rimedio civile della persona offesa"}                     # v79.12.4 (item 1)
 
 
+def fit_removed_keys(state: Dict[str, Any]) -> set:
+    """v79.13.0: the keys of the norms an applicability judgment removed (this answer's or an earlier one's) -- never
+    back through any later step or answer (read as dead). Empty with the flag off: nothing ever writes the list."""
+    from . import applicability
+    if not applicability.enabled():     # (review) never read with the flag off, whatever an earlier answer left
+        return set()
+    return {_key(_parse_label(e["article"])) for e in state.get("fit_removed") or []
+            if isinstance(e, dict) and e.get("article")}
+
+
+def fit_charged(state: Dict[str, Any], posture: Dict[str, Any]) -> List[str]:
+    """v79.13.0 (review): the norms the text charges -- intake's contestazione, the case's charge or claim sentences
+    (posture.charge_labels), a record marked charged -- each also as its store document's article
+    (state["charge_aliases"]: «73 d.P.R. 309/1990» is «73 Testo Unico …»)."""
+    from . import posture as posture_mod
+    out = posture_mod.intake_charges(posture) + posture_mod.charge_labels(case_text(state))
+    out += [x for x, r in (state.get("records") or {}).items() if isinstance(r, dict) and r.get("charged")]
+    return _with_aliases(state, out)
+
+
+def _with_aliases(state: Dict[str, Any], labels: Sequence[str]) -> List[str]:
+    aliases = state.get("charge_aliases") or {}
+    out = list(labels)
+    out += [aliases[x] for x in labels if x in aliases]
+    out += [a for a, b in aliases.items() if b in labels]
+    return list(dict.fromkeys(out))
+
+
+def fit_protected(state: Dict[str, Any], posture: Dict[str, Any]) -> List[str]:
+    """v79.13.0: the norms a «no» never removes -- the ones the user names (user_named: intake's, the case's text) and
+    the ones the text charges (intake's contestazione, the case's charge or claim sentences: posture.charge_labels; a
+    record marked charged or named)."""
+    out = [_label(k) for k in user_named(state)] + fit_charged(state, posture)
+    out += [x for x, r in (state.get("records") or {}).items()
+            if isinstance(r, dict) and (r.get("named_due") or r.get("decomposed_for") == DECOMPOSE_WHY["named"])]
+    return _with_aliases(state, list(dict.fromkeys(out)))      # (review) a special law's charge as its store's article
+
+
+def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
+                      wanted: Sequence[str] = (), have: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None
+                      ) -> set:
+    """v79.13.0 (APPLICABILITY_FIT): the applicability judgment, once per answer, on every admitted candidate -- the
+    records' live articles (the topics' graded ones, past the family gate and the cap) and the ones the decomposition
+    would split (wanted: the charge, the read's hypotheses, the alternatives, the named, the defences, the ranked) --
+    before they are decomposed (applicability.judge: the model judges, the code verifies). The verified judgments'
+    effects (applicability.effects): a «no» removes the norm from the records, the topics and every later route (its key
+    into dead and state["fit_removed"]) unless the user names it or the text charges it (kept: the defence's contest,
+    state["applicability"]["kept_named"]); a «dipende» is marked on its elements after the decomposition (fit_force)
+    and asked in §10. The counters into block_counters; logged. Returns the labels removed."""
+    from . import applicability
+    started = time.time()                       # the 20 s budget counts from here, the inputs' reading included
+    records = state.get("records") or {}
+    have = dict(have or {})
+    for r in rows or []:
+        if r.get("_article"):
+            have.setdefault(_key(r["_article"]), r)
+    labels = [x for x, r in records.items() if isinstance(r, dict) and not r.get("dropped")]
+    labels += [x for x in wanted or [] if x not in labels]
+    labels = [x for x in labels if _key(_parse_label(x)) not in dead]
+    norms = [applicability.norm_input(x, have.get(_key(_parse_label(x))), records.get(x), list(have.values()))
+             for x in labels]
+    sents = state.get("sentences") or case_sentences(state)
+    facts = applicability.facts_input(sents)
+    role = str((posture or {}).get("role") or "")
+    result = applicability.judge(norms, facts, role, started=started)
+    protected = fit_protected(state, posture)
+    done = applicability.effects(result, protected)
+    known = [f["id"] for f in facts]
+    sig = applicability.facts_signature(facts)
+    removed: set = set()
+    entries: Dict[Any, Dict[str, Any]] = {}
+    order = list(records)
+    for e in done["removed"]:
+        label = str(e["article"])
+        key = _key(_parse_label(label))
+        removed.add(label)
+        dead.add(key)
+        # (review) what the removal took, to put back when the user names it or the facts change (fit_readmit)
+        entries[key] = {"article": label, "passage": e.get("passage") or "", "perche": e.get("perche") or "",
+                        "facts": list(e.get("facts") or []), "ambito": e.get("ambito"), "facts_sig": sig,
+                        "record": records.pop(label, None), "record_pos": order.index(label) if label in order
+                        else None}
+    if removed:
+        keys = set(entries)
+        key_of = lambda x: _key(_parse_label(x))
+        marks_t: Dict[Any, List[Dict[str, Any]]] = {}
+        marks_o: Dict[Any, List[Dict[str, Any]]] = {}
+        state["topics"] = applicability.strip_topics(state.get("topics") or [], keys, key_of, marks=marks_t)
+        state["others"] = applicability.strip_topics(state.get("others") or [], keys, key_of, drop_empty=True,
+                                                     marks=marks_o)
+        ranked = list(state.get("ranked") or [])
+        state["ranked"] = [x for x in ranked if key_of(x) not in keys]
+        for key, entry in entries.items():
+            entry.update(topics=marks_t.get(key) or [], others=marks_o.get(key) or [],
+                         ranked=[[i, x] for i, x in enumerate(ranked) if key_of(x) == key])
+            state["fit_removed"] = [x for x in state.get("fit_removed") or []
+                                    if x.get("article") != entry["article"]] + [entry]
+    texts = {n["article"]: n["text"] for n in norms}
+    state["applicability"] = {
+        "prompt_hash": result.get("prompt_hash"), "removed": done["removed"], "kept_named": done["kept_named"],
+        "open": done["open"], "texts": {e["article"]: texts.get(e["article"], "") for e in done["open"]},
+        "facts": known, "protected": protected, "charged": fit_charged(state, posture), "facts_sig": sig,
+        "timing": result.get("timing") or {},
+        "judgments": [{k: r.get(k) for k in ("article", "fit", "verified", "reason", "added_content", "passage",
+                                             "perche", "condizione", "ambito")} for r in result.get("judgments") or []
+                      if r]}
+    counters = state.setdefault("block_counters", {})
+    counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})
+    counters["norms_removed_by_fit"] = len(removed)
+    counters["fit_kept_named"] = len(done["kept_named"])
+    # a judgment rejected for unquoted content never has an effect (must be 0: verify never passes one)
+    counters["fit_added_content_in_effects"] = sum(1 for part in done.values() for e in part if e.get("added_content"))
+    counters["fit_seconds"] = round(time.time() - started, 3)     # the whole step: inputs, judgment, effects
+    state.setdefault("timings", {})["applicability_s"] = counters["fit_seconds"]
+    _log("applicability_effects", {"prompt_hash": result.get("prompt_hash"), "candidates": labels,
+                                   "removed": [{k: e.get(k) for k in ("article", "passage", "perche")}
+                                               for e in done["removed"]],
+                                   "kept_named": [{k: e.get(k) for k in ("article", "passage", "perche")}
+                                                  for e in done["kept_named"]],
+                                   "open": [{k: e.get(k) for k in ("article", "condizione", "touches")}
+                                            for e in done["open"]],
+                                   "counters": {k: counters.get(k) for k in applicability.FLOW_COUNTERS}})
+    return removed
+
+
+def fit_force(state: Dict[str, Any]) -> Dict[str, List[str]]:
+    """v79.13.0: the «dipende» judgments on the records as they are now decomposed (applicability.force_open): the
+    elements each condizione touches «da provare» for good (issue_records.settle reads rec «fit_open»)."""
+    from . import applicability
+    fit = state.get("applicability") or {}
+    done = applicability.force_open(state.get("records") or {}, fit.get("open") or [], fit.get("texts") or {},
+                                    fit.get("facts") or [])
+    fit["forced"] = done
+    return done
+
+
+def fit_removed_out(state: Dict[str, Any], draft: str) -> str:
+    """v79.13.0: the delivered answer's last pass for the removed norms -- a sentence citing one dropped (whatever path
+    printed it). Counters: fit_removed_stripped (what this pass found: a path to fix when not 0), fit_removed_left
+    (still cited after it: must be 0)."""
+    from . import applicability
+    keys = fit_removed_keys(state)
+    counters = state.setdefault("block_counters", {})
+    found: List[str] = []
+    out = applicability.removed_out(draft, keys, _key, found)
+    counters["fit_removed_stripped"] = len(found)
+    counters["fit_removed_left"] = len(applicability.removed_cited(out, keys, _key))
+    if found:
+        _log("fit_removed_out", {"stripped": found[:10]})
+    return out
+
+
+def fit_readmit(state: Dict[str, Any], posture: Dict[str, Any], everything: bool = False) -> List[str]:
+    """v79.13.0 (review): an earlier answer's removal undone -- the norm the user now names or the text now charges
+    (fit_protected: a «no» never removes it), or every removal made on facts other than the case's now (facts_signature:
+    a fact added or corrected -- the judgment is judged again); everything: all of them (fit_clear, the flag off). The
+    record back at its place, the topics' and «others»' lists, the ranked list; out of state["fit_removed"]. Logged,
+    counted (fit_readmitted). The labels put back."""
+    from . import applicability
+    entries = [e for e in state.get("fit_removed") or [] if isinstance(e, dict) and e.get("article")]
+    if not entries:
+        return []
+    key_of = lambda x: _key(_parse_label(x))
+    if everything:
+        protected, sig = set(), ""
+    else:
+        protected = {key_of(x) for x in fit_protected(state, posture)}
+        sig = applicability.facts_signature(applicability.facts_input(state.get("sentences") or case_sentences(state)))
+    back: List[Tuple[Dict[str, Any], str]] = []
+    keep: List[Dict[str, Any]] = []
+    for e in entries:
+        key = key_of(e["article"])
+        why = "flag_off" if everything else "named_or_charged" if key in protected else \
+            "facts_changed" if e.get("facts_sig") and e["facts_sig"] != sig else ""
+        (back.append((e, why)) if why else keep.append(e))
+    if not back:
+        return []
+    state["fit_removed"] = keep
+    records = state.get("records")
+    if records is None:
+        records = state["records"] = {}
+    seen: List[Any] = []
+    for e, why in back:
+        key = key_of(e["article"])
+        if isinstance(e.get("record"), dict) and e["article"] not in records:
+            items = list(records.items())
+            pos = e.get("record_pos")
+            pos = len(items) if not isinstance(pos, int) else min(pos, len(items))
+            items.insert(pos, (e["article"], e["record"]))
+            records.clear()
+            records.update(items)
+        for field in ("topics", "others"):
+            marks = [m for m in e.get(field) or [] if not (m.get("dropped") and m.get("before") in seen)]
+            seen += [m.get("before") for m in marks if m.get("dropped")]
+            state[field] = applicability.restore_topics(state.get(field) or [], key, marks, key_of)
+        ranked = list(state.get("ranked") or [])
+        for i, x in e.get("ranked") or []:
+            if x not in ranked:
+                ranked.insert(min(int(i), len(ranked)), x)
+        if e.get("ranked"):
+            state["ranked"] = ranked
+    if keep:                    # a topic put back whole holds a norm still removed: out again
+        keys = {key_of(e["article"]) for e in keep}
+        state["topics"] = applicability.strip_topics(state.get("topics") or [], keys, key_of)
+        state["others"] = applicability.strip_topics(state.get("others") or [], keys, key_of, drop_empty=True)
+    labels = [e["article"] for e, _ in back]
+    state.setdefault("block_counters", {})["fit_readmitted"] = len(labels)
+    _log("fit_readmit", {"readmitted": [{"article": e["article"], "why": why} for e, why in back]})
+    return labels
+
+
+def fit_clear(state: Dict[str, Any]) -> None:
+    """v79.13.0 (review): APPLICABILITY_FIT off after an answer that ran it -- the earlier judgment's effects undone
+    (every removal put back, every «dipende» mark cleared, its state and counters out): the answer is the one the flag
+    off writes."""
+    from . import applicability
+    fit_readmit(state, {}, everything=True)
+    applicability.force_open(state.get("records") or {}, [])
+    for k in ("applicability", "fit_removed"):
+        state.pop(k, None)
+    counters = state.get("block_counters") or {}
+    for k in list(applicability.FLOW_COUNTERS) + ["fit_removed_stripped", "fit_removed_left", "fit_readmitted"]:
+        counters.pop(k, None)
+    _log("fit_clear", {})
+
+
+def fit_prose(state: Dict[str, Any], posture: Dict[str, Any], draft: str) -> str:
+    """v79.13.0 (review): the prose answer (no method sections) -- a «no» on a norm the user names or the text charges
+    is kept, its judgment printed: the defence's contest of a charged norm, else the other side's objection to the
+    client's own (lawyer_method.fit_kept_lines); a block after the answer. The draft."""
+    from . import lawyer_method
+    lines = lawyer_method.fit_kept_lines(state, posture, state.get("records") or {})
+    if not lines:
+        return draft
+    from .applicability import FIT_PROSE_TITLE
+    return f"{draft}\n\n**{FIT_PROSE_TITLE}**\n\n" + "\n".join(f"- {x}" for x in lines)
+
+
 def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
-                      fetch=None) -> Tuple[List[str], List[Dict[str, Any]]]:
+                      fetch=None, fit: Optional[Callable[[List[str], Dict[Tuple[str, str], Dict[str, Any]]], set]] =
+                      None) -> Tuple[List[str], List[Dict[str, Any]]]:
     """v74 (LAWYER_METHOD): every article that gets a record is split into elements the way the charge is -- the
     charge (intake's and the case text's), the first read's alternative qualifications, the articles the user names;
     the topics' own are already. The same decomposition as the topics' (issue_records._requisites), only its read
@@ -6981,11 +7250,17 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         keys = {aliases.get(x, x): (_key(_parse_label(aliases[x])) if x in aliases else k) for x, k in keys.items()}
     log: Dict[str, Any] = {"split": {}, "gated": [], "undecomposed": [], "unread": [], "already": [],
                            "aliases": aliases, "defence_routes": routes}
+    if fit is not None:         # v79.13.0 (APPLICABILITY_FIT): the judgment before the decomposition -- on the records'
+        fit(list(wanted), have)                         # candidates and these; a «no» removed: its key now in dead
+    removed = fit_removed_keys(state)                   # v79.13.0: empty with the flag off
     link: List[str] = []
     outcome: Dict[str, str] = {}        # v79.7 (item 3): what became of each, for the ranked trace
     paths: Dict[str, Dict[str, str]] = {}       # v79.11 (6): ELEMENT_SCHEMAS only
     for label, why in wanted.items():
         key = keys[label]
+        if key in removed:      # v79.13.0: judged not to govern the facts -- never decomposed, never a record
+            outcome[label] = "fit_removed"
+            continue
         rec = records.get(label)
         row = have.get(key)
         # v79.12.1: the article's own heading (its row's, the store's) before what a record built from a topic holds
@@ -7153,7 +7428,8 @@ RANKED_WHY = {   # v79.7 (item 3): the nightly's reasons, per top-ranked article
     "unread": "testo non letto",
     "abrogated": "abrogato",
     "not_wanted": "non una fattispecie né una difesa del caso",
-    "record_dropped": "scartato nella scheda ({why})"}
+    "record_dropped": "scartato nella scheda ({why})",
+    "fit_removed": "giudicato non applicabile ai fatti (giudizio di applicabilità)"}        # v79.13.0
 
 
 def ranked_trace(state: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -7163,6 +7439,7 @@ def ranked_trace(state: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None) ->
     cands = set(state.get("candidate_articles") or [])
     view = (ctx or {}).get("records_view") or {}
     decomposed = state.get("decompose_why") or {}
+    removed = fit_removed_keys(state)                   # v79.13.0: empty with the flag off
     out = []
     for t in state.get("retrieval_top") or []:
         label = t["article"]
@@ -7175,6 +7452,8 @@ def ranked_trace(state: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None) ->
                                                     else "no_line"]
         elif rec and not rec.get("dropped") and (rec.get("requisites") or rec.get("applicazione")):
             status, why = "in record", RANKED_WHY["in_record"]           # a defence by its rank too (D1)
+        elif _key(_parse_label(label)) in removed:            # v79.13.0: judged not to govern the facts
+            status, why = "dropped", RANKED_WHY["fit_removed"]
         elif t.get("gate"):
             status, why = "dropped", RANKED_WHY["gate"].format(gate=t["gate"])
         elif decomposed.get(label) in RANKED_WHY:

@@ -677,6 +677,10 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
         rule, source = element_rule(req)
         req["grading_rule"] = {"rule": rule, "source": source, "before": before, "after": req["status"]}
         _log_rule(req, rule, source, before)
+    from . import applicability                 # v79.13.0: a «dipende» the applicability judgment marked -- «da
+    if req.get("fit_open") and applicability.enabled():         # provare» until the user answers the question,
+        from .applicability import FIT_OPEN_WHY                 # whatever the link says (review: the flag on only)
+        req["status"], req["why"] = DA_PROVARE, FIT_OPEN_WHY.format(question=req["fit_open"])
 
 
 def condition_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], status: str, why: str) -> Tuple[str, str]:

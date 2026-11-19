@@ -802,6 +802,147 @@ No flag.
 
   — `answer_ledger.removed_present`, `misplaced`, `strike`, `settle`, `_whole`, `_norm_map`; `interactive_flow.ledger_settled`, `merge_removals`; `scripts/nightly_sim.py:ledger_check`.
 
+### 11.12 79.13.0 (`APPLICABILITY_FIT`: the applicability judgment)
+
+Behind `APPLICABILITY_FIT` (default off; off, nothing runs and the output is 79.12.7's). The tables, the word lists and
+the prompt are `data/applicability.json`; the module is `src/rag/applicability.py`. The model decides fit; it adds
+nothing: every word of its judgment is checked by code before it has any effect.
+
+- **The call.** The admitted candidates in balanced batches of at most 8 per call (`batch_size`; 30 = 8, 8, 7, 7), up to
+  `concurrency` (4) calls at once, thinking off (`chat_template_kwargs.enable_thinking = false`), temperature 0, a JSON
+  reply, through the repo's chat model (`ai_chat.chat_model`, the env's `LLM_*` config). Per norm: its full text and
+  rubrica, its commi numbered («[1] …», `element_schemas.commi`), and -- with `ELEMENT_SCHEMAS` on -- the schema's tipo
+  and rapporto labelled «solo contesto, non il giudizio»; once per call the facts (each with its id, labelled «certo»
+  when accertato, else «allegazione») and the client's role. The system prompt is hashed (`prompt_hash`) and the hash
+  logged with each run (`applicability_fit`). The reply per norm: `fit` si / no / dipende; `perche` one sentence quoting
+  the article's passage in «» and naming the facts by id; `condizione` (dipende only) a question to the user; `ambito`
+  fattispecie / scriminante / circostanza / rimedio / procedura / definizione.
+- **Matching the reply** (`_match`, review). An item is the norm's by its label as `element_schemas.norm_label` reads
+  it, or by number and code however spelt (`article_key`: «Art. 1819 c.c.», «articolo 1819 c.c.», «1819 cc», «1819
+  c.c. (Restituzione rateale)»), or by its number alone when one norm of the batch has it and the code does not name
+  another one. Two items for the same norm with different fits contradict each other: the norm unjudged («giudizi
+  contrastanti», `fit_unverified`); the same fit twice: the first.
+- **Failures.** A call that fails, a reply that is no JSON, a norm the reply leaves out, a value outside the schema: that
+  norm unjudged (`fit_unverified`, logged), never a crash. A batch not back within `deadline_s` (20 s from the step's
+  start) is not waited for (`fit_timeouts`): its norms keep the current path; a batch still queued then is cancelled
+  (review: it never calls the model after the step gave up). A norm with no text, or a case with no
+  facts, is not sent (`fit_skipped`).
+- **The verification** (`applicability.verify`, no model). A judgment is discarded -- the norm keeps the current path,
+  the reason logged (`applicability_fit_discard`) -- unless:
+  (a) every quoted passage occurs in the article's text word by word in order (`passage_found`, `_align`): each content
+  word as the schema checker grounds it (`element_schemas`' stem and verb base), and exactly -- never by stem -- a
+  short word, a number, a function word, a polarity preposition and «non» (review: «50.000» for «2.000», «e» for «o»,
+  «da sé» for «a sé» are not the text); the text's articles and simple prepositions (`omittable_words`) may be left
+  out of the quote, the quote's own articles (`article_words`) added, nothing else skipped; and no negation
+  (`negation_words`, behind at most two `negation_aux`) stands just before it in the text («è punibile» out of «non è
+  punibile», «adempie l'obbligo» out of «non adempie l'obbligo» say the opposite: not found); a passage with no
+  content word is never found;
+  (b) it names at least one fact id, and every id named is a fact given;
+  (c) its other content words (the quotes, the fact ids and the norm's own «art. N» out; function words and the data's
+  `connective_words` aside) are each in the quoted passage, the named facts' text or the norm's reviewed note (the
+  lawyer's note, `article_notes.for_label`; a reviewed schema's notes and elements), by the same stem grounding, and
+  every number is one of theirs -- else it is also counted `fit_added_content` («richiede almeno tre persone» against
+  a text that does not say it; another article's number; the norm's own reference is stripped only with its own code
+  or none: «art. 646 c.c.» on 646 c.p. is another norm). `connective_words` carry no rule: «solo», «soltanto»,
+  «richiede», «presuppone» are not among them (review); auxiliaries and plain words («hanno», «aveva», «parti»,
+  «cioè», «conta») are. A word of the article outside the quoted passage is not grounding: the brief grounds the
+  perché in the passage;
+  (c2) a «no» or a «dipende» rests on the quoted passage (`_rests_on_passage`, review): a quantity word
+  (`quantity_words`: «due», «almeno», «solo», «oltre» …) outside the quotes only as the passage's own -- else
+  `fit_added_content` («La «rissa» non sussiste tra due persone (S1)»: the count is a rule the text does not set); the
+  passage holds a word beyond `generic_norm_words` («Chiunque», «è punito» decide nothing); and a «no» quotes a
+  requirement the named facts do not state, says what the facts are (a word of theirs outside the quotes) and that
+  they lack it (a `negation_words` word) -- ««…» non riguarda (S1)» is no judgment;
+  (c3) the perché never contradicts a named fact (`contradicted`, review): a word the facts hold only with the other
+  polarity («non ha versato» against «ha versato»; a negation within three words of its clause);
+  (d) with dipende, the condizione ends with «?» and its content words are in the article's text (any comma), the facts
+  or the data's `question_words`, and a quantity word in it is the quoted passage's (review: «Alla rissa ha partecipato
+  anche altri, non solo Tizio e Caio?» smuggles a count) -- else also `fit_added_content`;
+  and the perché is one sentence. (e) A verified condizione's touched elements (`touches`: the norm's elements, else its
+  commi, sharing the most grounding words with it) are recorded for the pipeline to force «da provare».
+- **Counters.** `fit_judged` (norms sent) = `fit_si` + `fit_no` + `fit_dipende` + `fit_unverified`; `fit_added_content`
+  (judgments rejected for unquoted content -- none ever has an effect); `fit_skipped`, `fit_calls`,
+  `fit_failed_calls`, `fit_timeouts`. Each norm's record: {article, fit, perche, passage, comma, facts, condizione,
+  ambito, verified, reason, added_content, touches}; the result's `timing` holds the step's and each call's seconds.
+- **Timing.** `scripts/fit_timing.py` runs the real batched step on 30 synthetic candidates against the configured
+  model (server only); `--stub-latency S` measures the code alone with a stand-in model of S seconds per call.
+
+- **Where it runs** (`interactive_flow.applicability_fit`). Once per answer, in `_write_answer` once the posture
+  (the role) is known: through `decompose_records`' `fit` hook -- after the family gate and the cap (retrieval), before
+  the decomposition -- on every admitted candidate: the records' live articles (the topics' graded ones; a dropped
+  stub is no candidate) and the ones the decomposition would split (the charge, the read's hypotheses, the
+  alternatives, the named, the defence routes, the ranked). With no decomposition step (the method off) the records'
+  candidates alone. The multi-client answer (each client's view copies the records) and the follow-up answers (each
+  runs `write_answer` again) go through the same place; the judgment is made with the answer's posture role. Its
+  input per norm: the row's text (footnotes out) and rubrica, the record's elements, the reviewed note
+  (`applicability.reviewed_note`), the schema summary (ELEMENT_SCHEMAS on); the facts are the case's sentences
+  (`state["sentences"]`). The 20 s budget counts from the step's start (`judge(started=…)`), its inputs' reading
+  included.
+- **Effects** (`applicability.effects`; only a verified judgment has one):
+  - **no** -- the norm is removed: out of `state["records"]`, its key into `dead` (the rows, the refs, the writer's
+    rows, §4, the anchors, the general applications) and `state["fit_removed"]` (`{article, passage, perche, facts,
+    ambito}`: every later step and answer reads it as dead -- `fit_removed_keys`), out of the topics' lists
+    (`applicability.strip_topics`: articles, matched, offences, grades; an anchor removed is replaced by the next
+    article; a topic left with none is not answered), out of «altri profili» and `state["ranked"]`; the decomposition
+    never splits it (`decompose_why` «fit_removed»; the ranked trace says so: `RANKED_WHY["fit_removed"]`); the
+    method's scope check never admits it (`lawyer_method.article_scope` subtracts `ctx["fit_removed"]`); and the last
+    text pass (`interactive_flow.fit_removed_out`, after `text_residue`) drops any sentence still citing it.
+  - **no** on a norm the user names or the text charges (`interactive_flow.fit_protected`: `user_named`, intake's
+    contestazione, `posture.charge_labels` of the case's text, a record marked charged or named -- `fit_charged`; each
+    also under its store alias, `state["charge_aliases"]`: «73 d.P.R. 309/1990» is «73 Testo Unico …», review) --
+    never removed:
+    kept, the judgment printed as the defence's contest -- the client's line (`lawyer_method.thesis_candidates`, kind
+    `contest_fit`, code-argued: `FIT_CONTEST_TESI`, `FIT_CONTEST_ARGUMENT`, realismo medio) when the record is a
+    threat or charged; else the other side's objection to the client's own norm (`FIT_OBJECTION`, first among the
+    objections' fallback; `lawyer_method.fit_kept`) -- with or without a method record (review: a gated or
+    undecomposed named norm is printed too). The prose answer (no method sections) prints the same lines in a block
+    «Norme di cui si contesta l'applicabilità ai fatti» (`interactive_flow.fit_prose`, `FIT_PROSE_TITLE`). The
+    perché is printed with its quoted passage and the fact ids out (`applicability.printable`).
+  - **a removal undone** (`interactive_flow.fit_readmit`, review, at the start of each answer with the flag on): a
+    removed norm the user now names or the text now charges, and every removal made on facts other than the case's
+    now (`applicability.facts_signature` of the sentences: a fact added or corrected), is put back where it stood --
+    its record at its place, the topics' and «altri profili»' lists (`strip_topics`' marks, `restore_topics`), the
+    ranked list -- and judged again (`fit_readmitted`). With the same facts and no new name, a removal holds.
+  - **the flag off after an answer with it on** (`interactive_flow.fit_clear`): every removal put back, every
+    «dipende» mark cleared, the judgment's state and counters out; and nothing reads them with the flag off
+    (`fit_removed_keys`, `prepare`'s block, `settle`'s and `narrated_event_proven`'s `fit_open`, §4's row) -- the
+    answer is the flag-off one.
+  - **si** -- nothing.
+  - **dipende** -- kept; after the decomposition (`interactive_flow.fit_force`, `applicability.force_open`: the marks
+    of an earlier answer cleared first) the elements the condizione touches (`touches` against the record's
+    requisites as decomposed now; none touched: the requisites of the quoted passage's comma) carry `fit_open` (the
+    question), and `issue_records.settle` keeps them «da provare» (`FIT_OPEN_WHY`) whatever the link, the branches, a
+    schema rule or any later settle says; `lawyer_method.narrated_event_proven` never raises one; §4's table prints
+    «dipende dalla risposta a: …» (`FIT_OPEN_ROW`); the condizione is a §10 point (`FIT_QUESTION`: «Art. N: <domanda>»,
+    `lawyer_method.prepare`).
+  - an unverified judgment -- nothing: the norm keeps its current path.
+- **Counters** (block_counters, read by `interactive_flow.case_counters`): `fit_judged`, `fit_si`, `fit_no`,
+  `fit_dipende`, `fit_unverified` (must stay low: a rise means the prompt drifted), `fit_added_content` (judgments
+  rejected for unquoted legal content), `fit_added_content_in_effects` (must be 0), `norms_removed_by_fit`,
+  `fit_kept_named` (a «no» on a named or charged norm, kept), `fit_skipped`, `fit_calls`, `fit_failed_calls`,
+  `fit_timeouts`, `fit_seconds` (the whole step), `fit_removed_stripped` (what the last pass found: a path to fix when
+  not 0) and `fit_removed_left` (must be 0). Flag off: none of them is set. Logged: `applicability_effects` (the
+  candidates, each removed norm with its passage and perché, the kept-named, the dipende with their questions).
+- **The nightly** (`scripts/nightly_sim.py`) sets `APPLICABILITY_FIT=true` for its cells (`--no-applicability-fit`
+  skips it); the counters table carries the counters; the section «Applicability judgment (APPLICABILITY_FIT)» lists
+  per cell every removed norm with its quoted passage and perché, every kept-named «no», every dipende with its
+  question, the unverified ones with their reason, the prompt hash (`fit_lines`, `fit_of`); check `applicability_fit`
+  -- no effect from a judgment with added content, no removed norm cited in the delivered answer, and (review) the last
+  pass found nothing to strip and left nothing (`fit_removed_stripped`, `fit_removed_left` both 0: a path that
+  brought a removed norm back fails the check even though the pass hid it) (`fit_check`); the follow-up's answer is
+  checked the same way (`applicability_fit_followup`).
+
+  — `applicability.judge`, `verify`, `passage_found`, `touches`, `reviewed_note`, `call_batch`, `batches`,
+  `request_kwargs`, `build_messages`, `effects`, `norm_input`, `facts_input`, `strip_topics`, `force_open`,
+  `questions`, `printable`, `clause`, `removed_out`, `removed_cited`, `contradicted`, `article_key`,
+  `facts_signature`, `restore_topics`; `interactive_flow.applicability_fit`, `fit_protected`, `fit_charged`,
+  `fit_force`, `fit_removed_keys`, `fit_removed_out`, `fit_readmit`, `fit_clear`, `fit_prose`,
+  `decompose_records(fit=…)`, `ranked_trace`;
+  `issue_records.settle`; `lawyer_method.prepare`, `thesis_candidates`, `code_argument`, `article_scope`,
+  `subsumption_rows`, `narrated_event_proven`, `fit_kept`, `fit_kept_lines`; `scripts/nightly_sim.py:fit_of`,
+  `fit_check`, `fit_lines`, `run_followup`;
+  `scripts/fit_timing.py` (`--flow`: the step as the flow runs it).
+
 ## By version
 
 | Tag | What it introduced |
@@ -874,4 +1015,5 @@ No flag.
 | v79.12.7 (items 2, 6: attenuanti from the facts, riti computed) | (2) The fixed attenuanti block -- the riti table's sentencing line («Commisurazione della pena (art. 133 c.p.) e attenuanti generiche …», printed under the containment or subordinate line in §6) -- is replaced by the attenuanti the facts give (`penal_lines.attenuanti_lines`, from `data/penal_lines.json` «circumstance_triggers», read in the case's sentences by `penal_lines.circumstance_triggers`, a hit the «circumstance_negation_pattern» precedes within 40 characters never counting): 62 n. 2 when a diverbio, an alterco, a lite, a provocazione, an offesa or an insulto is narrated, the sentence quoted and its «da verificare: natura del diverbio (…)» point tied to it (§10 collects it); 62 n. 6 only tied to a concrete step -- la trattativa con gli eredi, la quantificazione del danno, il risarcimento offerto -- the step named with its sentence and the condition (integral, before the trial); a claim for damages alone is no step; 62-bis with record support (a favourable fact: incensurato, confessione, collaborazione …, or the soccorso narrated, the «post_fact» absorption rule's patterns, 593 or not), else «da verificare» saying it does not enter the riti's computation; one art. 69 c.p. line whenever an aggravante is in the record (a circumstance record of kind aggravante with an element provato or supported, not excluded: `penal_lines.aggravanti_held`). The triggered attenuanti are candidates (`circumstance_candidates(triggered=…)`) and carry `triggered_by` (their sentences): `held_attenuanti` counts them «da provare» in the riti's best case unless the record excludes them. «Esclusa» is printed only where the record excludes the circumstance (an element «non risulta» by a contradicting sentence: `penal_lines.excluded`); absent facts print nothing (62 n. 2, 62 n. 6: «absent» «omit») or «da verificare» (62-bis: «to_verify»). A written sentence calling a circumstance of the table excluded (`penal_lines.says_excluded`: «esclusa», «non ricorre», «non è applicabile» …, never «non può essere esclusa») that the record does not exclude is rewritten in compose's prose check (`lawyer_method.circumstance_exclusions`, `CIRC_UNEXCLUDED`: «resta aperta sui fatti del caso (da verificare: …)»). Imputato before the sentence only (where the riti were printed). (6) The riti with a «computation» in `data/lawyer_method.json` print it on a computable pena (known, a reclusione with its minimum: `lawyer_method.computable`), step by step (`rite_computation`): the edittale minimum (or «senza attenuanti integrate o da provare»), each attenuante held in art. 63's order at its measure, the floor of art. 67, co. 2 when it bites, the rite's third (art. 444, co. 1 / art. 442, co. 2, c.p.p.), the abbreviato's further sixth on non-impugnazione (art. 442, co. 2-bis, c.p.p.), the patteggiamento's result «entro / oltre 5 anni»; the patteggiamento possible adds the PM's consent (art. 444, co. 1, c.p.p.), «improbabile» for an offence of «consent_unlikely_offences» (575, 578, 579, 584, 586: a draft for the lawyer, so labelled). The gate decides on the same computation (`_rite_gate`: its «after_rite»), so «possibile» and «preclusa» always match the printed numbers; the earlier rulings hold (best case = minimum less the attenuanti held, then the third; >5y precluso, else «possibile, dipende dalla pena in concreto»; abbreviato excluded for the ergastolo). The pena unknown, the ergastolo or a pena pecuniaria alone: no computation, the lines as before. Counters (`lawyer_method.penal_counts` in `selection_counts`, `interactive_flow.case_counters`; compose's in `block_counters`): attenuanti_from_facts, attenuanti_to_verify, attenuanti_excluded_by_facts, bilanciamento_lines, attenuanti_fixed_block (0), circumstance_exclusions_rewritten, circumstance_excluded_unsupported (0); rites_computed, rites_without_computation (0), rites_computation_mismatch (0). No new flag. |
 | v79.12.7 (items 7, 8: text residue, version footer) | (7) The tables are `data/text_hygiene.json`, applied by `src/rag/text_hygiene.py`. (a) Element codes (R1, C2, P3) and a ruling's stance mark («(contro)», «(a favore)», «(verso l'integrazione: contro)») never outside the tables and the quoted passages. Cause: «Risposte ai quesiti» is built after the sections' reader check (`compose`'s `reader_wording`) from the writer's quesito section and the forecast's why («la prova degli elementi R1, R2») and only ran Block B's prose check; §5 and the head were never read; a stance mark had no strip at all (the registry gives the calls «verso l'integrazione: contro»). Fix: the block runs `reader_wording`, `text_hygiene.stance_out`, `codes_out` and `whole_citations`; every section the stance and code strip (§5 outside its quotes); a bare R-code no record holds («R9») drops its sentence in the prose check (`unknown_codes_out`: an objection whose reply it empties is dropped, the fallback fills §7); and the last text step (`interactive_flow.text_residue`, after `law_titles_cited`) strips codes, stances, draft-status sentences and headless citations wherever a path left them. The nightly's reader_wording check counts the stance marks too (`wording_hits`). (b) A headless reference goes with its date (`rulings._headless_span_re`: «, 11.04.2025»), and a date left before a closing parenthesis with no head is removed (`text_hygiene.orphan_dates`, `citation_spans`, in `whole_citations`; `rulings.printed_problems` reports one); quoted passages are never touched. Cause: the span stopped at the number, so «(Sez. 4, n. …/2025, 11.04.2025)» left «11.04.2025)». (c) A procedural act narrated (the PM's contestazione, an avviso, a notifica, the rinvio a giudizio, a decreto) is «accertato» unless what is left once the act's words are out is attributed or hedged (`issue_records.certainty`, `text_hygiene.procedural_act`, `act_remainder`); its sentence carries «act», shows in §2's «Fatti certi» (`stated_certain`) and grounds «provato» or «non risulta» only for an element naming the act (`certain_fact(sentence, element)`, `act_bears`): it proves the act was done, not what it charges. Cause: «contestato a Gamma» read as an attribution («contest… a <Nome>»), «ipotizza» as a hedge. (d) «elenco interno»: no data value or code string prints it (79.12.5 item 8 held; checked by a test over data/*.json and src/rag); a sentence holding a draft status is removed by the last pass. (e) The main line at most once per section, tables included: §9's «Obiettivo realistico» no longer repeats it (`conclusions_from_selection`), §6's strategy names the table's («Linea principale: la tesi indicata come principale nella tabella», `STRATEGY_MAIN_IN_TABLE`), a later answer of «Risposte ai quesiti» refers to the first that prints it (`MAIN_LINE_SEE_ANSWER`); `text_hygiene.main_line_repeated` counts the rest. (f) A «Cenni» section's rule statement (RULE_VERBS and «stabilisce», «dispone», «sancisce», «prescrive», «impone») stays only when grounded in the article it cites -- one comma of its text (`interactive_flow.cenni_article_texts`, the cenni rows: two content words and half of its own) or Block B's sources on that article --, naming none its section's articles (`text_hygiene.cenni_check`, in `compose` in place of Block B's answer-wide check there). Cause: a cenno naming no article traced to any record element of the answer, and «stabilisce» was no rule verb. Counters: residue_codes_stripped, residue_stance_stripped, internal_notes_removed, headless_citations_removed (what the last pass found: a path to fix when not 0), residue_left (0), procedural_acts_certain, procedural_acts_uncertain, main_line_repeated (0), cenni_rules_removed, cenni_rules_unsourced (0). (8) The version is the response's metadata: `version` in the reply (`ChatResponse.version`), in the single-shot and regenerate results and in the session message's metadata; `FOOTER_IN_BODY` (default on, live output unchanged) keeps the footer in the body, off drops it (`interactive_flow.footer_in_body`, `with_version`); the nightly's version_footer check reads the metadata. |
 | v79.12.7 (review: items 1-7) | (1) A note or a kept passage stating that the jurisprudential element is NOT required («non è richiesta la prevedibilità in concreto», «indipendentemente da …») is no source of it (`penal_lines.states_element`, the rule's «denial_patterns», read in the statement around the hit). (2) The provocazione's patterns no longer read «persona offesa» / «parti offese» nor «provocò la caduta» (a cause, not a provocazione); 62 n. 6's steps skip a hit whose clause is the victim's claim («chiede il risarcimento», «da quantificare», «in separata sede»: «step_exclude_patterns»); the «esclusa» prose check works per clause (`lawyer_method._excl_clauses`): another institute's exclusion in the same sentence stays, each circumstance excluded is rewritten on its own, a subjectless «…, è esclusa» binds to the clause naming the circumstance; an aggravante is rewritten only when the record holds it (`penal_lines.aggravanti_held`), never raised against the client; more ways of excluding («non spetta», «vanno negate», «non può essere invocata»). The «natura del diverbio» point reaches §10 through `collect_points` (tested in test_v79_12_6_b). (3) The soccorso is the offender's: never the place «pronto soccorso», never in a clause naming passers-by, a neighbour, a witness or a passive («fu portato»: «not_by_offender_patterns»), never negated in its clause (`penal_lines.clause_at`); prepare makes the flow's records (state["records"]) agree with the absorption (`penal_lines.absorb_into`, each client's view and the shared state), and absorbed_as_autonomous reads them (ctx["flow_records"]). (4) A riqualificazione fact the sentence denies («nega di aver dato alcuna spinta», «non vi fu alcuna spinta») or a motive («spinto dalla rabbia») bears on nothing (the rule's «negation_pattern»). (5) A trigger the facts deny («non soffriva di alcuna patologia», «esclude errori dei sanitari», «nulla di anomalo») lifts no cap («trigger_negation_pattern»); a capped causation line never leads while another line is eligible, nor demotes the containment line (`never_main`, MAIN_DEMOTED_WHY «causation_capped», logged). (6) The code's own rito lines are never a written offer (`own_rite_sentence`: the precluded patteggiamento's «Calcolo: … art. 444 …» was being dropped by the final rites check); the PM's consent line is printed with the precluded computation too for a listed offence; a contravvenzione (arresto) gets the abbreviato's half (art. 442, co. 2, c.p.p.: «reduction_contravvenzione»); a written sentence on a computed rito stating a figure the computation does not print, or the resulting pena with no figure (`data/penal_lines.json` «rite_prose»), is dropped (`rite_prose_out`, in `rites_out`) -- counters rites_prose_removed, rites_prose_mismatch and rites_prose_uncomputed (0), added by case_counters to rites_computation_mismatch and rites_without_computation. (7a) Code ranges and pairs («R1-R3», «R1/R2», «(R1-R3)») are read as their codes; a stance heading or closing a citation's parenthesis («(contro, Cass. …)») goes; with no known code, a parenthesis of R-codes and a sentence using a bare R-code as an element («code_context_patterns») go. (7b) The headless reference takes its «del / udienza / depositata il» date, «Rv. … - 01», «sent. n.» / «ord. n.». (7c) The iscrizione nel registro degli indagati, the capo d'imputazione and the PM's «ipotizza il reato» are acts; a sentence with a modal or a conditional («potrebbe contestare»: «procedural_act_modals») narrates no act done. (7f) A cenno grounded in a comma's words is still ungrounded when, against the comma it draws on most, it inverts a negation or adds an absolute («sempre», «in ogni caso»: «cenni_absolutes»). No new flag; tests/test_v79_12_6_review.py (synthetic facts only). |
+| v79.13.0 (applicability judgment, `APPLICABILITY_FIT`) | For every admitted candidate the model judges whether the provision governs the facts (si / no / dipende, a one-sentence perché quoting the article and naming fact ids, a condizione as a question, an ambito), in batches of at most 8, thinking off, temperature 0; the code verifies the quoted passage in the text, the fact ids, every content word against the passage, the named facts and the reviewed note, and the condizione against the text and the facts; an unverified judgment has no effect (`fit_unverified`), one adding content is counted (`fit_added_content`). The step runs once per answer after the family gate and the cap, before the decomposition (`interactive_flow.applicability_fit`, `decompose_records`' hook), within 20 s from its start: a verified «no» removes the norm from the records, the candidates and §4 (`state["fit_removed"]`; the last pass drops a sentence still citing it; put back and judged again when the user later names it or the facts change, all undone when the flag is turned off), except a norm the user names or the text charges -- kept, the judgment printed as the defence's contest (`contest_fit`) or the other side's objection; a «dipende» forces the touched elements «da provare» (`issue_records.settle` reads `fit_open`) and asks its condizione in §10. Counters norms_removed_by_fit, fit_kept_named, fit_added_content_in_effects (0), fit_seconds, fit_removed_stripped, fit_removed_left (0); the nightly turns it on and lists every removed norm with its passage (check applicability_fit, also failing when the last pass had to strip a removed norm; the follow-up checked too). Review: a «no» or «dipende» must rest on the quoted passage (no count or restriction it does not set, a requirement the facts lack, a negation), the quote is matched with numbers and short words exact and never cut after a negation, a perché never contradicts its fact, the reply's article matched however spelt, conflicting duplicates unjudged, a queued batch cancelled at the deadline, a special law's charge protected under its store alias, a kept named norm printed with no method record and on the prose path. See 11.12. |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

@@ -203,6 +203,21 @@ EXTRA = (
                                                 "principale della tabella (v79.12.7, voce 7)"),
     ("lawyer_method", "MAIN_LINE_SEE_ANSWER", "Metodo, «Risposte ai quesiti»: una risposta successiva rinvia alla prima "
                                               "che indica la linea principale (v79.12.7, voce 7)"),
+    # v79.13.0 (APPLICABILITY_FIT): the applicability judgment's effects as the reader reads them
+    ("applicability", "FIT_CONTEST_TESI", "Metodo, «Soluzioni a confronto»: la norma nominata o contestata che il "
+                                          "giudizio di applicabilità dice non governare i fatti (v79.13.0)"),
+    ("applicability", "FIT_CONTEST_ARGUMENT", "Metodo, «Soluzioni a confronto»: pro, contro e argomento di quella "
+                                              "linea (v79.13.0)"),
+    ("applicability", "FIT_OBJECTION", "Metodo, «Obiezioni e risposte»: la norma del cliente che il giudizio dice non "
+                                       "governare i fatti, come obiezione dell'altra parte (v79.13.0)"),
+    ("applicability", "FIT_QUESTION", "Metodo, «Punti da verificare»: la condizione di un «dipende», come domanda "
+                                      "all'utente (v79.13.0)"),
+    ("applicability", "FIT_OPEN_ROW", "Metodo, «Analisi per elementi»: l'elemento che la condizione decide (v79.13.0)"),
+    ("applicability", "FIT_OPEN_WHY", "Registro: perché l'elemento resta da provare (v79.13.0)"),
+    ("applicability", "printable", "Metodo: un fatto nominato per id nel giudizio, come il lettore lo legge "
+                                   "(v79.13.0)"),
+    ("applicability", "FIT_PROSE_TITLE", "Risposta in prosa (senza il metodo): il blocco con la norma nominata o "
+                                         "contestata che il giudizio dice non governare i fatti (v79.13.0, revisione)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference
