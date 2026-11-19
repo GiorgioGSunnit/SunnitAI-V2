@@ -171,6 +171,48 @@ rejected) are counted by
 schema_vocabulary_mapped, as every mapping; its measures are scripts/schema_show.py --recheck's (usable before ->
 after, and every value no vocabulary maps counted by field and value: "unknown", "unknown_by_field").
 
+v79.12.7 (items 1, 3, 4, 5), in the counters table (lawyer_method.penal_counts in selection_counts, summed by
+interactive_flow.case_counters; the run's state only): item 1 jurisprudential_elements (an element a note di
+inquadramento, a kept ruling passage or a reviewed schema states and the text does not, in the records, inferred,
+«da provare»), jurisprudential_minoritaria (must be 0: a contest of one labelled minoritaria) and jurisprudential_main
+(the main line contests one); item 3 absorbed_titles (581/582 beside 584, 589/590 kept as the alternative only, 593
+where a soccorso is narrated: data/penal_lines.json «absorption»), absorbed_as_autonomous (must be 0: such a title
+still printed, threatened or the article of a candidate other than the riqualificazione) and soccorso_post_fact (the
+soccorso sentences turned into a favourable element after the fact); item 4 requalify_no_facts (a listed
+riqualificazione, 584 -> 589/590, not offered for lack of facts on the differing element) and requalify_without_facts
+(must be 0); item 5 causation_capped (the causation lines -- the art. 41 defence, the contest of a causal element --
+capped at realismo basso on an ordinary consequence), causation_cap_lifted (left uncapped by a trigger fact: a
+pathology, a medical error, an abnormal intervening cause), causation_over_basso (must be 0) and
+causation_replies_rewritten (the objections' replies denying the causal link replaced by the subjective-element reply).
+
+v79.12.7 (items 2, 6), in the counters table (lawyer_method.penal_counts in selection_counts; compose's in
+block_counters; summed by interactive_flow.case_counters): item 2 attenuanti_from_facts (the attenuanti lines printed
+from a fact: a diverbio for 62 n. 2, a concrete step for 62 n. 6, a favourable element for 62-bis), attenuanti_to_verify
+(printed «da verificare» for lack of a fact), attenuanti_excluded_by_facts («esclusa dai fatti»: the record excludes it by
+a sentence), bilanciamento_lines (the art. 69 c.p. line, an aggravante in the record), attenuanti_fixed_block (must be 0:
+the old fixed sentencing line still printed), circumstance_exclusions_rewritten (a written sentence calling a
+circumstance excluded that the record does not exclude, rewritten) and circumstance_excluded_unsupported (must be 0: one
+left in the composed answer); item 6 rites_computed (the patteggiamento and the abbreviato printed with their
+computation), rites_without_computation (must be 0: a rito with a computable pena printed without it) and
+rites_computation_mismatch (must be 0: a status the printed result contradicts).
+
+v79.12.7 (items 7, 8), in the counters table (block_counters: interactive_flow.text_residue, the last text step, and
+compose's, summed over the clients): residue_codes_stripped, residue_stance_stripped («(contro)»),
+internal_notes_removed («elenco interno») and headless_citations_removed (a reference or a date without its head) --
+what the last pass still found, each a path that bypassed compose's checks when not 0 --, residue_left (must be 0),
+procedural_acts_certain and procedural_acts_uncertain (the procedural acts the facts narrate: certain, or still
+attributed or hedged), main_line_repeated (must be 0: a section printing the main line twice), cenni_rules_removed and
+cenni_rules_unsourced (must be 0: a cenno's rule statement its article does not ground). The reader_wording check counts
+the stance marks too. Item 8: version_footer reads the result's «version» metadata; with FOOTER_IN_BODY off it wants no
+footer in the body.
+
+v79.12.7 (review), in the counters table (block_counters: interactive_flow.rites_checked on the delivered text):
+rites_prose_removed (written sentences on a computed rito dropped -- a figure the computation does not print, or the
+resulting pena asserted with no figure), rites_prose_mismatch and rites_prose_uncomputed (what is left: must be 0;
+case_counters adds them to rites_computation_mismatch and rites_without_computation, which now read the delivered prose
+too). absorbed_as_autonomous also reads the flow's records (state["records"]), which prepare makes agree with the
+absorption.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -270,7 +312,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["timings"] = {"total_s": round(time.time() - t0, 1),
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
         out["checks"] += lawyer_method.structure_checks(out["answer"], spec["cell"])
-        out["checks"].append(footer_check(out["answer"]))
+        out["checks"].append(footer_check(out["answer"], result))
         grounded = grounded_check(out["answer"], result.get("state") or {})      # v79 (B3)
         out["checks"].append(grounded)
         out["output_check"] = grounded.get("found") or {}
@@ -303,11 +345,19 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def footer_check(answer: str) -> Dict[str, Any]:
-    """v77: the answer ends with «SunnitAI <version>», this checkout's VERSION."""
+def footer_check(answer: str, result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v77: the answer ends with «SunnitAI <version>», this checkout's VERSION. v79.12.7 (item 8): the result carries
+    it as metadata («version»); with FOOTER_IN_BODY off the body ends with no footer and the metadata is checked."""
     from src import version
-    ok = version.has_footer(answer, version.current())
+    from src.rag import interactive_flow
+    meta = (result or {}).get("version")
+    if result is not None and meta != version.current():
+        return {"check": "version_footer", "ok": False, "why": f"metadata «{meta}», not «{version.current()}»"}
     last = (answer or "").rstrip().rsplit("\n", 1)[-1].strip()[:80]
+    if not interactive_flow.footer_in_body():
+        ok = not version.has_footer(answer)
+        return {"check": "version_footer", "ok": ok, "why": "" if ok else f"FOOTER_IN_BODY off, last line «{last}»"}
+    ok = version.has_footer(answer, version.current())
     return {"check": "version_footer", "ok": ok, "why": "" if ok else f"last line «{last}», not «{version.footer()}»"}
 
 

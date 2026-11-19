@@ -400,7 +400,7 @@ def facts_split(sentences: Sequence[Dict[str, Any]], records: Dict[str, Dict[str
             if _plain(s_.get("text")) and s_.get("source") != "sistema":
                 excluded.append(_short(s_.get("text"), 80))
             continue
-        if issue_records.certain_fact(s_):          # v79.8 (C1): the one source, as §4's «provato»
+        if issue_records.stated_certain(s_):        # v79.8 (C1): as §4's «provato»; v79.12.7 (item 7): an act too
             certi.append(_short(s_["text"]))
         else:
             ipotesi.append({"text": _short(s_["text"]), "how": HOW.get(str(s_.get("certainty") or ""), "ipotesi")})
@@ -475,10 +475,13 @@ def subsumption_rows(rec: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> L
         text = _short(r.get("text"), 160)
         if r.get("branch") and status == PROVATO:       # v79.6 (item 4): the branch that applies
             text = f"{text} (alternativa che ricorre: «{_short(r['branch'], 80)}»)"
+        if r.get("jurisprudential") and r.get("source"):    # v79.12.7 (item 1): not in the text -- its source named
+            text = f"{text} ({JURISPRUDENTIAL_ROW.format(source=_short(r['source'], 120))})"
         out.append((text, fact, ESITO.get(status, status)))
     return out
 
 
+JURISPRUDENTIAL_ROW = "elemento non scritto nella norma, richiesto da {source}"     # my draft (v79.12.7, item 1)
 CHARGED_PROSE = {   # my drafts (v75b): the charged article's paragraph, from its sussunzione rows only
     "head": "Sui fatti narrati, degli elementi dell'art. {art}",
     PROVATO: "risultano provati {items}",
@@ -579,11 +582,12 @@ def _charged(records: Dict[str, Dict[str, Any]]) -> List[str]:
     return [label for _, label in out]
 
 
-def circumstance_candidates(case: str, records: Dict[str, Dict[str, Any]], posture: Dict[str, Any]
-                            ) -> List[Dict[str, Any]]:
+def circumstance_candidates(case: str, records: Dict[str, Dict[str, Any]], posture: Dict[str, Any],
+                            triggered: Sequence[str] = ()) -> List[Dict[str, Any]]:
     """The table's circumstances to grade (penal postures only): every aggravante for the charged offence -- named by the
     case, matched by its patterns or tied to the charged article --, and the attenuanti the case's words point to or the
-    imputato's posture always considers (62-bis)."""
+    imputato's posture always considers (62-bis). v79.12.7 (item 2): triggered, the attenuanti the facts trigger
+    (penal_lines.circumstance_triggers: a diverbio for 62 n. 2, a concrete step for 62 n. 6) -- candidates too."""
     family = str((posture or {}).get("family") or "")
     if family and family != "penale":
         return []
@@ -595,7 +599,8 @@ def circumstance_candidates(case: str, records: Dict[str, Dict[str, Any]], postu
         tied = bool(charged & set(c.get("offences") or []))
         if c.get("kind") == "aggravante" and (hit or tied) and (charged or hit):
             out.append(c)
-        elif c.get("kind") == "attenuante" and (hit or (c["label"] == "62-bis c.p." and posture.get("role") == "imputato")):
+        elif c.get("kind") == "attenuante" and (hit or c["label"] in set(triggered or ()) or (
+                c["label"] == "62-bis c.p." and posture.get("role") == "imputato")):
             out.append(c)
     return out
 
@@ -690,6 +695,104 @@ def circumstance_claims(text: str, circ: Dict[str, Dict[str, Any]], log: Optiona
                     log.append({"circumstance": label, "open": open_})
                 break
             sentences.append(sentence)
+        out.append(" ".join(sentences))
+    return "\n".join(out)
+
+
+_EXCL_EDGE_RE = re.compile(r"[,;:]\s|\s(?:mentre|ma|invece|però|tuttavia)\s", re.I)
+_SUBJECTLESS_RE = re.compile(r"^\s*(?:non|è|sono|va|vanno|risulta|risultano|resta|restano|deve|devono|appare|appaiono|"
+                             r"può|possono|potrà|potranno|ricorre|ricorrono|spetta|spettano)\b", re.I)
+
+
+def _excl_clauses(sentence: str) -> List[Tuple[str, str]]:
+    """(review) The sentence's clauses with the separator after each -- split at «, », «; », «: » and «mentre», «ma» …
+    outside parentheses (an article's «art. 62, n. 2, c.p.» is one clause)."""
+    out: List[Tuple[str, str]] = []
+    depth, at, i = 0, 0, 0
+    while i < len(sentence):
+        ch = sentence[i]
+        if ch in "(«":
+            depth += 1
+        elif ch in ")»":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            m = _EXCL_EDGE_RE.match(sentence, i)
+            if m:
+                out.append((sentence[at:i], m.group(0)))
+                at = i = m.end()
+                continue
+        i += 1
+    out.append((sentence[at:], ""))
+    return out
+
+
+def circumstance_exclusions(text: str, circ: Dict[str, Dict[str, Any]], log: Optional[List[Dict[str, Any]]] = None,
+                            rewrite: bool = True) -> str:
+    """v79.12.7 (item 2): never «esclusa» for a circumstance the facts do not exclude -- a written clause naming a
+    circumstance of the table (its article and number, or its name: _claim_re) and saying it is excluded
+    (penal_lines.says_excluded: «esclusa», «non ricorre», «non spetta», «vanno negate» …; never «non può essere
+    esclusa») while the record does not exclude it (penal_lines.excluded: no element «non risulta» by a sentence of the
+    case) is replaced by CIRC_UNEXCLUDED, its open elements named. rewrite False: the text unchanged, only the log (the
+    final count). (review) Per clause: an exclusion clause names the circumstance itself, or -- subjectless («…, è
+    esclusa») -- the nearest clause before it that names one; the sentence's other clauses stay («La legittima difesa è
+    esclusa, mentre l'attenuante … resta da valutare» is untouched), each circumstance excluded is rewritten (two in one
+    sentence: two lines). An attenuante always; an aggravante only when the record holds it (penal_lines.
+    aggravanti_held): the defence arguing an aggravante the record never held does not apply is no unfounded exclusion,
+    and rewriting it would raise that aggravante against the client."""
+    from . import penal_lines
+    table = {c["label"]: c for c in data().get("circumstances") or []}
+    held_aggr = set(penal_lines.aggravanti_held(circ or {}))
+    out = []
+    for para in (text or "").split("\n"):
+        sentences = []
+        for sentence in _SENT_SPLIT.split(para):
+            if not penal_lines.says_excluded(sentence):
+                sentences.append(sentence)
+                continue
+            clauses = _excl_clauses(sentence)
+            names = [[label for label, c in table.items() if _claim_re(c).search(cl)] for cl, _ in clauses]
+            drop: set = set()
+            hits: List[str] = []
+            for i, (cl, _) in enumerate(clauses):
+                if not penal_lines.says_excluded(cl):
+                    continue
+                own, subject = names[i], i
+                if not own and _SUBJECTLESS_RE.match(cl):
+                    subject = next((j for j in range(i - 1, -1, -1) if names[j]), -1)
+                    own = names[subject] if subject >= 0 else []
+                for label in own:
+                    c = table[label]
+                    rec = (circ or {}).get(label)
+                    if penal_lines.excluded(rec):
+                        continue
+                    if c.get("kind") == "aggravante" and label not in held_aggr:
+                        continue
+                    if label not in hits:
+                        hits.append(label)
+                    drop |= set(range(min(i, subject), i + 1))    # the parenthetical between them too
+            if not hits:
+                sentences.append(sentence)
+                continue
+            new = []
+            for label in hits:
+                c, rec = table[label], (circ or {}).get(label)
+                open_ = [_short(r.get("text"), 90) for r in _live(rec) if r.get("status") != PROVATO] if rec \
+                    else [_short(e, 90) for e in c.get("elements") or []]
+                if log is not None:
+                    log.append({"circumstance": label, "sentence": _short(sentence, 200)})
+                name, art = penal_lines.circumstance_name(label, rec, c)
+                new.append(penal_lines.CIRC_UNEXCLUDED.format(
+                    name=name, article=art, open=penal_lines.CIRC_UNEXCLUDED_OPEN.format(
+                        open="; ".join(open_)) if open_ else ""))
+            if not rewrite:
+                sentences.append(sentence)
+                continue
+            rest = "".join(cl + sep for i, (cl, sep) in enumerate(clauses) if i not in drop)
+            rest = re.sub(r"^\s*(?:mentre|ma|invece|però|tuttavia)\b\s*", "", rest.strip(" ,;:"), flags=re.I).strip(" ,;:")
+            if len(rest.split()) >= 3:
+                rest = rest[0].upper() + rest[1:]
+                new.insert(0, rest if re.search(r"[.!?]$", rest) else rest + ".")
+            sentences.append(" ".join(new))
         out.append(" ".join(sentences))
     return "\n".join(out)
 
@@ -940,7 +1043,7 @@ def pena_of(text: str) -> Dict[str, Any]:
     from . import procedural_facts as pf
     t = " ".join(str(text or "").split())
     out: Dict[str, Any] = {"known": False, "low": None, "high": None, "ergastolo": False, "pecuniary": False,
-                           "text": t}
+                           "contravvenzione": False, "text": t}     # (review, v79.12.7) the arresto: a contravvenzione
     q, unit = pf._QTY, r"(mes[ei]|ann[oi]|giorni)"
     found = []
     m = re.search(r"\bergastolo\b", t, re.I)
@@ -949,11 +1052,13 @@ def pena_of(text: str) -> Dict[str, Any]:
     m = re.search(r"\b(reclusione|arresto) da " + q + r"(?: " + unit + r")? a " + q + r" " + unit, t, re.I)
     if m:
         found.append((m.start(), {"known": True, "low": pf._years(m.group(2), m.group(3) or m.group(5)),
-                                  "high": pf._years(m.group(4), m.group(5))}))
+                                  "high": pf._years(m.group(4), m.group(5)),
+                                  "contravvenzione": m.group(1).lower() == "arresto"}))
     m = re.search(r"\b(reclusione|arresto) fino a " + q + r" " + unit, t, re.I)
     if m:
         found.append((m.start(), {"known": True, "low": _DETENTION_MIN[m.group(1).lower()],
-                                  "high": pf._years(m.group(2), m.group(3))}))
+                                  "high": pf._years(m.group(2), m.group(3)),
+                                  "contravvenzione": m.group(1).lower() == "arresto"}))
     m = re.search(r"\breclusione non inferiore (?:a " + q + r" " + unit + r"|ad? (anni|mesi) " + q + r")", t, re.I)
     if m:
         low = pf._years(m.group(1), m.group(2)) if m.group(1) else pf._years(m.group(4), m.group(3))
@@ -983,7 +1088,9 @@ RITE_PRECLUDED = {"max": "{name}: {word}, il massimo edittale del reato contesta
                   # «status» («bozza — da verificare dall'avvocato …»)
                   "max_listed": "{name}: {word}, il massimo edittale del reato contestato supera {n} anni e il reato "
                                 "non figura tra quelli indicati dall'{source}.",
-                  "min": "{name}: {word}, perché anche nel caso più favorevole {best}, oltre {n} anni.",
+                  # v79.12.7 (item 6): the computation shown, step by step (rite_computation), never only asserted
+                  "min": "{name}: {word}, perché anche nel caso più favorevole la pena supera {n} anni. Calcolo: "
+                         "{computation}.",
                   "ergastolo": "{name}: {word}, il reato contestato è punito con l'ergastolo{source_paren}."}
 # v79.10.7 (my draft): the best case's words -- the minimum, the attenuanti held, the rite's third, the result
 BEST_CASE = "il minimo edittale di {low}, {attenuanti} di un terzo per il rito, scende a {best}"
@@ -1055,6 +1162,90 @@ def best_case(low: float, attenuanti: Sequence[str] = ()) -> Dict[str, Any]:
     return {"after_circumstances": pena, "best": pena * (1 - RITE_REDUCTION), "applied": [x["label"] for x in measures]}
 
 
+# v79.12.7 (item 6): the riti computed, not asserted -- the steps in order (my drafts): the edittale minimum, each
+# attenuante held (art. 63's order, its measure), the floor of art. 67, co. 2, the rite's own reduction, the abbreviato's
+# further sixth on non-impugnazione (art. 442, co. 2-bis, c.p.p.), the result against the patteggiamento's limit; the PM's
+# consent (art. 444, co. 1, c.p.p.), unlikely for the offences the table lists (data: «consent_unlikely_offences»)
+COMP_BASE = "minimo edittale {low}"
+COMP_NONE = "senza attenuanti integrate o da provare"
+COMP_ATTENUANTE = "meno fino a {fraction} per l'attenuante dell'art. {label}: {value}"
+COMP_FLOOR = "non meno di un quarto del minimo (art. 67, co. 2, c.p.): {value}"
+COMP_RITE = "meno {fraction} per il rito ({source}): {value}"
+COMP_FURTHER = "meno un ulteriore {noun} se l'imputato non impugna la sentenza ({source}): {value}"
+COMP_LIMIT = {"within": "entro {n} anni", "over": "oltre {n} anni"}
+CONSENT_LINE = "Richiede il consenso del pubblico ministero ({source})."
+CONSENT_UNLIKELY_LINE = ("Richiede il consenso del pubblico ministero ({source}), improbabile per un delitto come quello "
+                         "contestato (art. {number} c.p.).")
+FRACTION_WORDS = {(1, 2): ("la metà", "metà"), (1, 3): ("un terzo", "terzo"), (1, 4): ("un quarto", "quarto"),
+                  (1, 6): ("un sesto", "sesto"), (2, 3): ("due terzi", "due terzi")}
+
+
+def fraction_words(value: Any, default: float) -> Tuple[float, str, str]:
+    """v79.12.7 (item 6): (the fraction, its words «un terzo», its noun «terzo») of «1/3» (FRACTION_WORDS)."""
+    f = _fraction(value, default)
+    from fractions import Fraction
+    q = Fraction(f).limit_denominator(12)
+    words = FRACTION_WORDS.get((q.numerator, q.denominator)) or (f"{q.numerator}/{q.denominator}",) * 2
+    return f, words[0], words[1]
+
+
+def computable(p: Dict[str, Any]) -> bool:
+    """v79.12.7 (item 6): a pena the riti can be computed on -- known, a reclusione with its minimum (never the ergastolo
+    nor a pena pecuniaria alone)."""
+    return bool(p.get("known")) and not p.get("ergastolo") and not p.get("pecuniary") and \
+        p.get("low") is not None and float(p["low"]) > 0
+
+
+def rite_computation(r: Dict[str, Any], low: float, attenuanti: Sequence[str] = (), contravvenzione: bool = False
+                     ) -> Dict[str, Any]:
+    """v79.12.7 (item 6): one rito's computation on the edittale minimum (years) -- {steps, text, result, after_rite}:
+    the minimum (COMP_BASE, BEST_CASE_NONE without an attenuante held), each attenuante held in art. 63's order at its
+    measure (attenuante_measures), the floor of art. 67, co. 2 with two or more, the rite's reduction (the row's
+    «computation.reduction», a third by default), the abbreviato's further sixth (its «further»); the patteggiamento's
+    result read against its limit (COMP_LIMIT). The same numbers decide the status (_rite_gate): what is printed is what
+    is judged. (review) contravvenzione: the row's «reduction_contravvenzione» when it has one (the abbreviato's half,
+    art. 442, co. 2, c.p.p.) in place of the delitti's reduction."""
+    comp = r.get("computation") or {}
+    if contravvenzione and comp.get("reduction_contravvenzione"):
+        comp = {**comp, "reduction": comp["reduction_contravvenzione"]}
+    measures = attenuante_measures(attenuanti)
+    pena = float(low)
+    steps = [COMP_BASE.format(low=years_text(low)) + ("" if measures else f", {COMP_NONE}")]
+    for x in measures:
+        pena *= 1 - x["reduction"]
+        _, words, _ = fraction_words(x["reduction"], COMMON_REDUCTION)
+        steps.append(COMP_ATTENUANTE.format(fraction=words, label=x["label"], value=years_text(pena)))
+    if len(measures) > 1 and pena < float(low) * ATTENUANTI_FLOOR:
+        pena = float(low) * ATTENUANTI_FLOOR
+        steps.append(COMP_FLOOR.format(value=years_text(pena)))
+    reduction, words, _ = fraction_words(comp.get("reduction"), RITE_REDUCTION)
+    pena *= 1 - reduction
+    after_rite = pena
+    steps.append(COMP_RITE.format(fraction=words, source=comp.get("reduction_source") or "", value=years_text(pena))
+                 .replace(" ()", ""))
+    if comp.get("further"):
+        further, _, noun = fraction_words(comp.get("further"), 0.0)
+        pena *= 1 - further
+        steps.append(COMP_FURTHER.format(noun=noun, source=comp.get("further_source") or "", value=years_text(pena))
+                     .replace(" ()", ""))
+    limit = r.get("max_years_after_reduction")
+    if limit is not None:
+        steps[-1] += ", " + COMP_LIMIT["over" if after_rite > float(limit) + 1e-9 else "within"].format(n=int(limit))
+    return {"steps": steps, "text": "; ".join(steps), "result": pena, "after_rite": after_rite,
+            "applied": [x["label"] for x in measures]}
+
+
+def consent_line(r: Dict[str, Any], number: str = "") -> str:
+    """v79.12.7 (item 6): the patteggiamento's line on the PM's consent -- always required (art. 444, co. 1, c.p.p.),
+    unlikely for an offence the row lists («consent_unlikely_offences»: data, a draft for the lawyer)."""
+    comp = r.get("computation") or {}
+    if not comp.get("consent_source"):
+        return ""
+    if number and number in {str(x) for x in comp.get("consent_unlikely_offences") or []}:
+        return CONSENT_UNLIKELY_LINE.format(source=comp["consent_source"], number=number)
+    return CONSENT_LINE.format(source=comp["consent_source"])
+
+
 def years_text(years: float) -> str:
     """v79.10.7: a pena in years as the lawyer writes it -- «10 anni», «6 anni e 8 mesi», «4 anni, 5 mesi e 10 giorni»."""
     total = round(float(years) * 12 * 30)               # days, by thirty-day months (the practice of the computation)
@@ -1112,7 +1303,10 @@ def _rite_gate(r: Dict[str, Any], p: Dict[str, Any], number: str, attenuanti: Se
     if limit is not None:
         if p.get("low") is None:
             return TO_VERIFY_RITE, "unknown"
-        if best_case(p["low"], attenuanti)["best"] > limit + 1e-9:
+        best = rite_computation(r, p["low"], attenuanti, bool(p.get("contravvenzione")))["after_rite"] \
+            if r.get("computation") else \
+            best_case(p["low"], attenuanti)["best"]          # v79.12.7 (item 6): the printed numbers decide
+        if best > limit + 1e-9:
             return PRECLUDED, "min"
         return POSSIBLE, "pena"
     return AVAILABLE, "pena"
@@ -1131,11 +1325,19 @@ def rite_statuses(pena_text: str = "", number: str = "", attenuanti: Sequence[st
         line = str(r.get("line") or "")
         name = line.split(":")[0]
         status, why = _rite_gate(r, p, str(number or ""), attenuanti)
+        # v79.12.7 (item 6): a rito with a computation (the row's «computation») on a pena it can be computed on prints
+        # it, step by step -- what the status says is what the numbers show
+        comp = rite_computation(r, p["low"], attenuanti, bool(p.get("contravvenzione"))) \
+            if r.get("computation") and computable(p) else None
         if status == AVAILABLE:
-            text = str(r.get("listed_line") or line) if why == "listed" else line
+            text = str(r.get("listed_line") or line) if why == "listed" else \
+                str(r.get("computed_line")).format(computation=comp["text"]) if comp and r.get("computed_line") \
+                else line
         elif status == POSSIBLE:
             text = str(r.get("possible_pecuniary_line") or line) if why == "pecuniary" else \
-                str(r.get("possible_line") or line).format(best=best_case_text(p["low"], attenuanti))
+                str(r.get("possible_line") or line).format(
+                    best=best_case_text(p["low"], attenuanti), computation=comp["text"] if comp else "",
+                    consent=consent_line(r, str(number or ""))).strip()
         elif status == TO_VERIFY_RITE:
             cond = str(r.get("to_verify") or "")
             text = RITE_TO_VERIFY_LINE.format(name=name, condition=cond if _ABBREV_END_RE.search(cond) else
@@ -1147,10 +1349,26 @@ def rite_statuses(pena_text: str = "", number: str = "", attenuanti: Sequence[st
                 name=name, word=str(r.get("precluded_word") or "preclusa"), n=int(n) if n is not None else "",
                 source=r.get("listed_source") or "", provisional=str(r.get("provisional") or "").strip(),
                 source_paren=f" ({src})" if src else "",
-                best=best_case_text(p["low"], attenuanti) if why == "min" else "").replace(" .", ".")
+                best=best_case_text(p["low"], attenuanti) if why == "min" else "",
+                computation=comp["text"] if comp else "").replace(" .", ".")
             text = text[:-1] if text.endswith("..") else text         # v79.12.5: «… c.p.p.» ends the sentence
+            # (review, v79.12.7 item 6): the PM's consent, unlikely for the offences the row lists, said with the
+            # precluded computation too -- the brief's line for 584-class offences, whatever the numbers give
+            unlikely = consent_line(r, str(number or "")) if comp and why == "min" else ""
+            if unlikely and str(number or "") in {str(x) for x in (r.get("computation") or {}).get(
+                    "consent_unlikely_offences") or []}:
+                text = f"{text} {unlikely}"
         out.append({"id": str(r.get("id") or ""), "name": name, "status": status, "why": why, "line": text,
-                    "rite": not r.get("sentencing")})
+                    "rite": not r.get("sentencing"),
+                    # v79.12.7 (item 6): the computation the line must show, and its result (the counters read them)
+                    "computation": comp["text"] if comp else "", "computable": bool(comp),
+                    "result": comp["after_rite"] if comp else None,
+                    "limit": r.get("max_years_after_reduction"),
+                    # (review) the figures a written sentence on this rito may state: the computation's, the
+                    # edittale bounds, the limit -- in days (rite_prose_out)
+                    "figures": sorted({figure_days(x) for x in [p.get("low"), p.get("high"),
+                                                                 r.get("max_years_after_reduction")] if x is not None}
+                                      | set(figures_in(comp["text"]) if comp else []))})
     return out
 
 
@@ -1159,7 +1377,9 @@ def held_attenuanti(circumstances: Optional[Dict[str, Dict[str, Any]]]) -> List[
     is not excluded (an element «non risulta»: its verdict «non applicabile», never counted) and that the record holds:
     (review) one of its elements «provato» or with a supporting sentence of the case. A candidate no fact touches --
     the 62-bis the imputato's posture always lists, or any ungraded one -- is not held: the record says nothing of it,
-    and the best case is the minimum without it (584 c.p. precluded without a fact for the generiche)."""
+    and the best case is the minimum without it (584 c.p. precluded without a fact for the generiche). v79.12.7 (item
+    2): a circumstance a fact of the case triggers (rec["triggered_by"]: the diverbio for 62 n. 2, the concrete step for
+    62 n. 6, the favourable element for 62-bis) is held, «da provare», unless the record excludes it."""
     from . import issue_records
     out = []
     for label, rec in (circumstances or {}).items():
@@ -1169,7 +1389,7 @@ def held_attenuanti(circumstances: Optional[Dict[str, Dict[str, Any]]]) -> List[
             continue
         reqs = [r for r in rec.get("requisites") or [] if r.get("kind", "requisito") == "requisito"]
         if any(r.get("status") == PROVATO or r.get("supporting") or (r.get("link") or {}).get("supporting")
-               for r in reqs):
+               for r in reqs) or rec.get("triggered_by"):     # v79.12.7 (item 2): a fact that triggers it is support
             out.append(str(label))
     return out
 
@@ -1290,15 +1510,30 @@ def _pieces_of(line: str) -> List[str]:
     return _SENT_SPLIT.split(line)
 
 
+_OWN_LEAD_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])?\s*(?:\*\*)?\s*")
+
+
+def _own_norm(text: str) -> str:
+    return " ".join(_OWN_LEAD_RE.sub("", str(text or "")).replace("**", "").split()).strip()
+
+
+def own_rite_sentence(piece: str, statuses: Sequence[Dict[str, Any]]) -> bool:
+    """(review, v79.12.7) A sentence of the code's own rito lines (a status's line: its computation steps, the PM's
+    consent) -- never a written offer, never a written figure: the gate and the figures check leave it alone."""
+    norm = _own_norm(piece)
+    return len(norm) >= 20 and any(norm in _own_norm(x.get("line")) for x in statuses or [])
+
+
 def rites_offered_unavailable(text: str, statuses: Sequence[Dict[str, Any]]) -> List[str]:
     """v79.10.3 (C1): the sentences of the text naming a rito the charge does not admit (precluded, or its pena
     unknown) without saying so (_NOT_OFFERED_RE: «preclusa», «non è ammesso», «da verificare» …) -- the counter
-    rites_unavailable_offered; must be none."""
+    rites_unavailable_offered; must be none. (review, v79.12.7) The code's own lines aside (own_rite_sentence): the
+    precluded patteggiamento's «Calcolo: … meno un terzo per il rito (art. 444 …)» names it to show why."""
     bad, possible = unavailable_rites(statuses), possible_only_rites(statuses)
     if not bad and not possible:
         return []
     return [x.strip()[:200] for line in (text or "").split("\n") for x in _pieces_of(line)
-            if _offers(x, bad, possible)]
+            if _offers(x, bad, possible) and not own_rite_sentence(x, statuses)]
 
 
 _BARE_ITEM_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])?\s*(?:\*\*)?\s*$")
@@ -1310,10 +1545,10 @@ def rites_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[
     alone."""
     bad, possible = unavailable_rites(statuses), possible_only_rites(statuses)
     if not (bad or possible) or not rites_offered_unavailable(text, statuses):
-        return text
+        return rite_prose_out(text, statuses, log)
 
     def kept(piece: str) -> bool:
-        if _offers(piece, bad, possible):
+        if _offers(piece, bad, possible) and not own_rite_sentence(piece, statuses):
             if log is not None:
                 log.append(piece.strip()[:200])
             return False
@@ -1330,7 +1565,96 @@ def rites_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[
         pieces = [x for x in split if kept(x)]
         if not line.strip() or pieces and not (len(pieces) < len(split) and _BARE_ITEM_RE.match(" ".join(pieces))):
             out.append(" ".join(pieces))                # (review) never an orphan «2.» where its item went
-    return "\n".join(out)
+    return rite_prose_out("\n".join(out), statuses, log)
+
+
+# (review, v79.12.7 item 6): a written sentence on a computed rito -- the figures it states must be the computation's
+# (or the edittale bounds, the limit); a reduction or a result it asserts with no figure is the computation asserted, not
+# shown (data/penal_lines.json «rite_prose»: claim_patterns, reference_patterns)
+_NUM_WORDS = {"un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6, "sette": 7,
+              "otto": 8, "nove": 9, "dieci": 10, "undici": 11, "dodici": 12, "tredici": 13, "quattordici": 14,
+              "quindici": 15, "sedici": 16, "diciassette": 17, "diciotto": 18, "diciannove": 19, "venti": 20,
+              "ventuno": 21, "ventiquattro": 24, "trenta": 30}
+_QTY_WORD = r"(\d+|" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")"
+_FIGURE_RE = re.compile(r"\b" + _QTY_WORD + r"\s+(ann[oi]|mes[ei]|giorn[oi])\b"
+                        r"(?:\s*(?:,|e)\s*" + _QTY_WORD + r"\s+(mes[ei]|giorn[oi])\b)?"
+                        r"(?:\s*(?:,|e)\s*" + _QTY_WORD + r"\s+(giorn[oi])\b)?", re.I)
+_UNIT_DAYS = {"a": 360, "m": 30, "g": 1}
+
+
+def figure_days(years: Any) -> int:
+    """A pena in years as days, by thirty-day months (years_text's practice)."""
+    return int(round(float(years) * 360))
+
+
+def figures_in(text: str) -> List[int]:
+    """The pena figures a text states («6 anni e 8 mesi», «due anni»), each in days."""
+    out = []
+    for m in _FIGURE_RE.finditer(text or ""):
+        days = 0
+        for i in range(1, 7, 2):
+            q, unit = m.group(i), m.group(i + 1)
+            if q and unit:
+                days += int(_NUM_WORDS.get(q.lower(), 0) if not q.isdigit() else q) * _UNIT_DAYS[unit[0].lower()]
+        out.append(days)
+    return out
+
+
+def _rite_prose_rx(key: str) -> Optional["re.Pattern"]:
+    from . import penal_lines
+    pats = [p for p in ((penal_lines.data().get("rite_prose") or {}).get(key) or []) if p]
+    try:
+        return re.compile("|".join(f"(?:{p})" for p in pats), re.I) if pats else None
+    except re.error as exc:
+        logger.warning("lawyer_method: rite_prose %s: %s", key, exc)
+        return None
+
+
+def rite_prose_issue(piece: str, statuses: Sequence[Dict[str, Any]]) -> str:
+    """«mismatch» when a written sentence naming a computed rito states a figure its computation does not print (nor
+    the edittale bounds, the limit); «uncomputed» when it asserts a reduction or a result with no figure and no
+    reference to the computation; "" otherwise -- the code's own lines never."""
+    computed = [x for x in statuses or [] if x.get("computable") and x.get("computation") and x.get("id") in RITE_NAMES]
+    if not computed or own_rite_sentence(piece, statuses):
+        return ""
+    named = [x for x in computed if RITE_NAMES[x["id"]].search(piece)]
+    if not named:
+        return ""
+    allowed = {d for x in named for d in x.get("figures") or []}
+    figures = figures_in(piece)
+    if any(all(abs(f - a) > 1 for a in allowed) for f in figures):
+        return "mismatch"
+    claim, ref = _rite_prose_rx("claim_patterns"), _rite_prose_rx("reference_patterns")
+    if not figures and claim is not None and claim.search(piece) and not (ref is not None and ref.search(piece)):
+        return "uncomputed"
+    return ""
+
+
+def rite_prose_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[str]] = None,
+                   rewrite: bool = True) -> str:
+    """The written sentences on a computed rito that state a figure the computation does not print, or assert its
+    reduction with none (rite_prose_issue), dropped -- the code's rito line shows the computation -- each logged
+    («mismatch: …», «uncomputed: …»); outside the tables. rewrite False: the text unchanged, only the log."""
+    if not text or not any(x.get("computable") for x in statuses or []):
+        return text
+
+    def kept(piece: str) -> bool:
+        issue = rite_prose_issue(piece, statuses)
+        if issue and log is not None:
+            log.append(f"{issue}: {piece.strip()[:200]}")
+        return not issue or not rewrite
+    out = []
+    for line in text.split("\n"):
+        if line.lstrip().startswith("|"):
+            out.append(line)
+            continue
+        split = _SENT_SPLIT.split(line)
+        pieces = [x for x in split if kept(x)]
+        if len(pieces) == len(split):
+            out.append(line)
+        elif pieces and not _BARE_ITEM_RE.match(" ".join(pieces)):
+            out.append(" ".join(pieces))
+    return "\n".join(out) if rewrite else text
 
 
 def precluded_block(lines: Sequence[str], procedure: str = "") -> str:
@@ -1657,6 +1981,8 @@ CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "open": "L'elemento «{el}» ({id}) dell'art. {art} non è provato",
     "integrated": "Contestare l'elemento «{el}» ({id}) dell'art. {art}, che i fatti integrano",
     "requalify": "Riqualificazione nell'art. {art}{rubrica}",
+    # v79.12.7 (item 1): an element the note or a ruling states and the text does not -- contesting it is sostenibile
+    "jurisprudential": "L'elemento «{el}» ({id}) dell'art. {art}, richiesto da {source}, non è provato",
     "attenuante": "Attenuante dell'art. {art}{rubrica}",
     "scriminante": "Scriminante dell'art. {art}{rubrica}",
     "claim": "Fondare la domanda sull'art. {art}{rubrica}",
@@ -2027,11 +2353,23 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     event = event_of(ctx.get("certain_text") or "") if offender else ""      # v79.10.3 (C2): the certain facts' event
     if event:
         trace["event"] = event
+    from . import penal_lines
+    # v79.12.7 (item 5): the causation lines' realism -- capped on an ordinary consequence with no trigger fact
+    cap = penal_lines.causation_cap(case_facts_text(ctx)) if offender else {"capped": False}
+    trace["causation_cap"] = cap
 
     def contest(label: str, r: Dict[str, Any]) -> None:
         kind = {NON_RISULTA: "excluded", PROVATO: "integrated"}.get(r.get("status"), "open")
+        if r.get("jurisprudential"):        # v79.12.7 (item 1): a jurisprudential element -- sostenibile, its source
+            add("contest_open", CANDIDATE_TEXTS["jurisprudential"].format(           # named, never minoritaria
+                el=_short(r.get("text"), 80), id=r["id"], art=label, source=r.get("source") or ""),
+                contesta=[r["id"]], label=SUSTAINABLE, jurisprudential=True, sources=list(r.get("sources") or []),
+                admitted_by=JURISPRUDENTIAL_ADMITTED)
+            return
+        causal = kind == "open" and bool(r.get("event_narrated"))     # v79.12.7 (item 5): the causal link contested
         add(f"contest_{kind}", CANDIDATE_TEXTS[kind].format(el=_short(r.get("text"), 80), id=r["id"], art=label),
-            contesta=[r["id"]], label=MINORITY if kind == "integrated" else SUSTAINABLE)
+            contesta=[r["id"]], label=MINORITY if kind == "integrated" else SUSTAINABLE,
+            **({"causation": True, "causation_capped": bool(cap.get("capped"))} if causal else {}))
     # v79.7 (item 2): the imputato's contests in the elements' order (an «integrato» one labelled minoritaria);
     # another role's as before -- the excluded and open ones first, the integrated ones last
     for label, r in in_order if offender else contests["excluded"] + contests["open"]:
@@ -2061,12 +2399,24 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not differs:                                 # v79.9 (A3): nothing to name -- the same fattispecie
             trace.setdefault("requalify_no_difference", []).append(label)
             continue
+        # v79.12.7 (item 4): a listed riqualificazione (584 -> 589/590) names the element that differs and the facts
+        # bearing on it; with no fact it is not offered
+        rule = penal_lines.requalify_rule(base, label)
+        facts = penal_lines.requalify_facts(rule, ctx.get("sentences") or []) if rule else []
+        if rule and not facts:
+            trace.setdefault("requalify_no_facts", []).append(label)
+            continue
+        if rule:
+            differs = [rule["charge_element"], rule["alternative_element"]] + [x for x in differs if x not in (
+                rule["charge_element"], rule["alternative_element"])]
         proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
         contesta = [distinctive] if distinctive else []
         minority = any((known.get(x) or {}).get("status") == PROVATO for x in contesta)
-        add("requalify", CANDIDATE_TEXTS["requalify"].format(art=label, rubrica=_rubrica_tail(rec)), contesta=contesta,
+        text = penal_lines.requalify_text(rule, label, _rubrica_tail(rec), base, facts) if rule else \
+            CANDIDATE_TEXTS["requalify"].format(art=label, rubrica=_rubrica_tail(rec))
+        add("requalify", text, contesta=contesta,
             poggia_su=proven, label=MINORITY if minority else SUSTAINABLE, article=label, charge=base,
-            differs=differs)
+            differs=differs, **({"facts": facts, "requalify_rule": rule.get("id")} if rule else {}))
     for label, rec in records.items():
         if not offender:
             break
@@ -2089,7 +2439,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             ids = proven or (_ids(rec) if by_concept(rec) else [])     # v79.7 (item 3): named by the facts
             if ids and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
                 add("defence", CANDIDATE_TEXTS["defence"].format(art=label, rubrica=_rubrica_tail(rec)),
-                    poggia_su=ids, article=label)
+                    poggia_su=ids, article=label,
+                    **({"causation": True, "causation_capped": bool(cap.get("capped"))}     # v79.12.7 (item 5)
+                       if penal_lines.causation_line(label) else {}))
     for label, rec in circ.items():
         if rec.get("kind") != "attenuante" or not offender:      # v75: the offender's attenuanti, the offender's only
             continue
@@ -2253,7 +2605,26 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         c["argued"] = "model" if c["kind"] in MODEL_ARGUED else "code"      # v74: the model argues contests only
         if c["argued"] == "code":
             c["code_argument"] = code_argument(c, ctx)
+            if c.get("causation_capped"):       # v79.12.7 (item 5): the ordinary consequence -- the nexus holds
+                c["code_argument"] = {**c["code_argument"], "contro": _sentence_join([penal_lines.CAUSATION_CONTRO]),
+                                      "realismo": BASSO}
     return capped
+
+
+JURISPRUDENTIAL_ADMITTED = "elemento di fonte giurisprudenziale dell'addebito"       # v79.12.7 (item 1)
+
+
+def post_fact_lines(ctx: Dict[str, Any]) -> List[str]:
+    """v79.12.7 (item 3): §6's favourable elements after the fact (penal_lines.post_fact_lines)."""
+    from . import penal_lines
+    return penal_lines.post_fact_lines(ctx)
+
+
+def case_facts_text(ctx: Dict[str, Any]) -> str:
+    """v79.12.7 (item 5): the case's facts as the causation cap reads them -- every sentence of the case (a pathology
+    the defence alleges is still a fact to prove), else the certain facts' text, else the case."""
+    sents = " ".join(str(s.get("text") or "") for s in ctx.get("sentences") or [] if isinstance(s, dict))
+    return sents or str(ctx.get("certain_text") or "") or str(ctx.get("case") or "")
 
 
 # v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- said; v79.8.6: reworded, the E2 rule
@@ -2462,7 +2833,7 @@ def certain_text(ctx: Dict[str, Any]) -> str:
         return str(ctx["certain_text"])
     from . import issue_records
     return " ".join(str(x.get("text") or "") for x in issue_records.sentences(ctx.get("case") or "")
-                    if x.get("certainty") == issue_records.ACCERTATO)
+                    if x.get("certainty") == issue_records.ACCERTATO and not x.get("act"))
 
 
 # v79.9 (B3): a professional counterparty -- a business named as a certain fact; a private seller negates it
@@ -3109,6 +3480,11 @@ def valuations(raw: Any, candidates: Sequence[Dict[str, Any]] = ()) -> Dict[str,
     return out
 
 
+# v79.12.7: what a candidate carries into its solution -- the jurisprudential element and its sources (item 1), the
+# riqualificazione's facts (item 4), the causation line and its cap (item 5)
+SOLUTION_CARRIED = ("jurisprudential", "sources", "facts", "causation", "causation_capped")
+
+
 def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Optional[Dict[str, Any]] = None
                      ) -> List[Dict[str, Any]]:
     """v72: the soluzioni -- the code's candidates, each with the model's pro, contro, realismo and argument (a
@@ -3139,13 +3515,14 @@ def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Option
         real = real if real in REALISMO else (BASSO if is_minority(c) else MEDIO)
         if code.get("realismo") == BASSO and real == ALTO:
             real = MEDIO
-        if is_minority(c):
+        if is_minority(c) or c.get("causation_capped"):     # v79.12.7 (item 5): an ordinary consequence -- basso
             real = BASSO
         out.append({"tesi": c["tesi"], "pro": _plain(v.get("pro")), "contro": _plain(v.get("contro")), "realismo": real,
                     "argomento": _plain(v.get("argomento")), "minoritaria": is_minority(c),
                     "contesta": list(c["contesta"]), "poggia_su": list(c["poggia_su"]), "candidate": c["id"],
                     "kind": c["kind"], "argued": c.get("argued") or "model", "valued": given in REALISMO,
-                    **({"fallback": True} if c.get("fallback") else {})})
+                    **({"fallback": True} if c.get("fallback") else {}),
+                    **{k: c[k] for k in SOLUTION_CARRIED if c.get(k)}})       # v79.12.7 (items 1, 4, 5)
     if log is not None:
         log["dropped"] = dropped
         log["code_argued_ignored"] = ignored
@@ -3424,6 +3801,7 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
     best kept; the soluzioni are the candidates with its valuations, a thesis it adds dropped and logged. Timed into
     ctx["timings"], its input and every reply logged (thesis_log)."""
     from langchain_core.messages import HumanMessage, SystemMessage
+    ruling_elements(ctx)                # v79.12.7 (item 1): the kept passages' jurisprudential elements, before the lines
     ctx["candidates"] = thesis_candidates(ctx)
     if schemas_enabled():               # v79.11 (6): the schemas' admission, shadow only -- the candidates untouched
         try:
@@ -3477,6 +3855,48 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
 def schemas_enabled() -> bool:
     from . import element_schemas
     return element_schemas.enabled()
+
+
+def ruling_elements(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.12.7 (item 1): the jurisprudential elements a kept ruling passage states (penal_lines.jurisprudential_
+    elements on the rulings record's «kept»), into ctx["records"]; an element added refreshes the assessment and §4's
+    tables (prepare's inputs, ctx["refresh_inputs"]) -- the facts' «mancanti» stay prepare's. A penal posture only."""
+    record = ctx.get("rulings_record") or {}
+    if not record.get("kept") or not criminal(ctx.get("posture")):
+        return []
+    from . import penal_lines
+    log: Dict[str, Any] = {}
+    got = penal_lines.jurisprudential_elements(ctx.get("records") or {}, record.get("kept") or [], schemas_enabled(),
+                                               circ=ctx.get("circumstances"), log=log,
+                                               id_floor=int((ctx.get("refresh_inputs") or {}).get("id_floor") or 0))
+    ctx["jurisprudential"] = list(ctx.get("jurisprudential") or []) + got
+    if any(x.get("how") == "added" for x in got):
+        refresh_after_elements(ctx)
+    return got
+
+
+def max_element_id(*groups: Dict[str, Dict[str, Any]]) -> int:
+    """v79.12.7 (item 1): the highest «R<n>» id of the state's and the method's records -- an element added later
+    never takes an id a record holds."""
+    from . import penal_lines
+    return penal_lines.max_id(*groups)
+
+
+def printed_records(records: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """The records the answer prints and assesses (prepare's): no ranked candidate, nothing unprinted."""
+    return {x: r for x, r in (records or {}).items() if not r.get("ranked_candidate") and not r.get("unprinted")}
+
+
+def refresh_after_elements(ctx: Dict[str, Any]) -> None:
+    """v79.12.7 (item 1): an element added after prepare -- the assessment and §4's tables computed again on prepare's
+    inputs (ctx["refresh_inputs"]: the main line's anchor, §3's order, the aggravante note)."""
+    inputs = ctx.get("refresh_inputs") or {}
+    records = printed_records(ctx.get("records") or {})
+    by_id = {s["id"]: s for s in ctx.get("sentences") or [] if isinstance(s, dict) and s.get("id")}
+    ctx["assessment"] = assessment(records, ctx.get("posture") or {}, inputs.get("main") or "",
+                                   ctx.get("client") or "", event=event_of(ctx.get("certain_text") or ""))
+    ctx["subsumption"] = subsumption_section(records, inputs.get("order") or [], by_id, ctx.get("circumstances"),
+                                             inputs.get("aggravante_note") or "")
 
 
 # v79.11 (6, 7): the candidates' kinds by the schema's admission categories
@@ -3657,6 +4077,7 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
                 [x for x, r in (ctx.get("records") or {}).items() if r.get("side") == "threat"])),
             "candidates_family_dropped": len(ctx.get("family_dropped") or [])}
     out.update(item_counts(ctx, sols, main, m))                                     # v79.12.4 (items 1, 4, 5, 7)
+    out.update(penal_counts(ctx, sols, m))                                          # v79.12.7 (items 1, 3, 4, 5)
     # v79.11 (6): the rule admitting the main line's candidate ("" when none: a fallback, no candidate) -- always; the
     # schemas' shadow admission in numbers (ELEMENT_SCHEMAS: only when method_plan computed it)
     out["main_admitted_by"] = str(main_cand.get("admitted_by") or "")
@@ -3664,6 +4085,96 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
         out["schema_shadow"] = {k: (len(v) if isinstance(v, list) else v) for k, v in shadow.items()
                                 if k in ("agree", "false_exclusions", "extra", "recall_hit", "recall_of")}
     return out
+
+
+PENAL_COUNT_KEYS = ("jurisprudential_elements", "jurisprudential_minoritaria", "jurisprudential_main",
+                    "absorbed_titles", "absorbed_as_autonomous", "soccorso_post_fact", "requalify_no_facts",
+                    "requalify_without_facts", "causation_capped", "causation_cap_lifted", "causation_over_basso",
+                    "causation_replies_rewritten",
+                    # v79.12.7 (items 2, 6)
+                    "attenuanti_from_facts", "attenuanti_to_verify", "attenuanti_excluded_by_facts",
+                    "bilanciamento_lines", "attenuanti_fixed_block", "rites_computed", "rites_without_computation",
+                    "rites_computation_mismatch")
+
+
+def penal_counts(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], m: Dict[str, Any]) -> Dict[str, int]:
+    """v79.12.7: the nightly's counters of items 1, 3, 4 and 5, from the candidates and the selection --
+      jurisprudential_elements      the elements a note, a kept passage or a reviewed schema states and the text does
+                                    not, in the records (inferred, «da provare»);
+      jurisprudential_minoritaria   a contest of one labelled minoritaria (must be 0);
+      jurisprudential_main          the main line contests one;
+      absorbed_titles               the titles absorbed or made inapposite (581/582 beside 584, 589/590 kept as the
+                                    alternative only, 593 where a soccorso is narrated);
+      absorbed_as_autonomous        such a title still offered as autonomous -- a record printed or threatened, a
+                                    candidate on it but the riqualificazione (must be 0);
+      soccorso_post_fact            the soccorso sentences turned into a favourable element after the fact;
+      requalify_no_facts            the riqualificazioni of a listed pair not offered for lack of facts on the
+                                    differing element;
+      requalify_without_facts       one offered with none (must be 0);
+      causation_capped              the causation lines capped (an ordinary consequence, no trigger fact);
+      causation_cap_lifted          those left uncapped by a trigger fact (pathology, medical error, abnormal cause);
+      causation_over_basso          a capped line rated above «basso» (must be 0);
+      causation_replies_rewritten   the objections' replies denying the causal link replaced (objections_plan sets it
+                                    after the selection);
+      attenuanti_from_facts         (item 2) the attenuanti lines printed from a fact of the case (a diverbio, a
+                                    concrete step named, a favourable element);
+      attenuanti_to_verify          those printed «da verificare» for lack of a fact (62-bis);
+      attenuanti_excluded_by_facts  those printed «esclusa dai fatti» (the record excludes them by a sentence);
+      bilanciamento_lines           the art. 69 c.p. line printed (an aggravante in the record);
+      attenuanti_fixed_block        the fixed attenuanti block still among the printed lines (must be 0);
+      rites_computed                (item 6) the riti printed with their computation (patteggiamento, abbreviato);
+      rites_without_computation     a rito with a computable pena printed without it (must be 0);
+      rites_computation_mismatch    a status the printed result contradicts -- «possibile» over the limit, «preclusa»
+                                    within it (must be 0)."""
+    from . import penal_lines
+    cands = ctx.get("candidates") or []
+    trace = ctx.get("candidates_trace") or {}
+    causal = [c for c in cands if c.get("causation")]
+    return {
+        "jurisprudential_elements": len({(x.get("article"), x.get("id")) for x in ctx.get("jurisprudential") or []}),
+        "jurisprudential_minoritaria": sum(1 for c in cands if c.get("jurisprudential") and is_minority(c)),
+        "jurisprudential_main": int(bool(m.get("jurisprudential"))),
+        "absorbed_titles": len(ctx.get("absorbed") or []),
+        "absorbed_as_autonomous": penal_lines.absorbed_as_autonomous(ctx),
+        "soccorso_post_fact": len(ctx.get("post_fact") or []),
+        "requalify_no_facts": len(trace.get("requalify_no_facts") or []),
+        "requalify_without_facts": sum(1 for c in cands if c.get("kind") == "requalify" and c.get("requalify_rule")
+                                       and not c.get("facts")),
+        "causation_capped": sum(1 for c in causal if c.get("causation_capped")),
+        "causation_cap_lifted": sum(1 for c in causal if not c.get("causation_capped")
+                                    and (trace.get("causation_cap") or {}).get("triggers")),
+        "causation_over_basso": sum(1 for t in sols if t.get("causation_capped") and t.get("realismo") != BASSO),
+        "causation_replies_rewritten": int(ctx.get("causation_replies_rewritten") or 0),
+        **attenuanti_counts(ctx), **rite_counts(ctx)}
+
+
+def attenuanti_counts(ctx: Dict[str, Any]) -> Dict[str, int]:
+    """v79.12.7 (item 2): penal_counts' attenuanti counters, from prepare's attenuanti_log and the printed lines."""
+    how = list(((ctx.get("attenuanti_log") or {}).get("lines") or {}).values())
+    fixed = {x["line"] for x in ctx.get("rites") or [] if not x.get("rite", True)} if ctx.get("attenuanti_log") else set()
+    return {"attenuanti_from_facts": sum(1 for x in how if x in ("facts", "step")),
+            "attenuanti_to_verify": how.count("to_verify"), "attenuanti_excluded_by_facts": how.count("excluded"),
+            "bilanciamento_lines": int(bool((ctx.get("attenuanti_log") or {}).get("aggravanti"))),
+            "attenuanti_fixed_block": sum(1 for x in ctx.get("riti") or [] if x in fixed)}
+
+
+def rite_counts(ctx: Dict[str, Any]) -> Dict[str, int]:
+    """v79.12.7 (item 6): the riti printed (ctx["rites"], §6 and §8) with a computable pena -- each with its computation
+    in its line (rites_computed), none without (rites_without_computation), none whose status the printed result
+    contradicts (rites_computation_mismatch)."""
+    done = without = mismatch = 0
+    for x in ctx.get("rites") or []:
+        if not x.get("rite", True) or not x.get("computable"):
+            continue
+        if x.get("computation") and x["computation"] in str(x.get("line") or ""):
+            done += 1
+        else:
+            without += 1
+        limit, result = x.get("limit"), x.get("result")
+        if limit is not None and result is not None and x.get("status") in (POSSIBLE, PRECLUDED):
+            over = float(result) > float(limit) + 1e-9
+            mismatch += int(over != (x.get("status") == PRECLUDED and x.get("why") == "min"))
+    return {"rites_computed": done, "rites_without_computation": without, "rites_computation_mismatch": mismatch}
 
 
 def item_counts(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, m: Dict[str, Any]) -> Dict[str, int]:
@@ -3960,6 +4471,7 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
         (dropped if hit else kept).append({**o, **({"argues": hit[:160]} if hit else {})})
     replies = bind_replies(kept, sols[main], elements_by_id(ctx.get("records") or {}, ctx.get("circumstances")),
                            review_call)                    # v75b: no reply negates past the main line's «contesta»
+    causation_replies(ctx, kept)                            # v79.12.7 (item 5): the subjective element, not the nexus
     seconds = round(time.time() - t0, 1)
     ctx.setdefault("timings", {})["objections_s"] = seconds
     entry = {"main": sols[main]["tesi"], "subordinate": sols[sub]["tesi"] if sub is not None else "",
@@ -3969,6 +4481,26 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     _log("objections", entry, seconds * 1000)
     return {**plan, "obiezioni": [{"obiezione": o["obiezione"], "risposta": o.get("risposta") or ""}
                                   for o in kept][:OBJECTIONS]}
+
+
+def causation_replies(ctx: Dict[str, Any], objections: List[Dict[str, Any]]) -> int:
+    """v79.12.7 (item 5): with a causation line capped (an ordinary consequence, no trigger fact: penal_lines.
+    causation_cap), a reply denying the causal link (penal_lines.denies_causation) is replaced, in place, by the reply
+    arguing the subjective element (penal_lines.CAUSATION_REPLY); the number replaced, into ctx (and logged)."""
+    from . import penal_lines
+    if not any(c.get("causation_capped") for c in ctx.get("candidates") or []):
+        return 0
+    n = 0
+    for o in objections or []:
+        if penal_lines.denies_causation(o.get("risposta") or ""):
+            o["risposta"] = penal_lines.CAUSATION_REPLY + "."
+            n += 1
+    ctx["causation_replies_rewritten"] = int(ctx.get("causation_replies_rewritten") or 0) + n
+    if isinstance(ctx.get("selection_counts"), dict):       # the state's thesis_counts (the same dict)
+        ctx["selection_counts"]["causation_replies_rewritten"] = ctx["causation_replies_rewritten"]
+    if n:
+        _log("causation_replies", {"rewritten": n})
+    return n
 
 
 def objections_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, parsed: Any,
@@ -4092,7 +4624,14 @@ MAIN_DEMOTED_WHY = {"circumstance": "circostanza: mai linea principale finché e
                                     "principale finché l'addebito ha una linea ammissibile",
                     "never_defence": "artt. 40 e 43 c.p.: i loro elementi provati sono dell'accusa, mai una difesa",
                     "weak_defence": "scriminante o difesa con meno della metà degli elementi provati: mai linea "
-                                    "principale finché un'altra linea è ammissibile"}
+                                    "principale finché un'altra linea è ammissibile",
+                    # v79.12.7 (item 1): my draft -- logged, never printed
+                    "jurisprudential": "contenimento (riqualificazione, circostanze, pena): subordinato alla "
+                                       "contestazione di un elemento di fonte giurisprudenziale ancora da provare",
+                    # (review, v79.12.7 item 5): my draft -- logged, never printed
+                    "causation_capped": "difesa sul nesso causale su una conseguenza ordinaria (realismo basso): mai "
+                                        "linea principale finché un'altra linea è ammissibile"}
+JURISPRUDENTIAL_SUBORDINATE = ("requalify", "contenimento") + ("attenuante", "aggravante")      # v79.12.7 (item 1)
 
 
 def escluso_fragment(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> bool:
@@ -4188,12 +4727,24 @@ def never_main(sols: Sequence[Dict[str, Any]], eligible: Sequence[int], known: D
         out.update({i: MAIN_DEMOTED_WHY["other_threat"] for i in other if i not in out})
     if any(i not in weak | out.keys() for i in eligible):
         out.update({i: MAIN_DEMOTED_WHY["weak_defence"] for i in weak if i not in out})
-    if not all_integrated and any(not sols[i].get("minoritaria") for i in lead):
+    # (review, v79.12.7 item 5): a causation line capped at basso (an ordinary consequence, no trigger fact) never leads
+    # while another line is eligible -- the containment line counts -- and never demotes the containment line
+    capped = {i for i in eligible if sols[i].get("causation_capped") and i not in out}
+    if any(i not in capped | out.keys() for i in eligible):
+        out.update({i: MAIN_DEMOTED_WHY["causation_capped"] for i in capped})
+    if not all_integrated and any(not sols[i].get("minoritaria") and i not in capped for i in lead):
         out.update({i: MAIN_DEMOTED_WHY["containment"] for i in eligible if sols[i].get("kind") == "contenimento"})
     others = [i for i in eligible if i not in circ and i not in out]
     if others:
         out.update({i: MAIN_DEMOTED_WHY["attenuante"] for i in circ
                     if sols[i].get("kind") == "attenuante" and i not in out})
+    # v79.12.7 (item 1): while a sustainable contest of a jurisprudential element (not rated «basso») is eligible, the
+    # containment lines -- a riqualificazione, a circumstance, the containment line -- never lead
+    juris = [i for i in eligible if sols[i].get("jurisprudential") and not sols[i].get("minoritaria")
+             and sols[i].get("realismo") != BASSO and i not in out]
+    if juris:
+        out.update({i: MAIN_DEMOTED_WHY["jurisprudential"] for i in eligible
+                    if sols[i].get("kind") in JURISPRUDENTIAL_SUBORDINATE and i not in out})
     return out
 
 
@@ -4646,10 +5197,21 @@ PROCEDURE_FROM = ("Profili processuali",)
 DROPPED = ("Risposta e strategia", "Sintesi e strategia", "Obiezioni e repliche", "Conclusioni")
 ANALYSIS_TITLE = "**Analisi per elementi**"      # his «Norme e analisi per elementi»: the element tables under the norms
 STRATEGY_TITLE = "**Strategia**"
+# v79.12.7 (item 7): §6's strategy names the main line the table above prints (once per section) -- my draft
+STRATEGY_MAIN_IN_TABLE = "Linea principale: la tesi indicata come principale nella tabella"
+# v79.12.7 (item 7): a later answer of «Risposte ai quesiti» on the main line refers to the first that prints it
+MAIN_LINE_SEE_ANSWER = "La linea principale è quella indicata nella risposta {n}."
+
+
+def cenni_title(title_: str) -> bool:
+    """v79.12.7 (item 7): a «Cenni: …» section's title (interaction_copy.CENNI_SECTION)."""
+    from . import interaction_copy as C
+    return str(title_ or "").strip().startswith(C.CENNI_SECTION.split("{")[0].strip())
 
 
 def solutions_section(sols: List[Dict[str, Any]], main: int, plan: Dict[str, Any], riti: Sequence[str],
-                      stragiudiziale: str, log: Optional[Dict[str, Any]] = None) -> str:
+                      stragiudiziale: str, log: Optional[Dict[str, Any]] = None, post_fact: Sequence[str] = ()
+                      ) -> str:
     """The table (the main thesis first, labelled; a minority one declared; a barred one with BARRED_LABEL and the
     elements it contests) and the strategy: the main line -- the posture's containment line carries the riti --, the
     subordinate line only when it differs from the main one (same_line), the stragiudiziale option."""
@@ -4667,7 +5229,11 @@ def solutions_section(sols: List[Dict[str, Any]], main: int, plan: Dict[str, Any
             label += f" ({UNVERIFIABLE_LABEL})"
         lines.append(f"| {_cell(label)} | {_cell(s_.get('pro'))} | {_cell(s_.get('contro'))} | {_cell(s_['realismo'])} |")
     main_text = sols[main]["tesi"]
-    strategy = [STRATEGY_TITLE, "", f"- Linea principale: {main_text.rstrip('.')}."]
+    # v79.12.7 (item 7): the table prints the main line -- the strategy names it, never prints it again
+    strategy = [STRATEGY_TITLE, "", f"- {STRATEGY_MAIN_IN_TABLE}."]
+    if sols[main].get("jurisprudential"):       # v79.12.7 (item 1): the element's source, a ruling's passage under it
+        from . import penal_lines
+        strategy += [f"  - {x.rstrip('.')}." for x in penal_lines.element_source_lines(sols[main])]
     with_main = bool(sols[main].get("fallback"))         # the containment line: the riti are its content
     if with_main:
         strategy += [f"  - {x}" for x in riti]
@@ -4682,6 +5248,7 @@ def solutions_section(sols: List[Dict[str, Any]], main: int, plan: Dict[str, Any
         strategy += [f"  - {x}" for x in sub_riti]
     if plan.get("stragiudiziale") and log is not None and not same_line(plan["stragiudiziale"], stragiudiziale or ""):
         log["stragiudiziale_model_dropped"] = str(plan["stragiudiziale"])[:200]      # v76: the table's line only
+    strategy += [f"- {x.rstrip('.')}." for x in post_fact or []]       # v79.12.7 (item 3): a soccorso narrated
     strategy.append(f"- Opzione stragiudiziale: {(stragiudiziale or '').rstrip('.')}.")
     return "\n".join(lines + [""] + strategy)
 
@@ -4972,20 +5539,28 @@ def _open_ids(ctx: Dict[str, Any]) -> List[str]:
 def whole_citations(text: str, log: Optional[List[str]] = None) -> str:
     """v79.9 (D4): a ruling's reference printed whole or not at all -- every reference without its court's head
     («Sez. 4, n. 29558/2025», «4, n. 29558/2025») removed from the sentence it sits in (logged); §5 prints the
-    record's estremi whole by construction."""
-    from . import rulings as rulings_mod
-    spans = rulings_mod.headless(text or "")
-    if not spans:
+    record's estremi whole by construction. v79.12.7 (item 7): the reference's date with it, a date left orphaned before
+    a closing parenthesis («…, 11.04.2025)») too, and never inside a «…» quote (text_hygiene.citation_spans)."""
+    from . import text_hygiene
+    if not text_hygiene.citation_spans(text or ""):
         return text or ""
-    out = text
-    for a, b in reversed(spans):
-        if log is not None:
-            log.append(out[a:b].strip())
-        out = out[:a] + out[b:]
-    out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
-    out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
-    out = re.sub(r"[,:;]\s*([.;:])", r"\1", out)
-    return re.sub(r"[ \t]{2,}", " ", out)
+    lines = []
+    for line in text.split("\n"):          # line by line: a span never takes a line break, a line untouched stays as is
+        spans = text_hygiene.citation_spans(line)
+        out = line
+        for a, b in reversed(spans):
+            if log is not None:
+                log.append(out[a:b].strip())
+            gap = " " if out[a - 1:a].isalnum() and out[b:b + 1].isalnum() else ""     # never two words joined
+            out = out[:a] + gap + out[b:]
+        if spans:
+            indent = out[:len(out) - len(out.lstrip())]
+            out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
+            out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
+            out = re.sub(r"[,:;]\s*([.;:])", r"\1", out)
+            out = indent + re.sub(r"[ \t]{2,}", " ", out.lstrip())
+        lines.append(out)
+    return "\n".join(lines)
 
 
 def _with_line(text: str, line: Optional[str]) -> str:
@@ -5152,7 +5727,8 @@ def conclusions_from_selection(a: Dict[str, Any], sols: Sequence[Dict[str, Any]]
     else:
         risk = ""
     m = sols[main]
-    lines = [assessment_text(a, client, m["tesi"], depends, risk)]
+    # v79.12.7 (item 7): «Obiettivo realistico» no longer repeats the main line -- the next line prints it, once
+    lines = [assessment_text(a, client, "", depends, risk)]
     lines.append(f"{MAIN_LINE}: {m['tesi'].rstrip('.')}" + (f" — {m['argomento'].rstrip('.')}" if m.get("argomento")
                                                            else "") + ".")
     if sub is not None:
@@ -5304,6 +5880,7 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
     strategy = [f"La linea principale è: {sols[main]['tesi'].rstrip('.')}.",
                 f"L'esito probabile è {esito}: {_plain(a.get('why')).rstrip('.')}."] if sols else []
     items, how = [], []
+    said_at = 0                 # v79.12.7 (item 7): the answer that printed the main line -- the block prints it once
     for i, q in enumerate(asked, 1):
         written = next((x for t, x in by_title.items() if same_line(t, q) or _plain(t) == _plain(q)), "")
         if written:
@@ -5314,6 +5891,11 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
                 got += strategy[:ANSWER_SENTENCES[0] - len(got)]
         else:
             got, kind = list(strategy), "selezione"
+        if strategy and strategy[0] in got:
+            if said_at:
+                got = [MAIN_LINE_SEE_ANSWER.format(n=said_at) if x == strategy[0] else x for x in got]
+            else:
+                said_at = i
         got = [x for x in got if x][:ANSWER_SENTENCES[1]]
         if not got:
             got, kind = [NO_SOURCE_ANSWER], "nessuna fonte"
@@ -5358,13 +5940,16 @@ def registro_hits(answer: str) -> List[str]:
 
 def wording_hits(text: str, known_ids: Sequence[str], criminal_matter: bool) -> List[str]:
     """v79 (E2): the internal wording a text shows the reader outside its tables -- an element code, the «registro»,
-    and in a matter that is not criminal «l'accusa» and «aggravante»."""
+    and in a matter that is not criminal «l'accusa» and «aggravante». v79.12.7 (item 7): a ruling's stance mark
+    («(contro)») too."""
+    from . import text_hygiene
     out = []
     ids = set(known_ids)
     for line in (text or "").split("\n"):
         if line.lstrip().startswith("|"):
             continue
         out += [f"codice {m.group(1)}" for m in _ELEMENT_TOKEN_RE.finditer(line) if m.group(1) in ids]
+        out += [f"«{x}»" for x in text_hygiene.stance_hits(line)]
         out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line)]
         if not criminal_matter:
             out += [f"«{m.group(0)}»" for m in _ACCUSA_RE.finditer(line)]
@@ -5420,6 +6005,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         elif t not in DROPPED:
             others.append((t, x.strip()))
     claims: List[Dict[str, Any]] = []
+    exclusions: List[Dict[str, Any]] = []       # v79.12.7 (item 2): a circumstance called excluded, rewritten
     rulings_out: List[str] = []
     orientation_claims: List[str] = []
     procedural_out: List[str] = []
@@ -5450,6 +6036,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
 
     closed_list = stage_lines(ctx.get("posture") or {})     # v79.12.5 (item 10): §8's closed list, code-written
     closed_kept: List[str] = []                             # its sentences the rule check would have removed
+    from . import text_hygiene
+    known_ids = elements_by_id(records, circ)               # v79.12.7 (item 7): an element code no record holds
+    unknown_log: List[str] = []
 
     # every written paragraph: no orientation of its own, retrieved
     def prose(text: str, rules: bool = True, keep: Sequence[str] = ()) -> str:
@@ -5461,7 +6050,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                  penal=criminal(ctx.get("posture")))     # v79.10.3 (C1): querela only, from the store
         text = rites_out(text, ctx.get("rites") or [], rites_log)      # v79.10.3 (C1): no rito the charge refuses
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
+        text = circumstance_exclusions(text, circ, exclusions)     # v79.12.7 (item 2): never «esclusa» unfounded
         text = circumstance_claims(text, circ, claims)
+        text = text_hygiene.unknown_codes_out(text, known_ids, unknown_log)  # v79.12.7 (item 7): an invented «R9»
         return rule_statements.check(text, rule_src, rules_log, keep, closed_kept) if rules else text   # v79 (B1)
 
     def checked(text: str, rules: bool = True, keep: Sequence[str] = ()) -> str:     # v79 (E3): prose, its removals
@@ -5472,7 +6063,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     quesiti = [(t, x) for t, x in others if t.endswith("?")]
     normative = [(t, x) for t, x in others if not t.endswith("?")]
     norms_parts = [norms] if norms else []
-    norms_parts += [f"**{t}**\n\n{checked(x)}" for t, x in normative if x]
+    cenni_log: List[Dict[str, str]] = []        # v79.12.7 (item 7): a cenno's rule grounded in its article only
+
+    def normative_text(t: str, x: str) -> str:
+        if not cenni_title(t):
+            return checked(x)
+        # v79.12.7 (item 7): a «Cenni» section's rule statements on the article each cites -- its text (one comma) or
+        # Block B's sources on it; naming none, its section's articles -- in place of Block B's answer-wide check
+        done = checked(x, rules=False)
+        return tracked("cenni", done, text_hygiene.cenni_check(done, ctx.get("cenni_texts") or {}, rule_src, cenni_log))
+    norms_parts += [f"**{t}**\n\n{normative_text(t, x)}" for t, x in normative if x]
     if ctx.get("subsumption"):
         norms_parts.append(f"{ANALYSIS_TITLE}\n\n{ctx['subsumption']}")
     if profiles:
@@ -5569,7 +6169,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
         ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points)),
         ("soluzioni", no_claim_solutions(ctx, kind) if kind else solutions_section(
-            sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log)),
+            sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
+            post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
         ("obiezioni", NO_CLAIM_OBJECTIONS if kind else objections_section(plan, fallback_objections)),
         ("processuali", procedure),
         # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
@@ -5577,8 +6178,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     ]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
+    residue: Dict[str, List[str]] = {}          # v79.12.7 (item 7): the stance marks, §5's codes, the answers' residue
     keyed = [(k, x if k == "orientamenti" else tracked("wording", x, reader_wording(x, known_all, crim)))
              for k, x in keyed]
+    keyed = [(k, tracked("wording", x, text_hygiene.stance_out(text_hygiene.codes_out(
+        x, known_all, residue.setdefault("codes", [])), residue.setdefault("stance", [])))) for k, x in keyed]
     headless_log: List[str] = []        # v79.9 (D4): a ruling's reference whole or not at all, every written section
     keyed = [(k, x if k == "orientamenti" else tracked("citations", x, whole_citations(x, headless_log)))
              for k, x in keyed]
@@ -5590,8 +6194,26 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out,
                 "rites_out": rites_log,                                                      # v79.10.3 (C1)
                 "headless_citations_out": headless_log, **layout_log,
-                "closed_list_kept": closed_kept})                                            # v79.12.5 (item 10)
+                "closed_list_kept": closed_kept,                                             # v79.12.5 (item 10)
+                "cenni_rules_removed": cenni_log, "residue_out": residue,                   # v79.12.7 (item 7)
+                "unknown_codes_out": unknown_log})
+    ctx["cenni_rules_removed"] = len(cenni_log)
+    # v79.12.7 (item 7): the cenni's rule statements still ungrounded in the composed §4 (must be 0)
+    left_cenni: List[Dict[str, str]] = []
+    for part in norms_parts:
+        head_, _, body_ = part.partition("\n\n")
+        if cenni_title(head_.strip("*")):
+            text_hygiene.cenni_check(body_, ctx.get("cenni_texts") or {}, rule_src, left_cenni, rewrite=False)
+    ctx["cenni_rules_unsourced"] = len(left_cenni)
     ctx["closed_list_kept"] = len(closed_kept)
+    # v79.12.7 (item 2): the written sentences calling a circumstance excluded that the record does not exclude --
+    # rewritten (circumstance_exclusions_rewritten) and any left in the composed sections (must be 0)
+    left: List[Dict[str, Any]] = []
+    for _k, x in keyed:
+        circumstance_exclusions(x, circ, left, rewrite=False)
+    log["circumstance_exclusions"] = exclusions
+    ctx["circumstance_exclusions_rewritten"] = len(exclusions)
+    ctx["circumstance_excluded_unsupported"] = len(left)
     ctx["articles_out_of_scope"] = len(articles_log)        # v79.12.5 (item 10): what the scope check still flags
     log["controllo_finale"] = final_check(dict(keyed), ctx, log, plan)
     # «orientamento da verificare» stays where the section prints it (v71); its point is collected all the same
@@ -5613,8 +6235,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure,
                                             [] if kind else sols, main, a,      # v79.12.5 (item 2): no line
                                             client, checked, log)          # v79.6 (item 1): before §1
-    if answers:
+    if answers:     # v79.12.7 (item 7): built after the sections' reader checks -- the path the codes leaked by
+        answers = tracked("wording", answers, reader_wording(answers, known_all, crim))
+        answers = tracked("wording", answers, text_hygiene.stance_out(text_hygiene.codes_out(
+            answers, known_all, residue.setdefault("codes", [])), residue.setdefault("stance", [])))
+        answers = tracked("citations", answers, whole_citations(answers, headless_log))
         joined = f"{answers}\n\n{joined}"
+    # v79.12.7 (item 7): the main line printed at most once per section (tables included)
+    if not kind:
+        printed = ([("risposte", answers)] if answers else []) + list(body)
+        log["main_line_repeated"] = text_hygiene.main_line_repeated(printed, sols[main]["tesi"])
+        ctx["main_line_repeated"] = len(log["main_line_repeated"])
     # v79 (B3): what the nightly's output check reads -- the sources, the scope, and the code-written texts (built from
     # the sources: never a rule statement to trace)
     code_texts = [x for k, x in keyed if k in ("sintesi", "fatti", "conclusioni")] + \
@@ -5828,19 +6459,42 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     notes, note_sources = attach_notes(all_records, {}, rows)       # v72: the lawyer's notes, into the records
     view_log: Dict[str, List[str]] = {}
     every = method_records(all_records, view_log)                   # v74: the decomposed fattispecie only
+    absorbed: Dict[str, Any] = {"absorbed": [], "post_fact": []}
+    juris_log: Dict[str, Any] = {}
+    if penal:
+        from . import penal_lines
+        # v79.12.7 (item 3): the absorbed titles out (581/582 beside 584), 589/590 beside 584 the riqualificazione
+        # alternative only, 593 out where a soccorso is narrated (a favourable element after the fact instead)
+        every, absorbed = penal_lines.absorb(every, sentences)
+        # (review) the flow's records agree: its own paths (its riti, the anchor blocks, the citations) never print an
+        # absorbed title as autonomous
+        penal_lines.absorb_into(state.get("records"), absorbed)
+        # v79.12.7 (item 1): an element the note states and the text does not (584: the prevedibilità in concreto of the
+        # death) into the record, inferred, «da provare»; a reviewed schema carrying it used as is (ELEMENT_SCHEMAS)
+        penal_lines.jurisprudential_elements(every, schemas_on=schemas_enabled(), circ=all_records, log=juris_log)
     # v79.12.4 (item 4): an element naming the event the certain facts narrate is never «da provare»
     event_proven = narrated_event_proven(every, " ".join(str(x.get("text") or "") for x in sentences
                                                          if issue_records_certain(x)))
     # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
     # assesses (the record below: §2, §4, the assessment, the objections' fallback)
     records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
-    circ = circumstance_records(circumstance_candidates(case, records, posture or {}))
+    # v79.12.7 (item 2): the attenuanti the facts trigger (data/penal_lines.json «circumstance_triggers»: a diverbio, a
+    # concrete step of the riparazione, a favourable element) -- candidates, held «da provare» by the fact
+    triggers: Dict[str, Dict[str, Any]] = {}
+    if penal and (posture or {}).get("role") in ACCUSED:
+        from . import penal_lines
+        triggers = penal_lines.circumstance_triggers(sentences, absorbed.get("post_fact") or [])
+    circ = circumstance_records(circumstance_candidates(case, records, posture or {}, list(triggers)))
     circ_log: Dict[str, Any] = {}
     if circ and sentences:
         try:
             circ_log = grade_circumstances(circ, sentences, call=link_call)
         except Exception as exc:       # noqa: BLE001 -- ungraded: every element stays «da provare»
             circ_log = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    for label, got in triggers.items():          # v79.12.7 (item 2): the trigger facts, after the grading
+        if label in circ:
+            circ[label]["triggered_by"] = [f["sid"] for f in got.get("facts") or [] if f.get("sid")] or ["caso"]
+            circ[label]["trigger_step"] = got.get("step") or ""
     circ_notes, circ_sources = attach_notes({}, circ, rows)
     notes, note_sources = {**notes, **circ_notes}, {**note_sources, **circ_sources}
     certain = " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x))
@@ -5850,6 +6504,15 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     # alone -- the persona offesa's, an appeal's or the execution's answer may describe any rito
     rites = charge_rites(records, rows, posture or {}, a.get("article") or "", circ) if _rites_posture(posture) else []
     riti = [x["line"] for x in rites if x["status"] != PRECLUDED] if _rites_posture(posture) else []
+    # v79.12.7 (item 2): the fixed attenuanti block (the table's sentencing line) replaced by the attenuanti the facts
+    # give (penal_lines.attenuanti_lines: a fact narrated, the concrete step named, «da verificare» without one, never
+    # «esclusa» unless the record excludes it; art. 69's line whenever an aggravante is in the record)
+    att_log: Dict[str, Any] = {}
+    if riti and penal:
+        from . import penal_lines
+        att = penal_lines.attenuanti_lines(triggers, circ, sentences, att_log)
+        sentencing = {x["line"] for x in rites if not x.get("rite")}
+        riti = [x for x in riti if x not in sentencing] + att
     riti_out = [x["line"] for x in rites if x["status"] == PRECLUDED] if _rites_posture(posture) else []
     procedibilita = procedibility(records, rows)
     article_texts = [str((r.get("s") or {}).get("plain_text") or "") for r in rows or [] if r.get("_article")]
@@ -5886,14 +6549,26 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "family_words": family_words(state, case),                        # v79.9 (C1)
            "charge": dict(state.get("charge") or {}),                         # v79.10.5 (E1): held, by its rule
            "event_proven": event_proven,                                      # v79.12.4 (item 4)
-           "terms": computed_terms(state)}                                    # v79.12.4 (item 7)
+           "terms": computed_terms(state),                                    # v79.12.4 (item 7)
+           # v79.12.7: the case's sentences (the riqualificazione's facts, the soccorso), the absorbed titles, the
+           # favourable elements after the fact, the jurisprudential elements, what method_plan's refresh needs
+           "sentences": list(sentences), "absorbed": absorbed.get("absorbed") or [],
+           "post_fact": absorbed.get("post_fact") or [], "jurisprudential": list(juris_log.get("jurisprudential") or []),
+           "flow_records": state.get("records") if penal else None,          # (review) absorbed_as_autonomous
+           # v79.12.7 (item 2): the attenuanti the facts trigger and how each was printed
+           "circumstance_triggers": {k: [f.get("sid") for f in v.get("facts") or []] for k, v in triggers.items()},
+           "attenuanti_log": att_log,
+           "refresh_inputs": {"main": main, "order": list(order), "aggravante_note": note,
+                              "id_floor": max_element_id(all_records, every)}}
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti),
                      "rites": {x["id"]: [x["status"], x["why"]] for x in rites}, "temporal": ctx["temporal"][:200],
                      "litisconsorzio": len(ctx["litisconsorzio"]), "facts": {k: len(v) for k, v in ctx["facts"].items()},
                      "facts_excluded": facts_log, "procedibilita": procedibilita, "rulings": len(ctx["rulings"]),
-                     "notes": note_sources, "records": view_log})
+                     "notes": note_sources, "records": view_log,
+                     "absorbed": ctx["absorbed"], "jurisprudential": ctx["jurisprudential"],       # v79.12.7
+                     "circumstance_triggers": ctx["circumstance_triggers"], "attenuanti": att_log})
     return ctx
 
 

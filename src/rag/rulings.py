@@ -971,18 +971,32 @@ _ACT_BEFORE_RE = re.compile(r"(?:d\.\s?lgs\.?|d\.\s?p\.\s?r\.|d\.\s?l\.|legge|l\
 _COURT_HEAD_RE = re.compile(r"Cass\.|Cassazione|Corte\s+cost|C\.\s*cost|Cons\.\s*St|Consiglio\s+di\s+Stato|C\.\s*giust|"
                             r"Corte\s+(?:di\s+giustizia|EDU|europea|d['’]appello|dei\s+conti)|CGUE|T\.?\s?A\.?\s?R\.?\b|"
                             r"Trib\.|Tribunale|App\.\s", re.IGNORECASE)
-# the whole headless reference, to remove: «(Sez. 4, n. 29558/2025, Rv. 123-01)», «4, n. 29558/2025», «Sez. 5»
-_HEADLESS_SPAN_RE = re.compile(
-    r"\s*[(\[]?\s*(?:(?:Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)|\d{1,2}(?:-\d)?)\s*,\s*)?n\.\s*\d{1,6}\s*/\s*(?:19|20)\d{2}"
-    r"(?:\s*\([^)]{0,24}\))?(?:\s*,\s*(?:Rv\.?\s*[\d-]+|dep\.\s*[\d./]+))*\s*[)\]]?(?:\s*,(?=\s))?|"
-    r"\s*[(\[]?\s*Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)\s*[)\]]?(?=[\s,.;:]|$)")
+# the whole headless reference, to remove: «(Sez. 4, n. 29558/2025, Rv. 123-01)», «4, n. 29558/2025», «Sez. 5»;
+# v79.12.7 (item 7): its date too («Sez. 4, n. 37437/2025, 11.04.2025)» left «11.04.2025)» behind -- the date forms are
+# data/text_hygiene.json «headless_dates»)
+@lru_cache(maxsize=1)
+def _headless_span_re() -> "re.Pattern":
+    from . import text_hygiene
+    date = text_hygiene.date_pattern()
+    # (review) the tails a reference carries, after a comma or a word: «Rv. 288123 - 01», «dep. 11.04.2025», «del / ud. /
+    # udienza / in data / depositata il 11.04.2025», the date alone after a comma; «sent. n.», «ord. n.» before the number
+    lead = r"(?i:(?:del|dell['’]|ud\.|udienza(?:\s+del)?|in\s+data|dep\.|depositat\w*(?:\s+(?:il|in\s+data))?)\s*)"
+    rv = r"(?i:Rv\.?\s*\d+(?:\s*-\s*\d+)?)"
+    tail = (r"(?:\s*,\s*(?:" + rv + r"|(?i:dep\.)\s*[\d./]+|" + lead + r"?" + date + r")|\s+" + lead + date +
+            r"|\s+" + rv + r")")
+    return re.compile(
+        r"\s*[(\[]?\s*(?:(?:Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)|\d{1,2}(?:-\d)?)\s*,\s*)?"
+        r"(?:(?i:sent(?:enza)?\.?|ord(?:inanza)?\.?)\s*)?n\.\s*\d{1,6}\s*/\s*(?:19|20)\d{2}"
+        r"(?:\s*\([^)]{0,24}\))?" + tail + r"*"
+        r"\s*[)\]]?(?:\s*,(?=\s))?|"
+        r"\s*[(\[]?\s*Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)\s*[)\]]?(?=[\s,.;:]|$)")
 
 
 def headless(text: str) -> List[Tuple[int, int]]:
     """v79.9 (D4): the spans of every ruling reference printed without its head («Sez. 4, n. 29558/2025» with no
-    «Cass. pen.» before it; a law's number -- «d.lgs. n. 23/2015» -- is none)."""
+    «Cass. pen.» before it; a law's number -- «d.lgs. n. 23/2015» -- is none). v79.12.7 (item 7): with its date."""
     spans = []
-    for m in _HEADLESS_SPAN_RE.finditer(text or ""):
+    for m in _headless_span_re().finditer(text or ""):
         core = _HEADLESS_RE.search(m.group(0))
         if not core:
             continue
@@ -1001,6 +1015,8 @@ def printed_problems(answer: str) -> List[str]:
     out += ["timbro «copia non ufficiale»" for _ in STAMP_RE.finditer(answer or "")]
     out += [f"timbro della firma «{m.group(0).strip()[:40]}»" for m in SIGNATURE_RE.finditer(answer or "")]
     out += [f"citazione senza la testa: «{(answer or '')[a:b + 10].strip()}»" for a, b in headless(answer or "")]
+    from . import text_hygiene              # v79.12.7 (item 7): a date left without its reference («11.04.2025)»)
+    out += [f"data senza la pronuncia: «{(answer or '')[a:b].strip()}»" for a, b in text_hygiene.orphan_dates(answer or "")]
     return out
 
 

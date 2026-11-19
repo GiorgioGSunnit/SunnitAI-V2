@@ -98,18 +98,43 @@ _CLAIM_LETTER_RE = re.compile(r"\b(?:lettera|diffida|raccomandata|pec|messa\s+in
 
 def certainty(sentence: str) -> str:
     """How the case states it: ipotizzato (hedged or hypothetical -- v60t: first, an attributed hypothesis is one too),
-    allegato (attributed or reported; v79.8: a claim letter's content too), else accertato."""
-    if _HEDGED_RE.search(sentence or ""):
+    allegato (attributed or reported; v79.8: a claim letter's content too), else accertato. v79.12.7 (item 7): a
+    procedural act narrated (the PM's contestazione, an avviso, a notifica, the rinvio a giudizio, a decreto --
+    data/text_hygiene.json) is a certain fact: only what is left once the act's own words are out is read for a hedge or
+    an attribution («il PM ha contestato a Gamma l'omicidio» is accertato; «Gamma sostiene di non aver ricevuto la
+    notifica» stays allegato)."""
+    from . import text_hygiene
+    act = text_hygiene.procedural_act(sentence or "")
+    text = text_hygiene.act_remainder(sentence, act) if act else (sentence or "")
+    if _HEDGED_RE.search(text):
         return IPOTIZZATO
-    if _ALLEGED_RE.search(sentence or "") or _CLAIM_LETTER_RE.search(sentence or ""):
+    if _ALLEGED_RE.search(text) or _CLAIM_LETTER_RE.search(text):
         return ALLEGATO
     return ACCERTATO
 
 
-def certain_fact(sentence: Dict[str, Any]) -> bool:
-    """v79.8 (C1): a fatto certo -- the case's own words (grounded), stated as accertato: the one source of §2's «fatti
-    certi» and of every «provato» in §4. An allegazione, a counterparty's statement, a claim letter: never."""
+def stated_certain(sentence: Dict[str, Any]) -> bool:
+    """v79.12.7 (item 7): narrated as a fatto certo -- grounded and accertato, a procedural act's sentence included:
+    §2's «fatti certi»."""
     return grounded(sentence) and sentence.get("certainty") == ACCERTATO
+
+
+def act_bears(sentence: Dict[str, Any], element: str = "") -> bool:
+    """v79.12.7 (item 7): the sentence may decide the element -- any sentence but a procedural act's, which proves the
+    act was done and nothing it charges: only an element naming the act (text_hygiene.act_named)."""
+    act = sentence.get("act")
+    if not act:
+        return True
+    from . import text_hygiene
+    return text_hygiene.act_named(element, act)
+
+
+def certain_fact(sentence: Dict[str, Any], element: str = "") -> bool:
+    """v79.8 (C1): a fatto certo -- the case's own words (grounded), stated as accertato: the one source of every
+    «provato» in §4. An allegazione, a counterparty's statement, a claim letter: never. v79.12.7 (item 7): a procedural
+    act's sentence only for an element naming the act (element: the element's text; none, never) -- §2 reads
+    stated_certain."""
+    return stated_certain(sentence) and act_bears(sentence, element)
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀ-Ü«\"(])")
@@ -142,6 +167,7 @@ def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] =
     instruction) -- no element is supported or contradicted by it. v75: nor the requested blocks (asks: the quesiti
     intake listed) -- the ask is never a fact."""
     from .fact_signals import case_only, user_message
+    from . import text_hygiene
     out: List[Dict[str, str]] = []
     seen = set()
 
@@ -152,6 +178,9 @@ def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] =
         seen.add(key)
         out.append({"id": f"S{len(out) + 1}", "text": text, "source": source, "certainty": how or certainty(text),
                     "verbatim": verbatim(text, origin)})                # v60t (1): grounding
+        act = text_hygiene.procedural_act(text) if source != "sistema" else ""
+        if act:                         # v79.12.7 (item 7): the act it narrates (certain_fact reads it)
+            out[-1]["act"] = act
     for s in _split(case_only(case)):
         add(s, "caso", origin=case)
     for a in additions or []:
@@ -580,7 +609,7 @@ def _trigger(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> Optional[
     if not own:
         return None
     for s in sorted(by_id.values(), key=lambda x: x.get("source") != "precisazione"):
-        if s.get("source") == "sistema" or not certain_fact(s):      # v79.8 (C1): a fatto certo only
+        if s.get("source") == "sistema" or not certain_fact(s, req.get("text") or ""):      # v79.8 (C1): a fatto certo
             continue
         need = 1 if s.get("source") == "precisazione" else min(2, len(own))
         if len(own & element_nouns(s.get("text") or "")) >= need:
@@ -601,11 +630,11 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     req["contradicting"] = base_con + [i for i in theirs if i not in base_con]
     sup = [by_id[i] for i in req["supporting"] if i in by_id]
     con = [by_id[i] for i in req["contradicting"] if i in by_id]
-    sure_con = [s for s in con if s.get("certainty") == ACCERTATO]
+    sure_con = [s for s in con if s.get("certainty") == ACCERTATO and act_bears(s, req.get("text") or "")]
     # v60t (1): «provato» needs a supporting sentence that is the case's own words (grounded); a hedged or hypothetical
     # one never. v79.8 (C1): a fatto certo only -- an allegazione, a counterparty's statement, a claim letter leave the
     # element «da provare» (certain_fact: §2's «fatti certi» are the same sentences)
-    ground = [s for s in sup if certain_fact(s)]
+    ground = [s for s in sup if certain_fact(s, req.get("text") or "")]       # v79.12.7 (item 7): an act's, its own
     alleged = [s for s in sup if grounded(s) and s.get("certainty") == ALLEGATO]
     # v76: a status needs a sentence -- «provato» only with a case sentence that holds it (the link's, grounded), «non
     # risulta» only with one that says the contrary; what the extracted facts or a signal read with no such sentence
@@ -658,7 +687,7 @@ def condition_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], statu
     parts = condition_rule(req)[0]
     if not parts:
         return status, why
-    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
+    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i], req.get("text") or "")]
     held = {p: any(element_nouns(p) & element_nouns(x.get("text") or "") for x in facts) for p in parts}
     req["parts"] = held
     missing = [p for p, ok in held.items() if not ok]
@@ -941,7 +970,7 @@ def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, D
     entro otto giorni») turns the verdict (verdict inside: the element integrated). Only fatti certi count. v79.10.7: a
     span counted to today («tre mesi fa») is read only by ago_durations; with the act's date not found the dated
     events give nothing (an unrelated later date measures no term: «da provare»)."""
-    facts = [s for s in by_id.values() if certain_fact(s)]
+    facts = [s for s in by_id.values() if certain_fact(s, req.get("text") or "")]
     linked = set(req.get("supporting") or []) | set(req.get("contradicting") or []) | \
         set((req.get("link") or {}).get("supporting") or []) | set((req.get("link") or {}).get("contradicting") or [])
     anchor = term.get("anchor") or ""
@@ -1164,7 +1193,7 @@ def termine_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> None
     term = term_of(req.get("text") or "") or term_of(" ".join(str(p) for p in req.get("schema_parti") or []))
     if not term:
         if req.get("status") == PROVATO and req.get("facts_status") != PROVATO and not any(
-                i in by_id and certain_fact(by_id[i]) and _DATED_RE.search(by_id[i].get("text") or "")
+                i in by_id and certain_fact(by_id[i], req.get("text") or "") and _DATED_RE.search(by_id[i].get("text") or "")
                 for i in req.get("supporting") or []):
             req["status"], req["why"] = DA_PROVARE, TERMINE_UNREAD_WHY
         return
@@ -1238,7 +1267,7 @@ def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Se
         return
     if rule == "mental":
         req["mental"] = True
-        mind = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])
+        mind = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i], req.get("text") or "")
                 and states_mind(by_id[i])]
         if req["status"] == PROVATO and not mind:
             req["status"], req["why"], req["mental_conduct"] = DA_PROVARE, MENTAL_CONDUCT_WHY, True
@@ -1507,7 +1536,7 @@ def negated_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> None
     req["negated"] = True
     if req.get("status") != PROVATO:
         return
-    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
+    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i], req.get("text") or "")]
     if any(states_absence(s, thing) for s in facts):
         return
     presence = next((s for s in facts if states_presence(s, thing)), None)
@@ -1533,7 +1562,7 @@ def negated_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[s
                 continue
             seen += 1
             if r.get("status") == PROVATO and not any(
-                    certain_fact(by_id[i]) and states_absence(by_id[i], thing)
+                    certain_fact(by_id[i], r.get("text") or "") and states_absence(by_id[i], thing)
                     for i in r.get("supporting") or [] if i in by_id):
                 wrong += 1
     return {"negated_integrated_by_presence": wrong, "negated_elements": seen}
@@ -1550,10 +1579,10 @@ def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[
         for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
             rule = element_rule(r)[0]           # v79.11 (6): the grading's own selector
             if rule == "mental" and r.get("status") == PROVATO and not any(
-                    certain_fact(by_id[i]) and states_mind(by_id[i]) for i in r.get("supporting") or [] if i in by_id):
+                    certain_fact(by_id[i], r.get("text") or "") and states_mind(by_id[i]) for i in r.get("supporting") or [] if i in by_id):
                 mental += 1
             if rule == "duty" and r.get("binds") != CLIENT_BINDS and r.get("status") == NON_RISULTA and any(
-                    certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
+                    certain_fact(by_id[i], r.get("text") or "") and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
                     for i in r.get("contradicting") or [] if i in by_id):
                 duty += 1
     return {"mental_integrated_by_conduct": mental, "duty_polarity_errors": duty}
@@ -1584,7 +1613,7 @@ def settle_branches(req: Dict[str, Any], sup: Sequence[Dict[str, Any]], sure_con
     contradiction of one branch never excludes the element while another holds or stays open. req["branch"]: the branch
     that applies (the first «provato»)."""
     from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
-    ground = [x for x in sup if certain_fact(x)]           # v79.8 (C1)
+    ground = [x for x in sup if certain_fact(x, req.get("text") or "")]           # v79.8 (C1)
     out = {}
     for b in req.get("branches") or []:
         if any(branch_hit(b, x) for x in ground):
@@ -1829,7 +1858,7 @@ def counterparty_contradicted(records: Dict[str, Dict[str, Any]], by_id: Dict[st
     from .interactive_flow import NON_RISULTA
     return sum(1 for rec in (records or {}).values() for r in rec.get("requisites") or []
                if r.get("binds") == COUNTERPARTY_BINDS and r.get("status") == NON_RISULTA and any(
-                   certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
+                   certain_fact(by_id[i], r.get("text") or "") and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
                    for i in r.get("contradicting") or [] if i in by_id))
 
 
@@ -2305,7 +2334,7 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
             continue
         status = facts_status(element["text"], analysis)
         against = [by_id[i] for i in (link_ or {}).get("contradicting") or [] if i in by_id]
-        sure = [x for x in against if x.get("certainty") == ACCERTATO]
+        sure = [x for x in against if x.get("certainty") == ACCERTATO and act_bears(x, element["text"])]
         from . import rule_quote
         alternatives = rule_quote.branches(element["text"])
         hit = [b for b in alternatives if any(branch_hit(b, x) for x in sure)] if sure else []

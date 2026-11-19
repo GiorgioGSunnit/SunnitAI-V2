@@ -146,6 +146,63 @@ EXTRA = (
                                          "elemento integrato"),
     ("lawyer_method", "orientations_section", "Metodo, «Orientamenti rilevanti»: righe del codice"),
     ("lawyer_method", "settle_objective", "Metodo, «Conclusioni»: una tesi sostenibile alternativa"),
+    # v79.12.7 (items 1, 3, 4, 5): the penal lines (src/rag/penal_lines.py; the tables in data/penal_lines.json)
+    ("lawyer_method", "JURISPRUDENTIAL_ROW", "Metodo, «Analisi per elementi»: un elemento di fonte giurisprudenziale "
+                                             "(v79.12.7, voce 1)"),
+    ("penal_lines", "SOURCE_NOTE", "Metodo: la nota dell'avvocato come fonte di un elemento (v79.12.7, voce 1)"),
+    ("penal_lines", "SOURCE_SCHEMA", "Metodo: la scheda rivista come fonte di un elemento (v79.12.7, voce 1)"),
+    ("penal_lines", "INFERRED_WHY", "Registro: perché un elemento di fonte giurisprudenziale è da provare "
+                                    "(v79.12.7, voce 1)"),
+    ("penal_lines", "SOURCE_LINE", "Metodo, «Soluzioni a confronto»: la fonte dell'elemento contestato dalla linea "
+                                   "principale (v79.12.7, voce 1)"),
+    ("penal_lines", "SOURCE_PASSAGE_LINE", "Metodo, «Soluzioni a confronto»: la pronuncia e il suo passaggio sotto la "
+                                           "linea principale (v79.12.7, voce 1)"),
+    ("penal_lines", "POST_FACT_LINE", "Metodo, «Soluzioni a confronto»: il soccorso narrato come elemento favorevole "
+                                      "successivo al fatto (v79.12.7, voce 3)"),
+    ("penal_lines", "REQUALIFY_TEXT", "Metodo, «Soluzioni a confronto»: la riqualificazione con l'elemento che "
+                                      "differisce e i fatti (v79.12.7, voce 4)"),
+    ("penal_lines", "CAUSATION_CONTRO", "Metodo, «Soluzioni a confronto»: il contro della difesa sull'art. 41 su una "
+                                        "conseguenza ordinaria (v79.12.7, voce 5)"),
+    ("penal_lines", "CAUSATION_REPLY", "Metodo, «Obiezioni e risposte»: la risposta sull'elemento soggettivo, mai "
+                                       "sulla negazione del nesso (v79.12.7, voce 5)"),
+    # v79.12.7 (items 2, 6): the attenuanti from the facts, the riti computed
+    ("penal_lines", "CIRC_FACT_LINE", "Metodo, «Soluzioni a confronto»: un'attenuante dai fatti narrati (v79.12.7, "
+                                      "voce 2)"),
+    ("penal_lines", "CIRC_STEP_LINE", "Metodo, «Soluzioni a confronto»: l'attenuante del 62 n. 6 legata al passo "
+                                      "concreto (v79.12.7, voce 2)"),
+    ("penal_lines", "CIRC_POINT", "Metodo, «Soluzioni a confronto» e «Punti da verificare»: il punto legato "
+                                  "all'attenuante (v79.12.7, voce 2)"),
+    ("penal_lines", "CIRC_TO_VERIFY_LINE", "Metodo, «Soluzioni a confronto»: un'attenuante senza fatti, da verificare "
+                                           "(v79.12.7, voce 2)"),
+    ("penal_lines", "CIRC_EXCLUDED_LINE", "Metodo, «Soluzioni a confronto»: un'attenuante esclusa da una frase del caso "
+                                          "(v79.12.7, voce 2)"),
+    ("penal_lines", "POST_FACT_SUPPORT", "Metodo, «Soluzioni a confronto»: il soccorso a sostegno delle generiche "
+                                         "(v79.12.7, voce 2)"),
+    ("penal_lines", "BILANCIAMENTO_LINE", "Metodo, «Soluzioni a confronto»: il bilanciamento dell'art. 69 c.p. con "
+                                          "un'aggravante nel registro (v79.12.7, voce 2)"),
+    ("penal_lines", "CIRC_UNEXCLUDED", "Risposta: una circostanza detta esclusa che i fatti non escludono, riscritta "
+                                       "(v79.12.7, voce 2)"),
+    ("penal_lines", "CIRC_UNEXCLUDED_OPEN", "Risposta: i requisiti aperti della circostanza riscritta (v79.12.7, voce "
+                                            "2)"),
+    ("penal_lines", "CIRC_NAMES", "Risposta: il tipo di una circostanza riscritta (v79.12.7, voce 2)"),
+    ("lawyer_method", "COMP_BASE", "Metodo, i riti: il calcolo, la base (v79.12.7, voce 6)"),
+    ("lawyer_method", "COMP_NONE", "Metodo, i riti: il calcolo senza attenuanti (v79.12.7, voce 6)"),
+    ("lawyer_method", "COMP_ATTENUANTE", "Metodo, i riti: il calcolo, la diminuzione per un'attenuante (v79.12.7, "
+                                         "voce 6)"),
+    ("lawyer_method", "COMP_FLOOR", "Metodo, i riti: il calcolo, il limite dell'art. 67 c.p. (v79.12.7, voce 6)"),
+    ("lawyer_method", "COMP_RITE", "Metodo, i riti: il calcolo, la diminuzione per il rito (v79.12.7, voce 6)"),
+    ("lawyer_method", "COMP_FURTHER", "Metodo, i riti: il calcolo, l'ulteriore sesto dell'abbreviato (v79.12.7, voce "
+                                      "6)"),
+    ("lawyer_method", "COMP_LIMIT", "Metodo, i riti: il calcolo, la prova dei cinque anni (v79.12.7, voce 6)"),
+    ("lawyer_method", "CONSENT_LINE", "Metodo, i riti: il consenso del pubblico ministero (v79.12.7, voce 6)"),
+    ("lawyer_method", "CONSENT_UNLIKELY_LINE", "Metodo, i riti: il consenso del pubblico ministero improbabile "
+                                              "(v79.12.7, voce 6)"),
+    ("lawyer_method", "FRACTION_WORDS", "Metodo, i riti: le frazioni in parole (v79.12.7, voce 6)"),
+    # v79.12.7 (item 7): the main line once per section
+    ("lawyer_method", "STRATEGY_MAIN_IN_TABLE", "Metodo, «Soluzioni a confronto»: la strategia rinvia alla tesi "
+                                                "principale della tabella (v79.12.7, voce 7)"),
+    ("lawyer_method", "MAIN_LINE_SEE_ANSWER", "Metodo, «Risposte ai quesiti»: una risposta successiva rinvia alla prima "
+                                              "che indica la linea principale (v79.12.7, voce 7)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference
@@ -163,6 +220,9 @@ DATA = (
     # v74: the fact nouns the answer takes from the case; v75: the remedies and eccezioni by matter
     ("fact_terms.json", "Risposta: i nomi dei fatti presi dal caso (classi di atti e oggetti)"),
     ("remedies.json", "Metodo, «Soluzioni a confronto»: rimedi dell'attore ed eccezioni del convenuto per materia"),
+    # v79.12.7: the penal lines' printed texts -- the jurisprudential elements, the riqualificazione's elements
+    ("penal_lines.json", "Metodo, «Analisi per elementi» e «Soluzioni a confronto»: elementi di fonte "
+                         "giurisprudenziale, riqualificazioni e attenuanti dai fatti (v79.12.7)"),
 )
 
 
@@ -377,6 +437,28 @@ def data_rows():
                 continue
             for i, member in enumerate(cls.get("members") or [], 1):
                 rows.append((f"data/{stem}[{cls['id']}].{i}", ", ".join(f["form"] for f in member), where))
+        for el in data.get("jurisprudential_elements") or []:     # v79.12.7: penal_lines -- the printed texts
+            if isinstance(el, dict) and el.get("element"):
+                rows.append((f"data/{stem}.jurisprudential_elements[{el.get('id')}]",
+                             f"{el['element']} ({', '.join(el.get('articles') or [])})", where))
+        for r in data.get("requalify_elements") or []:
+            if isinstance(r, dict):
+                for key in ("charge_element", "alternative_element"):
+                    if r.get(key):
+                        rows.append((f"data/{stem}.requalify_elements[{r.get('id')}].{key}", r[key], where))
+        for t in data.get("circumstance_triggers") or []:     # v79.12.7 (item 2): the attenuanti from the facts
+            if not isinstance(t, dict):
+                continue
+            base = f"data/{stem}.circumstance_triggers[{t.get('id')}]"
+            rows.append((base, f"{t.get('name')} ({t.get('article')})", where))
+            for key in ("point", "condition", "to_verify"):
+                if t.get(key):
+                    rows.append((f"{base}.{key}", t[key], where))
+            for st in t.get("steps") or []:
+                if isinstance(st, dict) and st.get("name"):
+                    rows.append((f"{base}.steps", st["name"], where))
+        if "jurisprudential_elements" in data:
+            continue
         if data.get("accusatory"):
             rows.append((f"data/{stem}.accusatory", ", ".join(data["accusatory"]), where))
         if "matters" in data or "classes" in data:
@@ -414,7 +496,8 @@ def method_rows(data, stem, where):
     rows += [(f"data/{stem}.riti_alternativi[{r['id']}]", r["line"], where) for r in data.get("riti_alternativi") or []]
     for r in data.get("riti_alternativi") or []:           # v79.10.3 (C1): a listed offence's line, the pena unknown
         rows += [(f"data/{stem}.riti_alternativi[{r['id']}].{k}", r[k], where)       # v79.10.7: the possible lines
-                 for k in ("listed_line", "to_verify", "possible_line", "possible_pecuniary_line", "provisional")
+                 for k in ("listed_line", "to_verify", "possible_line", "possible_pecuniary_line", "provisional",
+                           "computed_line")                                  # v79.12.7 (item 6)
                  if r.get(k)]
     return rows
 

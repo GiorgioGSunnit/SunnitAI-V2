@@ -47,7 +47,9 @@ def test_a_narrated_fact_stays_certain(sentence):
     "Secondo Caio, Tizio era ubriaco.",
     "Secondo la controparte la merce era difettosa.",
     "Caio lamenta che Tizio lo abbia insultato.",
-    "Il PM contesta a Tizio il reato di lesioni.",
+    # v79.12.7 (item 7): the PM's contestazione is a procedural act, a certain fact (test_v79_12_6_c); a party's
+    # «contesta a» stays an allegazione
+    "Caio contesta a Tizio di averlo spinto.",
     "Beta aveva negato la consegna.",
     "Caio accusa Tizio di averlo spinto.",
     "Caio ha dichiarato che Tizio era ubriaco.",

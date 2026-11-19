@@ -18,14 +18,15 @@ Every environment variable the server code (`src/`) reads, plus those read by th
   - an unset or empty variable gives the default;
   - any other value (a typo, for example) logs a warning (`NAME='...' is not true/false: using <default>`) and falls
     back to the default, so a typo never switches a feature on.
-  - Every boolean flag defaults to `false` except `LEGACY_LAW_HINT_FALLBACK`, which defaults to `true`.
+  - Every boolean flag defaults to `false` except `LEGACY_LAW_HINT_FALLBACK` and `FOOTER_IN_BODY` (v79.12.7), which
+    default to `true`.
 - Three switches do **not** use `feature_flags.enabled()` and accept fewer values:
   - `RERANKER_ENABLED` and `VERBOSE_LOGGING` are on only for `true` (any case), and are read at import.
   - `STRIPE_AUTOMATIC_TAX_ENABLED` is on for `1`/`true`/`yes`/`on`; any other non-empty value means off.
 - `ROLE_FIT` also accepts `shadow` (see below).
 - The test suite starts every test with every boolean flag unset. `tests/conftest.py:_flags()` builds its `FLAGS` set
   by scanning `src/rag/**/*.py` for `enabled("NAME"` / `_enabled("NAME"` and for module constants matching
-  `^[A-Z_]*FLAG[A-Z_]* = "NAME"`. That finds 86 flags, and all of them are listed below. Four boolean flags are
+  `^[A-Z_]*FLAG[A-Z_]* = "NAME"`. That finds 87 flags, and all of them are listed below. Four boolean flags are
   outside that scan, and the suite does not unset them: `CHAT_KEEPALIVE_ENABLED` (it lives in `src/chatbot/`),
   `FACT_ISSUES_RESOLVER_V2_ENABLED` (its constant `RESOLVER_V2_FLAG` contains a digit),
   `RULING_CARDS_CIVIL_STRONG_ONLY` (its constant is `CIVIL_STRONG_ENV`) and `STRIPE_AUTOMATIC_TAX_ENABLED` (it does
@@ -58,6 +59,7 @@ These are the narrative-case path served by `src/rag/interactive_flow.py` and it
 | `HYPOTHESIS_ANCHOR_MIN` | 0.75 | `src/rag/topic_groups.py:anchor_min` (`ANCHOR_MIN_ENV`) | Minimum embedding similarity for a case-read hypothesis to anchor on a topic's Sezione/Capo title. |
 | `THESIS_LOG_DIR` | unset, which means `<state dir>/logs` | `src/rag/lawyer_method.py:thesis_log` (`THESIS_LOG_ENV`) | Folder for `thesis_<case>.json` (the exact input and output of the thesis call, for replay). |
 | `HELDOUT_DIR` | see section 5 | `src/chatbot/heldout.py:folder` | Folder where every case-first answer is saved for the held-out set. |
+| `FOOTER_IN_BODY` | **true** | `src/rag/interactive_flow.py:footer_in_body` (read by `with_version`, in `single_shot`, `_single_update` and `src/chatbot/api.py:_interactive_reply`; `scripts/nightly_sim.py:footer_check`) | v79.12.7 (item 8): the case-first answer's body ends with the footer `SunnitAI <version>`. The version is also the response's metadata in every case: `version` in the reply payload (`ChatResponse.version`, `null` on any other reply), in the single-shot and regenerate results, and in the session message's metadata. **Turn it off (`FOOTER_IN_BODY=false`) once Antonelo's frontend renders the `version` field outside the text**: the body then carries no footer (one already there is stripped). The nightly's `version_footer` check reads the metadata, and with the flag off it wants no footer in the body. |
 
 The following are **code constants, not environment variables**: no `.env` line changes them, and changing them
 needs a code edit. All are in `src/rag/interactive_flow.py`:
@@ -357,8 +359,9 @@ run's output.
 
 **`VERSION` is a file, not a flag.** `src/version.py:current()` reads the first line of `<repository root>/VERSION`
 (`<semver>+<git short sha>`, written by `scripts/release.sh`) once per process. Without the file it returns `unknown`.
-`/api/version` returns it, every case-first answer ends with the footer `SunnitAI <version>`, and the held-out records
-and the nightly report carry it. No environment variable changes it.
+`/api/version` returns it, every case-first answer ends with the footer `SunnitAI <version>` (since v79.12.7 while
+`FOOTER_IN_BODY` is on; the reply's `version` field carries it either way), and the held-out records and the nightly
+report carry it. No environment variable changes it.
 
 ---
 
@@ -412,6 +415,28 @@ v79.12.5 items 8 and 9 add no flag: the citation table is `data/corpus_expected.
 «status», and the ledger and the rulings' date fixes are unconditional (`RULINGS_RECORD` still decides whether §5
 prints rulings at all).
 
+v79.12.7 items 1, 3, 4 and 5 add no flag: the jurisprudential elements, the absorbed titles, the riqualificazione's
+facts and the art. 41 cap are unconditional under `LAWYER_METHOD` (penal postures only), their tables in
+`data/penal_lines.json` (`src/rag/penal_lines.py:DATA_FILE`, a fixed path). With `ELEMENT_SCHEMAS` on, a reviewed
+schema's element carrying a jurisprudential element is used as is (tagged, never copied); off, the note
+(`article_notes`) and the kept ruling passages (`RULINGS_RECORD`) feed it.
+
+v79.12.7 items 2 and 6 add no flag: the attenuanti from the facts (`data/penal_lines.json`
+«circumstance_triggers», «bilanciamento», «exclusion_patterns») and the riti's printed computation
+(`data/lawyer_method.json` «riti_alternativi»: «computation», «computed_line», «possible_line») are unconditional under
+`LAWYER_METHOD` (the imputato before the sentence, penal postures only, where the riti were already printed).
+
+v79.12.7 item 7 adds no flag: the text residue's tables are `data/text_hygiene.json` (`src/rag/text_hygiene.py:
+DATA_FILE`, a fixed path) -- the stance marks, the draft-status wording, the procedural acts, the cenni's rule verbs
+and thresholds, the date forms --, and its checks are unconditional: the answers block's and the cenni's under
+`LAWYER_METHOD` (compose), the procedural acts' certainty in every record (`issue_records.certainty`), the last pass
+over every case-first answer (`interactive_flow.text_residue`). Item 8 adds `FOOTER_IN_BODY` (section 1).
+
+v79.12.7's review fixes add no flag: the new tables (`data/penal_lines.json` «denial_patterns», «not_by_offender_patterns»,
+the riqualificazione's and the art. 41 triggers' negation patterns, «step_exclude_patterns», «rite_prose»;
+`data/text_hygiene.json` «procedural_act_modals», «code_context_patterns», «cenni_absolutes») are read by the same
+unconditional checks as above.
+
 ## 5d. v79.10 addition (addendum A5)
 
 | Name | Default | Read in | What it does |
@@ -430,4 +455,4 @@ files on the server for the values actually set.
 | `scripts/promote.sh` (live ← test) | Copies the boolean flags of `/root/v38/.env.v45` into `/opt/chatbot/.env`. That means lines `KEY=true\|false\|yes\|no\|on\|off` whose key does not start with `LLM_`, `EMBEDDING_`, `NEO4J_` or `STRIPE_`. It never copies LLM settings. Each change is printed (`scripts/promote.sh` step 3). |
 | `scripts/nightly_sim.py` | Loads `--env` (default `.env`). The docstring requires the server's environment with `LAWYER_METHOD=true`, `CASE_FIRST_SINGLE_SHOT=true` and `LLM_THINKING=per_call` (except in `--answers` mode, which needs no model and no database). |
 | `scripts/diagnose_long.py` | Loads `--env`, then applies `--set NAME=VALUE`. `--interactive-sim` defaults `INTERACTIVE_FLOW=true` and `INTERACTIVE_CASE_FIRST=true`. `--interactive-sim --single-shot` defaults `CASE_FIRST_SINGLE_SHOT=true` and `INTERACTIVE_CASE_FIRST=true`. A `--set` of the same name wins. With `VOTE_POOL_ENABLED` and no readable `VOTE_POOL_IDF_FILE`, it computes the counts once and sets `VOTE_POOL_IDF_FILE` for its child processes. |
-| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 86 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |
+| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 87 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |

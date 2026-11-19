@@ -1,0 +1,285 @@
+{
+  "_doc": "v79.12.7: the penal reasoning's tables (src/rag/penal_lines.py). jurisprudential_elements: an element the law's text does not state but the lawyer's note di inquadramento (article_notes) or a kept ruling passage (rulings.build's kept) does -- found by its patterns in that text, it enters the record as inferred, «da provare», its source named; contesting it is sostenibile. absorption: titles never offered as autonomous beside their absorber (mode «absorbed»: out of the records; «alternative_only»: kept only as the riqualificazione alternative) or where the facts narrate a soccorso (mode «post_fact»: out, the soccorso a favourable element after the fact). requalify_elements: a riqualificazione between these articles is offered only naming the element that differs and the facts bearing on it (fact_patterns, read in the case's sentences). causation_realism: a causation defence (art. 41 c.p.) on an ordinary consequence is capped at realismo basso unless a trigger fact is narrated; a reply denying the causal link is replaced by the subjective-element reply. Patterns are Python regexes, case-insensitive. circumstance_triggers (v79.12.7, item 2): the attenuanti read from the facts, replacing the fixed attenuanti block -- an attenuante is printed when a case sentence holds one of its «patterns» (62 n. 2: a diverbio, a provocazione, an offesa; its «point» the open question tied to it), one of its «steps» (62 n. 6: the concrete step named) or one of its «support_patterns» (62-bis: with record support only; with «post_fact» true the soccorso narrated -- the «post_fact» absorption rule's patterns -- counts as the favourable element after the fact); a hit the «negation_pattern» precedes (within 40 characters) does not count. «absent»: what is printed when nothing in the facts triggers it -- «omit» (not printed) or «to_verify» (its «to_verify» line); never «esclusa», which only a record excluding it by a contradicting sentence prints. bilanciamento: the art. 69 c.p. line whenever an aggravante is in the record. exclusion_patterns / not_exclusion_patterns: a written sentence saying a circumstance is excluded (rewritten to «da verificare» unless the record excludes it). Review: «denial_patterns» -- a note or passage saying the jurisprudential element is NOT required is no source of it; «not_by_offender_patterns» -- a soccorso in a clause naming someone else who gave it (or a passive) is not the offender's, and the place «pronto soccorso» is none; the riqualificazione's «negation_pattern» and the causation rule's «trigger_negation_pattern» -- a fact the sentence denies counts for nothing; 62 n. 6's «step_exclude_patterns» -- the victim's claim is no step; «rite_prose» -- a written sentence on a computed rito stating a figure the computation does not print, or the resulting pena with no figure, is dropped.",
+  "jurisprudential_elements": [
+    {
+      "id": "584_prevedibilita_in_concreto",
+      "articles": ["584 c.p."],
+      "element": "prevedibilità in concreto dell'evento morte",
+      "patterns": [
+        "prevedibilit\\w*\\s+in\\s+concreto",
+        "concreta\\s+prevedibilit\\w*",
+        "in\\s+concreto\\s+prevedibil\\w*",
+        "prevedibilit\\w*\\s+(?:concreta\\s+)?dell['’]\\s*evento\\s+(?:morte|mortale|letale|più\\s+grave)",
+        "evento\\s+(?:morte|mortale|più\\s+grave)\\s+(?:sia|fosse|era|è)\\s+(?:in\\s+concreto\\s+)?prevedibil\\w*"
+      ],
+      "denial_patterns": [
+        "\\bnon\\s+(?:\\w+\\s+){0,2}?(?:richiest\\w*|richied\\w*|necessari\\w*|occorr\\w*|serv[eao]\\w*|rilev\\w*|esig\\w*|deve\\s+essere\\s+(?:accertat|provat|verificat)\\w*)",
+        "\\bsenza\\s+che\\s+(?:\\w+\\s+){0,3}?(?:occorr\\w*|serv\\w*|rilev\\w*|sia\\s+necessari\\w*|sia\\s+richiest\\w*)",
+        "\\birrilevan\\w*",
+        "\\bprescind\\w*",
+        "\\bindipendentemente\\b",
+        "\\bnon\\s+(?:\\w+\\s+){0,2}?(?:da\\s+)?(?:accertar\\w*|provar\\w*|verificar\\w*)",
+        "\\besclud\\w*",
+        "\\besclus[aeio]\\b",
+        "\\bnon\\s+(?:\\w+\\s+){0,3}?(?:in\\s+concreto\\s+)?prevedibil\\w*"
+      ]
+    }
+  ],
+  "absorption": [
+    {
+      "id": "584_absorbs_581_582",
+      "absorber": ["584 c.p."],
+      "absorbed": ["581 c.p.", "582 c.p."],
+      "mode": "absorbed",
+      "why": "percosse e lesioni sono gli atti base dell'omicidio preterintenzionale (art. 584 c.p.), che le assorbe"
+    },
+    {
+      "id": "584_589_590_alternative_only",
+      "absorber": ["584 c.p."],
+      "absorbed": ["589 c.p.", "590 c.p."],
+      "mode": "alternative_only",
+      "why": "sulla stessa condotta l'omicidio e le lesioni colpose sono solo l'alternativa di riqualificazione dell'art. 584 c.p., mai un titolo accanto"
+    },
+    {
+      "id": "593_soccorso_narrated",
+      "absorber": [],
+      "absorbed": ["593 c.p."],
+      "mode": "post_fact",
+      "why": "i fatti narrano il soccorso prestato: l'omissione di soccorso non è in gioco",
+      "narrated_patterns": [
+        "(?<!pronto )(?<!pronto\\u00a0)\\bsoccors\\w*",
+        "\\bsoccorr\\w*",
+        "chiam\\w*\\s+(?:subito\\s+)?(?:il\\s+|l['’]\\s*|i\\s+|un['’]\\s*)?(?:118|112|113|ambulanz\\w*|soccors\\w*|carabinier\\w*|polizia)",
+        "allert\\w*\\s+(?:il\\s+|i\\s+)?(?:118|112|soccors\\w*)",
+        "accompagn\\w*\\s+(?:\\w+\\s+){0,3}(?:al\\s+pronto\\s+soccorso|in\\s+ospedale)",
+        "prest\\w*\\s+(?:i\\s+primi\\s+)?soccors\\w*"
+      ],
+      "negation_pattern": "\\b(?:non|senza|mai|né|nessun\\w*|alcun\\w*|neg\\w*|omis\\w*|omett\\w*|rifiut\\w*)\\b(?:\\s+[^\\s;:,]+){0,3}\\s*$",
+      "not_by_offender_patterns": [
+        "\\bpassant\\w*",
+        "\\b(?:un|una|il|la|i|le|dei|delle|alcuni|alcune|altri|altre)\\s+vicin[oiae]\\b",
+        "\\btestimon\\w*",
+        "\\bterz[oiae]\\b",
+        "\\bastant\\w*",
+        "\\bpresenti\\b",
+        "\\bqualcun[oa]\\b",
+        "\\bsconosciut\\w*",
+        "\\baltr[ei]\\s+person\\w*",
+        "\\b(?:un|una|il|la|gli|le|i|degli|delle|alcuni|alcune)\\s+(?:amic\\w*|client\\w*|collegh\\w*|barist\\w*|gestor\\w*|commess\\w*|conoscent\\w*|familiar\\w*|parent\\w*|uomo|donna|ragazz\\w*|signor\\w*|automobilist\\w*|agent\\w*)\\b",
+        "\\b(?:fu|venne|vennero|furono|viene|vengono|è\\s+stat[oa]|sono\\s+stat[ie]|era\\s+stat[oa])\\s+(?:\\w+\\s+){0,2}(?:portat|trasportat|accompagnat|soccors|ricoverat|trasferit)\\w*"
+      ]
+    }
+  ],
+  "requalify_elements": [
+    {
+      "id": "584_to_589_590",
+      "from": ["584 c.p."],
+      "to": ["589 c.p.", "590 c.p."],
+      "charge_element": "atti diretti a percuotere o a ledere",
+      "alternative_element": "una spinta o una reazione impulsiva senza la volontà di percuotere o di ledere",
+      "fact_patterns": [
+        "\\bspint\\w*\\b(?!\\s+d(?:a|al|alla|allo|ai|alle|agli|all['’]))",
+        "\\bspins[eio]\\w*",
+        "\\bsping\\w*",
+        "reazion\\w*\\s+(?:\\w+\\s+)?(?:impulsiv\\w*|istintiv\\w*|di\\s+difesa)",
+        "d['’]\\s*impulso",
+        "\\bistintiv\\w*",
+        "per\\s+(?:liberarsi|allontanarl\\w*|divincolarsi|sottrarsi)",
+        "\\bdivincol\\w*",
+        "\\binavvertit\\w*",
+        "\\binvolontari\\w*",
+        "senza\\s+(?:volerl\\w*|volontà)",
+        "\\bscans\\w*"
+      ],
+      "negation_pattern": "\\b(?:non|senza|mai|né|nessun\\w*|alcun\\w*|neg\\w*|esclud\\w*|esclus\\w*)\\b(?:\\s+[^\\s;:.]+){0,3}\\s*$"
+    }
+  ],
+  "causation_realism": {
+    "articles": ["41 c.p."],
+    "ordinary_patterns": [
+      "\\bcad(?:e|de|dero|ono|ere|endo|eva|evano|rà|uto|uta|uti|ute)\\b",
+      "\\bcadut[aeio]\\b",
+      "\\btrauma\\w*",
+      "batt\\w*\\s+(?:la\\s+)?(?:testa|capo|nuca)",
+      "\\burt\\w*\\s+(?:la\\s+)?(?:testa|capo|nuca)",
+      "emorragi\\w*\\s+cerebral\\w*",
+      "\\bematom\\w*"
+    ],
+    "triggers": {
+      "patologia": [
+        "\\bpatologi\\w*",
+        "\\bcardiopati\\w*",
+        "\\baneurism\\w*",
+        "\\bmalformazion\\w*",
+        "malattia\\s+(?:pregressa|preesistente|cronica)",
+        "\\bpreesistent\\w*",
+        "\\bosteopor\\w*",
+        "terapia\\s+anticoagulant\\w*",
+        "\\bemofili\\w*"
+      ],
+      "errore_medico": [
+        "error\\w*\\s+(?:\\w+\\s+)?(?:medic\\w*|sanitari\\w*|dei\\s+sanitari|di\\s+diagnosi)",
+        "diagnosi\\s+(?:errat\\w*|tardiv\\w*|omess\\w*)",
+        "\\bmalasanità\\b",
+        "negligenz\\w*\\s+(?:\\w+\\s+){0,2}(?:medic\\w*|sanitari\\w*|ospedal\\w*)",
+        "intervento\\s+chirurgico\\s+(?:errat\\w*|sbagliat\\w*)",
+        "(?:dimess\\w*|rimandat\\w*\\s+a\\s+casa)\\s+(?:\\w+\\s+){0,4}senza\\s+(?:accertament\\w*|esami|tac)"
+      ],
+      "causa_anomala": [
+        "\\binvestit\\w*",
+        "incidente\\s+(?:stradale|dell['’]\\s*ambulanza)",
+        "\\bincendi\\w*",
+        "colpit\\w*\\s+(?:\\w+\\s+){0,2}da\\s+(?:un\\s+)?terz\\w*",
+        "\\beccezional\\w*",
+        "\\banomal\\w*",
+        "fattore\\s+(?:esterno|estraneo|sopravvenuto)"
+      ]
+    },
+    "trigger_negation_pattern": "\\b(?:non|senza|mai|né|nessun\\w*|alcun\\w*|nulla|niente|esclud\\w*|esclus\\w*|assenz\\w*|privo|priva|neg\\w*)\\b(?:\\s+[^\\s;:.]+){0,4}\\s*$",
+    "deny_patterns": [
+      "(?:interromp\\w*|interrott\\w*|interruzione|recid\\w*|esclud\\w*|escluso|esclusione|spezz\\w*|elid\\w*)\\s+(?:\\w+\\s+){0,2}(?:il\\s+|del\\s+)?nesso",
+      "nesso\\s+(?:causale\\s+)?(?:non\\s+(?:sussiste|regge|c['’]è)|manca|è\\s+(?:interrotto|escluso|assente))",
+      "(?:manca|difetta|non\\s+sussiste|assenza\\s+del|insussistenza\\s+del)\\s+(?:il\\s+)?nesso",
+      "causa\\s+sopravvenuta\\s+(?:\\w+\\s+){0,3}(?:da\\s+sola\\s+)?sufficient\\w*"
+    ]
+  },
+  "circumstance_triggers": [
+    {
+      "id": "62_2_provocazione",
+      "label": "62 n. 2 c.p.",
+      "article": "art. 62, n. 2, c.p.",
+      "name": "Attenuante della provocazione",
+      "patterns": [
+        "\\bdiverbi\\w*",
+        "\\balterc\\w*",
+        "\\blitig\\w*",
+        "\\blite\\b",
+        "\\bprovocazion\\w*",
+        "\\bprovocat[oaie]\\s+(?:\\w+\\s+){0,2}?da(?:l|lla|llo|i|gli|lle|ll['’])?\\b",
+        "\\b(?:lo|la|li|le|l['’])\\s*(?:aveva\\s+|ha\\s+|avrebbe\\s+|avesse\\s+)?provoca(?:to|ta|ti|te|va|vano|ndol\\w*)\\b",
+        "\\bprovocator\\w*",
+        "(?<!persona )(?<!persone )(?<!parte )(?<!parti )\\boffes[aei]\\b",
+        "\\boffens(?!or)\\w*",
+        "\\binsult\\w*",
+        "\\bingiuri\\w*",
+        "discussion\\w*\\s+(?:animat\\w*|acces\\w*)",
+        "\\bstato\\s+d['’]\\s*ira\\b",
+        "\\bfatto\\s+ingiusto\\b"
+      ],
+      "point": "natura del diverbio (se vi fu un fatto ingiusto altrui e uno stato d'ira che ne derivò)",
+      "absent": "omit"
+    },
+    {
+      "id": "62_6_riparazione",
+      "label": "62 n. 6 c.p.",
+      "article": "art. 62, n. 6, c.p.",
+      "name": "Attenuante della riparazione del danno",
+      "steps": [
+        {
+          "name": "la trattativa con gli eredi",
+          "patterns": [
+            "trattativ\\w*\\s+(?:\\w+\\s+){0,4}(?:eredi|familiari|congiunti|parenti|persona\\s+offesa|vittima)",
+            "(?:eredi|familiari|congiunti)\\s+(?:\\w+\\s+){0,5}trattativ\\w*",
+            "(?:contatt|incontr)\\w*\\s+(?:\\w+\\s+){0,3}(?:eredi|familiari|congiunti)\\s+(?:\\w+\\s+){0,5}(?:risarci\\w*|accordo|transazion\\w*)"
+          ]
+        },
+        {
+          "name": "la quantificazione del danno",
+          "patterns": [
+            "\\bquantific\\w*",
+            "stima\\s+del\\s+danno",
+            "perizia\\s+(?:\\w+\\s+){0,2}(?:sul\\s+|del\\s+)?danno",
+            "liquidazion\\w*\\s+del\\s+danno"
+          ]
+        },
+        {
+          "name": "il risarcimento offerto",
+          "patterns": [
+            "offr\\w*\\s+(?:\\w+\\s+){0,4}(?:risarci\\w*|somm\\w*|indennizz\\w*)",
+            "offert\\w*\\s+(?:\\w+\\s+){0,3}(?:risarci\\w*|somm\\w*|indennizz\\w*)",
+            "risarci\\w*\\s+(?:\\w+\\s+){0,3}(?:offert\\w*|versat\\w*|corrispost\\w*|pagat\\w*)",
+            "(?:versat|corrispost|pagat|depositat)\\w*\\s+(?:\\w+\\s+){0,4}(?:risarci\\w*|somm\\w*\\s+a\\s+titolo)"
+          ]
+        }
+      ],
+      "step_exclude_patterns": [
+        "\\b(?:chied|richied|pretend|reclam|domand|lament)\\w*\\s+(?:\\w+\\s+){0,4}?(?:risarci\\w*|danni|danno|somm\\w*)",
+        "\\bda\\s+quantificar\\w*",
+        "\\bin\\s+separata\\s+sede\\b",
+        "\\bcostitu\\w*\\s+(?:\\w+\\s+){0,2}parte\\s+civile\\b",
+        "\\bparte\\s+civile\\s+(?:\\w+\\s+){0,3}?(?:quantific|stim|chied|richied)\\w*"
+      ],
+      "condition": "conta se la riparazione è integrale e avviene prima del giudizio",
+      "absent": "omit"
+    },
+    {
+      "id": "62_bis_generiche",
+      "label": "62-bis c.p.",
+      "article": "art. 62-bis c.p.",
+      "name": "Attenuanti generiche",
+      "support_patterns": [
+        "\\bincensurat\\w*",
+        "senza\\s+precedenti(?:\\s+penali)?",
+        "\\bconfess\\w*",
+        "\\bammett\\w*\\s+(?:\\w+\\s+){0,3}(?:il\\s+fatto|i\\s+fatti|la\\s+(?:propria\\s+)?responsabilit\\w*|l['’]\\s*addebito)",
+        "\\bpentit\\w*",
+        "\\bpentimento\\b",
+        "\\bcollabor\\w*\\s+con\\s+(?:gli\\s+)?(?:inquirent\\w*|investigator\\w*|autorit\\w*|carabinier\\w*|polizia)",
+        "\\bsi\\s+(?:è\\s+)?costitu\\w*",
+        "\\bresipiscenz\\w*",
+        "\\bscus\\w*\\s+(?:\\w+\\s+){0,3}(?:con|a|ai|alla|alle)\\s+"
+      ],
+      "post_fact": true,
+      "condition": "contano nella commisurazione della pena (art. 133 c.p.)",
+      "absent": "to_verify",
+      "to_verify": "il caso non indica elementi favorevoli (precedenti penali, condotta successiva al fatto, comportamento processuale), e senza un elemento a sostegno non entrano nel calcolo dei riti",
+      "offender_only": true
+    }
+  ],
+  "circumstance_negation_pattern": "\\b(?:non|senza|mai|né|nessun\\w*|omis\\w*|omett\\w*|rifiut\\w*)\\b(?:\\s+\\S+){0,3}\\s*$",
+  "bilanciamento": {
+    "article": "art. 69 c.p.",
+    "kinds": [
+      "aggravante"
+    ]
+  },
+  "exclusion_patterns": [
+    "\\besclus[aeio]\\b",
+    "\\bescluder\\w*",
+    "\\bva(?:nno)?\\s+esclus\\w*",
+    "\\bnon\\s+ricorr\\w*",
+    "\\bnon\\s+(?:è\\s+|sono\\s+|risulta\\s+|appare\\s+)?(?:applicabil\\w*|configurabil\\w*|riconoscibil\\w*|invocabil\\w*|concedibil\\w*)",
+    "\\binapplicabil\\w*",
+    "\\bnon\\s+sussist\\w*",
+    "\\bnon\\s+(?:può|possono|potrà|potranno)\\s+essere\\s+(?:riconosciut\\w*|concess\\w*|applicat\\w*|invocat\\w*|accordat\\w*)",
+    "\\bnon\\s+(?:va|vanno)\\s+(?:riconosciut\\w*|concess\\w*|applicat\\w*|accordat\\w*)",
+    "\\bnon\\s+(?:spett\\w*|compet\\w*)",
+    "\\b(?:va|vanno)\\s+negat\\w*",
+    "\\b(?:è|sono)\\s+(?:da\\s+)?negat[aei]\\b",
+    "\\bda\\s+negar\\w*"
+  ],
+  "rite_prose": {
+    "_doc": "(review, item 6) a written sentence naming a computed rito (patteggiamento, abbreviato): one stating a figure the computation does not print (nor the edittale bounds, the limit) is dropped and counted (rites_computation_mismatch); one asserting the resulting pena («claim_patterns»: «una pena finale …», «la pena scende sotto …») with no figure and no reference to the computation or the rito's fraction («reference_patterns») is dropped and counted (rites_without_computation) -- the code's rito line shows the numbers.",
+    "claim_patterns": [
+      "\\bpena\\s+(?:finale|final\\w*|risultante|di\\s+circa|pari\\s+a|intorno|attorno|in\\s+concreto\\s+di|ridotta\\s+a)",
+      "\\b(?:scend|rientr|rest|si\\s+ferm|arriv)\\w*\\s+(?:\\w+\\s+){0,2}?(?:sotto|entro|al\\s+di\\s+sotto|nei\\s+limiti)\\b"
+    ],
+    "reference_patterns": [
+      "\\bcalcol\\w*",
+      "\\bindicat\\w*\\s+(?:sopra|nel|nella|tra|al|alla)\\b",
+      "\\bsopra\\b",
+      "§\\s*\\d",
+      "\\bv\\.\\s*punto\\b",
+      "\\bun\\s+terzo\\b",
+      "\\bun\\s+(?:ulteriore\\s+)?sesto\\b",
+      "\\b(?:la\\s+)?metà\\b"
+    ]
+  },
+  "not_exclusion_patterns": [
+    "\\bnon\\s+(?:è|sono|risulta|risultano)\\s+esclus\\w*",
+    "\\bnon\\s+(?:può|possono|potrà|potranno|va|vanno)\\s+(?:essere\\s+)?esclus\\w*",
+    "\\bnon\\s+(?:si\\s+)?esclud\\w*",
+    "\\bsenza\\s+escluder\\w*",
+    "\\bnon\\s+esclus\\w*"
+  ]
+}

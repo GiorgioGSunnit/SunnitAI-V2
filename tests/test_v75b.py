@@ -104,7 +104,10 @@ def test_the_riqualificazione_comes_from_the_record_never_from_the_reads_no():
     recs["589 c.p."] = {"rubrica": "Omicidio colposo", "side": "weapon", "alternative": True, "alternative_facts": "no",
                         "requisites": [_req(9, "cagiona la morte di una persona", "provato"),
                                        _req(10, "per colpa", "provato")]}
-    assert any(c["kind"] == "requalify" for c in M.thesis_candidates(_ctx(recs, IMPUTATO)))
+    ctx = _ctx(recs, IMPUTATO)
+    # v79.12.7 (item 4): 584 -> 589 is offered only with a fact on the differing element (a spinta, an impulse)
+    ctx["sentences"] = list(ctx["sentences"]) + [{"id": "S9", "text": "Sempronio dice di avere reagito d'impulso, con una spinta.", "source": "caso", "certainty": "accertato"}]
+    assert any(c["kind"] == "requalify" for c in M.thesis_candidates(ctx))
 
 
 def test_the_charged_articles_paragraph_is_its_sussunzione_rows():

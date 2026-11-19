@@ -69,6 +69,8 @@ def test_the_code_enumerates_the_candidates_with_their_ids_and_labels():
         return {r["id"]: {"sostiene": ["S1"], "contraddice": [], "manca": ""} for _, r in reqs
                 if r["text"].startswith("il reato è commesso in stato d'ira")}
     ctx = _ctx(recs, circ_link=link)
+    # v79.12.7 (item 4): 584 -> 589 is offered only with a fact on the differing element (a spinta, an impulse)
+    ctx["sentences"] = list(ctx["sentences"]) + [{"id": "S9", "text": "Sempronio dice di avere reagito d'impulso, con una spinta.", "source": "caso", "certainty": "accertato"}]
     cands = M.thesis_candidates(ctx)
     by_kind = {c["kind"]: c for c in cands}
     assert [c["id"] for c in cands] == [f"T{i}" for i in range(1, len(cands) + 1)]
@@ -76,7 +78,9 @@ def test_the_code_enumerates_the_candidates_with_their_ids_and_labels():
     assert by_kind["contest_open"]["contesta"] == ["R2"] and by_kind["contest_open"]["label"] == M.SUSTAINABLE
     assert by_kind["contest_integrated"]["contesta"] == ["R1"] and by_kind["contest_integrated"]["label"] == M.MINORITY
     requalify = by_kind["requalify"]
-    assert requalify["tesi"] == "Riqualificazione nell'art. 589 c.p. (Omicidio colposo)"
+    assert requalify["tesi"].startswith("Riqualificazione nell'art. 589 c.p. (Omicidio colposo): l'elemento che la "
+                                        "distingue dall'art. 584 c.p. è una spinta o una reazione impulsiva")
+    assert requalify["facts"][0]["sid"] == "S9"
     assert requalify["contesta"] == ["R1"] and requalify["poggia_su"] == ["R9"] and requalify["label"] == M.MINORITY
     assert by_kind["scriminante"]["poggia_su"] == ["R20"]
     assert by_kind["attenuante"]["tesi"].startswith("Attenuante dell'art. 62 n. 2 c.p.")
@@ -119,7 +123,8 @@ def test_the_call_argues_the_candidates_and_its_own_theses_are_dropped():
                                "soluzioni": [{"tesi": "mia"}]}, cands, log)
     assert [s["candidate"] for s in sols] == [c["id"] for c in cands] and log["dropped"] == ["T7", "soluzioni"]
     assert sols[0]["argomento"] == "a" and sols[0]["realismo"] == "basso"     # T1: the minority contest of R1
-    assert sols[1]["kind"] == "contest_open" and sols[1]["realismo"] == "alto"
+    # v79.12.7 (item 5): T2 contests the causal link on an ordinary consequence (S1: a slap, a fall) -- capped basso
+    assert sols[1]["kind"] == "contest_open" and sols[1]["realismo"] == "basso" and sols[1]["causation_capped"]
     minority = next(s for s in sols if s["minoritaria"])
     assert minority["realismo"] == M.BASSO                   # a minority candidate: basso whatever the model says
 
@@ -194,6 +199,10 @@ def test_the_conclusions_and_steps_come_from_the_selection_not_the_plan():
     recs = _records("provato", "da provare")
     recs["584 c.p."]["requisites"][1]["missing"] = "la causa della morte"
     ctx = _ctx(recs)
+    # v79.12.7 (item 5, review): on a slap and a fall alone the causal contest is capped basso and never leads; a
+    # pathology narrated (a trigger fact) lifts the cap, so the main line stays the contest of R2 this test reads
+    ctx["sentences"] = list(ctx["sentences"]) + [{"id": "S9", "text": "Caio soffriva di una cardiopatia pregressa.",
+                                                  "source": "caso", "certainty": "accertato"}]
     cands = M.thesis_candidates(ctx)
     plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "medio", "argomento": f"arg {c['id']}"}
                                            for c in cands},

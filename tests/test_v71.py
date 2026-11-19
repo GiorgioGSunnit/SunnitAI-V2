@@ -284,7 +284,9 @@ def test_a_subordinate_line_equal_to_the_main_one_is_omitted():
     assert "Linea subordinata" not in text and log["subordinate_omitted"]
     fallback = [{**M.fallback_thesis({}, ["Giudizio abbreviato: riduzione"], IMPUTATO)}]
     text = M.solutions_section(fallback, 0, {"subordinata": ""}, ["Giudizio abbreviato: riduzione"], "x")
-    assert "- Linea principale: Ammettere la condotta" in text and "  - Giudizio abbreviato" in text
+    # v79.12.7 (item 7): the table prints the main line, the strategy names it (once per section)
+    assert f"- {M.STRATEGY_MAIN_IN_TABLE}." in text and "  - Giudizio abbreviato" in text
+    assert text.count("Ammettere la condotta") == 1
     assert "Linea subordinata" not in text
 
 

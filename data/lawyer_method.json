@@ -699,15 +699,36 @@
       "excluded_ergastolo": true,
       "excluded_source": "art. 438, co. 1-bis, c.p.p.",
       "precluded_word": "precluso",
-      "to_verify": "non è ammesso per i delitti puniti con l'ergastolo, art. 438, co. 1-bis, c.p.p."
+      "to_verify": "non è ammesso per i delitti puniti con l'ergastolo, art. 438, co. 1-bis, c.p.p.",
+      "computation": {
+        "reduction": "1/3",
+        "reduction_source": "art. 442, co. 2, c.p.p.",
+        "reduction_contravvenzione": "1/2",
+        "further": "1/6",
+        "further_source": "art. 442, co. 2-bis, c.p.p."
+      },
+      "computed_line": "Giudizio abbreviato (artt. 438 ss. c.p.p.): ammesso, il reato contestato non è punito con l'ergastolo. Calcolo nel caso più favorevole: {computation}."
     },
     {
       "id": "patteggiamento",
       "line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile se la pena in concreto, dopo le circostanze e diminuita fino a un terzo, non supera cinque anni.",
       "max_years_after_reduction": 5,
       "to_verify": "richiede che la pena in concreto, dopo le circostanze e diminuita fino a un terzo, non superi cinque anni",
-      "possible_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto (nel caso più favorevole {best}, entro i cinque anni).",
-      "possible_pecuniary_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto (il reato contestato è punito con la sola pena pecuniaria)."
+      "possible_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto. Calcolo nel caso più favorevole: {computation}. {consent}",
+      "possible_pecuniary_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto (il reato contestato è punito con la sola pena pecuniaria).",
+      "computation": {
+        "reduction": "1/3",
+        "reduction_source": "art. 444, co. 1, c.p.p.",
+        "consent_source": "art. 444, co. 1, c.p.p.",
+        "consent_unlikely_offences": [
+          "575",
+          "578",
+          "579",
+          "584",
+          "586"
+        ],
+        "consent_unlikely_status": "bozza — da verificare dall'avvocato: i delitti con evento morte (dolosi, preterintenzionali o aggravati dall'evento) per cui il consenso del PM è improbabile"
+      }
     },
     {
       "id": "messa_alla_prova",

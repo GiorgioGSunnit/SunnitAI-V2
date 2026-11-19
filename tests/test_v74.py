@@ -178,6 +178,8 @@ def test_the_method_reasons_only_on_decomposed_fattispecie_records():
 
 def test_a_riqualificazione_exists_only_for_a_decomposed_sound_alternative():
     ctx = _ctx(_records("provato", "provato", "provato", alt="provato"))
+    # v79.12.7 (item 4): 584 -> 589 is offered only with a fact on the differing element (a spinta, an impulse)
+    ctx["sentences"] = list(ctx["sentences"]) + [{"id": "S9", "text": "Sempronio dice di avere reagito d'impulso, con una spinta.", "source": "caso", "certainty": "accertato"}]
     assert any(c["kind"] == "requalify" and c["article"] == "589 c.p." for c in M.thesis_candidates(ctx))
     recs = _records("provato", "provato", "provato", alt="provato", alt_kind="comma")
     assert not any(c["kind"] == "requalify" for c in M.thesis_candidates(_ctx(recs)))
@@ -293,6 +295,9 @@ def test_the_check_runs_on_the_writer_and_on_the_methods_prose():
     certi, client, accused = flow.fact_wording_inputs(state)
     assert certi == [s["text"] for s in SENTS] and client == "Sempronio" and accused
     ctx = _ctx(_records("provato", "da provare", "provato"))
+    # v79.12.7 (item 5, review): a pathology narrated lifts the art. 41 cap -- the causal contest still leads here
+    ctx["sentences"] = list(ctx["sentences"]) + [{"id": "S9", "text": "Caio soffriva di una cardiopatia pregressa.",
+                                                  "source": "caso", "certainty": "accertato"}]
     cands = M.thesis_candidates(ctx)
     plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "medio", "argomento": "Un pugno al volto non basta."}
                                            for c in cands}}, cands)

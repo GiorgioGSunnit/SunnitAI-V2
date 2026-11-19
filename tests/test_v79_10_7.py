@@ -122,7 +122,9 @@ def test_each_attenuante_held_is_applied_in_turn():
     circ = {**_attenuante("62-bis c.p.", DA_PROVARE), **_attenuante("62 n. 6 c.p.", PROVATO)}
     pat = _by_id(M.charge_rites(_charge("999 c.p."), [_row("999", "reclusione da dodici a venti anni (co. 1)")],
                                 IMPUTATO, circumstances=circ))["patteggiamento"]
-    assert pat["status"] == M.POSSIBLE and "le attenuanti degli artt. 62-bis e 62 n. 6 c.p." in pat["line"]
+    # v79.12.7 (item 6): each attenuante its own step of the printed computation, in art. 63's order
+    assert pat["status"] == M.POSSIBLE and "per l'attenuante dell'art. 62-bis c.p.: 8 anni" in pat["line"]
+    assert pat["line"].index("62-bis c.p.: 8 anni") < pat["line"].index("per l'attenuante dell'art. 62 n. 6 c.p.: 5 anni e 4 mesi")
 
 
 def test_a_special_effect_attenuante_goes_first_and_the_quarter_floor_holds(monkeypatch):
@@ -241,7 +243,9 @@ def test_the_abbreviato_is_excluded_for_an_offence_punished_with_the_ergastolo()
     # a non-ergastolo omicidio: admitted
     plain = _by_id(M.charge_rites(_charge("575 c.p.", "Omicidio"),
                                   [_row("575", "reclusione non inferiore ad anni ventuno (co. 1)")], IMPUTATO))
-    assert plain["abbreviato"]["status"] == M.AVAILABLE and "riduzione di un terzo" in plain["abbreviato"]["line"]
+    # v79.12.7 (item 6): the third and the further sixth computed in sequence on the minimum (21 -> 14 -> 11 y 8 m)
+    assert plain["abbreviato"]["status"] == M.AVAILABLE and "meno un terzo per il rito (art. 442, co. 2, c.p.p.): 14 " \
+        "anni; meno un ulteriore sesto" in plain["abbreviato"]["line"]
 
 
 def test_the_abbreviato_on_an_unknown_pena_is_da_verificare():

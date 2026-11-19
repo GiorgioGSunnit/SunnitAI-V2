@@ -307,6 +307,12 @@ class ChatResponse(BaseModel):
         "supporting_sentence, contradicting_sentence}]: the record's rows, which the body no longer prints (v60r)}], in "
         "the order the parere first cites them, for the frontend to render on demand; empty on every other reply.",
     )
+    version: Optional[str] = Field(
+        default=None,
+        description="v79.12.7 (item 8): the release that wrote a case-first answer («<semver>+<sha>», the VERSION file), "
+        "for the frontend to render outside the text; null on every other reply. The body ends with «SunnitAI "
+        "<version>» too while FOOTER_IN_BODY is on (the default), never when it is off.",
+    )
     interaction: Optional[dict] = Field(
         default=None,
         description="INTERACTIVE_FLOW: the round of an interactive case -- {schema, version, state (topics_offered, "
@@ -2159,11 +2165,15 @@ def _interactive_reply(session, session_id: str, message: str, result: dict, mod
     v77: a case-first answer ends with «SunnitAI <version>» and is saved to the held-out set (heldout.save: the
     prompt, the upload's text when it is the case, the intake, the answer)."""
     from ..rag import interactive_flow
+    answer_version = None
     if _case_first_answer(result):
         from .. import version
         from . import heldout
         from ..rag import intake as intake_mod
-        result = {**result, "answer": version.with_footer(result.get("answer") or "")}
+        # v79.12.7 (item 8): the version as the response's metadata; the footer in the body only under FOOTER_IN_BODY
+        answer_version = version.current()
+        result = {**result, "answer": interactive_flow.with_version(result.get("answer") or ""),
+                  "version": answer_version}
         read = (user_meta or {}).get("intake") or (intake_mod.log_view((result.get("state") or {}).get("intake"))
                                                    if (result.get("state") or {}).get("intake") else {})
         heldout.save(session_id, message, result, mode, read, case)
@@ -2175,6 +2185,7 @@ def _interactive_reply(session, session_id: str, message: str, result: dict, mod
         session.title = _generate_session_title(message)
     session.add_message("assistant", result["answer"], metadata={
         "type": "interactive", "kind": result.get("kind"),
+        **({"version": answer_version} if answer_version else {}),                  # v79.12.7 (item 8)
         **({"citations": result["citations"]} if result.get("citations") else {}),
         **({"article_citations": result["article_citations"]} if result.get("article_citations") else {})})
     confirmation = session._summarize_if_needed()
@@ -2194,7 +2205,7 @@ def _interactive_reply(session, session_id: str, message: str, result: dict, mod
         original_query=message, resolved_query=message, session_language=session.session_language,
         status_messages=[f"interactive_{mode}"], awaiting_summary_confirmation=bool(confirmation),
         title=session.title, interaction=result.get("interaction"),
-        article_citations=result.get("article_citations") or [])
+        article_citations=result.get("article_citations") or [], version=answer_version)
 
 
 async def _interactive_follow_up(session_id: str, message: str, uid: Optional[str], db: Session) -> Optional["ChatResponse"]:

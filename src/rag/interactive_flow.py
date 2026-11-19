@@ -6060,6 +6060,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         from . import lawyer_method
         rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []
         compose_log: Dict[str, Any] = {}
+        texts_of_cenni = cenni_article_texts(grounds or {})     # v79.12.7 (item 7): a cenno's rule on its article
+        for c in ([c for _, c, _ in method_clients] if method_clients else [method_ctx]):
+            c["cenni_texts"] = texts_of_cenni
         if method_clients:                      # v79.6 (item 2): one §1 per client, the differing sections per client
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose_clients(
                 answer_ledger.sections_of(draft), method_clients, rest, compose_log), draft) or draft
@@ -6079,9 +6082,18 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         counters["corpus_line"] = sum(1 for c in composed if c.get("corpus_line"))
         # v79.12.5 (item 10): §8's closed-list sentences (the ATP, the 700 lines) kept from the rule check
         counters["closed_list_kept"] = sum(int(c.get("closed_list_kept") or 0) for c in composed)
+        # v79.12.7 (item 2): a circumstance called excluded the record does not exclude -- rewritten, and left (must be 0)
+        counters["circumstance_exclusions_rewritten"] = sum(int(c.get("circumstance_exclusions_rewritten") or 0)
+                                                            for c in composed)
+        counters["circumstance_excluded_unsupported"] = sum(int(c.get("circumstance_excluded_unsupported") or 0)
+                                                            for c in composed)
         # v79.12.5 (item 10): the written sentences compose's scope check still removed (the general clauses and the
         # stage table's articles are in the scope by default)
         counters["articles_out_of_scope"] = sum(int(c.get("articles_out_of_scope") or 0) for c in composed)
+        # v79.12.7 (item 7): the cenni's rule statements removed and left (must be 0); the sections printing the main
+        # line more than once (must be 0)
+        for key in ("cenni_rules_removed", "cenni_rules_unsourced", "main_line_repeated"):
+            counters[key] = sum(int(c.get(key) or 0) for c in composed)
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
         # v79.10.6 (E1): §1's summary too, wherever a thesis text could replace the charge
         refused = [log_.get(k) for log_ in [compose_log] + list((compose_log.get("clients") or {}).values())
@@ -6125,6 +6137,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     # v79.12.5 (item 8): never a document title in the text -- each mapped special law's in its legal citation; after
     # the settle, which reads the ledger's sentences as they were written
     draft = _isolated("law_titles", lambda: law_titles_cited(state, draft, documents), draft) or draft
+    # v79.12.7 (item 7): the last text step -- no element code, stance mark, internal note or headless citation left by
+    # a path that bypassed compose's checks (the head, the answers, the step-aside prose) or by a later step
+    method_ctxs = [c for _, c, _ in method_clients] if method_clients else ([method_ctx] if method_ctx else [])
+    draft = _isolated("text_residue", lambda: text_residue(state, draft, method_ctxs), draft) or draft
     _isolated("names_counted", lambda: names_counted(state, draft))         # v79.10.5 (E2): names left in passages
     _isolated("text_counted", lambda: text_counted(state, draft))           # v79.12.5 (items 8, 9)
     for n in numbers:
@@ -6305,6 +6321,11 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
                 ctx["missing_laws"] = {}
             said = True
     state["thesis_counts_by_client"] = counts
+    from . import penal_lines           # (review, v79.12.7 item 3): each client's view absorbed its titles; the state's
+    for _, ctx, _ in out:               # records (the flow's own paths) the same
+        if ctx.get("absorbed"):
+            penal_lines.absorb_into(state.get("records"), {"absorbed": ctx["absorbed"]})
+            ctx["flow_records"] = state.get("records")
     if shadows:
         state["schema_shadow_by_client"] = shadows
     state["candidate_articles"] = list(dict.fromkeys(articles))
@@ -6372,6 +6393,14 @@ def rites_checked(state: Dict[str, Any], draft: str, rites: Sequence[Dict[str, A
         _log("rites_out", {"removed": removed})
     counters = state.setdefault("block_counters", {})
     counters["rites_unavailable_offered"] = len(lawyer_method.rites_offered_unavailable(out, statuses))
+    # (review, v79.12.7 item 6): the written sentences on a computed rito -- a figure the computation does not print, a
+    # reduction asserted with none -- dropped (rites_prose_removed); those left (must be 0) add to case_counters'
+    # rites_computation_mismatch / rites_without_computation
+    left: List[str] = []
+    lawyer_method.rite_prose_out(out, statuses, left, rewrite=False)
+    counters["rites_prose_removed"] = sum(1 for x in removed if x.startswith(("mismatch:", "uncomputed:")))
+    counters["rites_prose_mismatch"] = sum(1 for x in left if x.startswith("mismatch:"))
+    counters["rites_prose_uncomputed"] = sum(1 for x in left if x.startswith("uncomputed:"))
     counters["rites_precluded"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.PRECLUDED})
     counters["rites_to_verify"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.TO_VERIFY_RITE})
     return out
@@ -6469,6 +6498,58 @@ def text_counted(state: Dict[str, Any], draft: str) -> None:
     printed = rulings.estremi_printed(draft or "")
     counters["rulings_printed"] = len(printed)
     counters["rulings_date_nd"] = sum(1 for x in printed if x.endswith(_DATE_ND))
+
+
+def cenni_article_texts(grounds: Dict[str, List[Dict[str, Any]]]) -> Dict[str, str]:
+    """v79.12.7 (item 7): {label: text} of the articles the cenni rest on (cenni_rows) -- what a cenno's rule statement
+    must be grounded in (text_hygiene.cenni_check)."""
+    out: Dict[str, str] = {}
+    for rows in (grounds or {}).values():
+        for row in rows or []:
+            if row.get("_article"):
+                sec = row.get("s") or {}
+                out.setdefault(_label(_key(row["_article"])), str(sec.get("plain_text") or row.get("text") or ""))
+    return out
+
+
+def residue_known(state: Dict[str, Any], contexts: Sequence[Dict[str, Any]] = ()) -> Dict[str, Dict[str, Any]]:
+    """v79.12.7 (item 7): the element codes an answer may hold -- every method context's records and circumstances,
+    else the state's records."""
+    from . import lawyer_method
+    known: Dict[str, Dict[str, Any]] = {}
+    for c in contexts or []:
+        for k, v in lawyer_method.elements_by_id(c.get("records") or {}, c.get("circumstances") or {}).items():
+            known.setdefault(k, v)
+    if not known:
+        known = lawyer_method.elements_by_id(state.get("records") or {})
+    return known
+
+
+def text_residue(state: Dict[str, Any], draft: str, contexts: Sequence[Dict[str, Any]] = ()) -> str:
+    """v79.12.7 (item 7): the delivered answer's last pass (text_hygiene.residue_out) -- element codes outside the
+    tables and the quoted passages, a ruling's stance mark («(contro)»), a list's draft status («elenco interno»), a
+    headless reference or a date left without it («11.04.2025)») -- wherever compose's checks did not reach (the head,
+    the step-aside prose, a later step). Counters: residue_codes_stripped, residue_stance_stripped,
+    internal_notes_removed, headless_citations_removed (what this pass found: a path to fix when not 0), residue_left
+    (what is still there: must be 0), and the procedural acts the facts narrate (procedural_acts_certain: classed
+    certain; procedural_acts_uncertain: still allegato or ipotizzato -- their remainder attributed or hedged)."""
+    from . import issue_records, text_hygiene
+    known = residue_known(state, contexts)
+    found: Dict[str, List[str]] = {}
+    out = text_hygiene.residue_out(draft, known, found)
+    left = text_hygiene.residue_left(out, known)
+    counters = state.setdefault("block_counters", {})
+    counters["residue_codes_stripped"] = len(found.get("codes") or [])
+    counters["residue_stance_stripped"] = len(found.get("stance") or [])
+    counters["internal_notes_removed"] = len(found.get("internal_notes") or [])
+    counters["headless_citations_removed"] = len(found.get("headless") or [])
+    counters["residue_left"] = sum(left.values())
+    acts = [x for x in state.get("sentences") or [] if isinstance(x, dict) and x.get("act")]
+    counters["procedural_acts_certain"] = sum(1 for x in acts if x.get("certainty") == issue_records.ACCERTATO)
+    counters["procedural_acts_uncertain"] = len(acts) - counters["procedural_acts_certain"]
+    if any(found.values()) or any(left.values()):
+        _log("text_residue", {"found": {k: v[:10] for k, v in found.items() if v}, "left": left})
+    return out
 
 
 def names_counted(state: Dict[str, Any], draft: str) -> None:
@@ -8677,8 +8758,23 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     field["seconds"] = timings["total_s"]
     articles = _isolated("article_citations", lambda: article_citations(state, text), []) or []     # v60q
     from .. import version          # v77: the answer ends with «SunnitAI <version>» (state["last_answer"] without it)
-    return {"answer": version.with_footer(text), "interaction": field, "state": state, "citations": citations,
-            "kind": "answer", "article_citations": articles}
+    # v79.12.7 (item 8): the version is the response's metadata («version»); in the body only under FOOTER_IN_BODY
+    return {"answer": with_version(text), "interaction": field, "state": state, "citations": citations,
+            "kind": "answer", "article_citations": articles, "version": version.current()}
+
+
+def footer_in_body() -> bool:
+    """v79.12.7 (item 8): FOOTER_IN_BODY (default on: the live output unchanged) -- the case-first answer ends with
+    «SunnitAI <version>»; off, the body carries no footer and the version is only the response's metadata («version»
+    in the payload, ChatResponse.version), for the frontend to render outside the text."""
+    from .feature_flags import enabled
+    return enabled("FOOTER_IN_BODY", True)
+
+
+def with_version(text: str) -> str:
+    """v79.12.7 (item 8): the answer's body -- with exactly one footer under FOOTER_IN_BODY, else with none."""
+    from .. import version
+    return version.with_footer(text) if footer_in_body() else version.strip_footer(text or "").rstrip()
 
 
 def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
@@ -8729,7 +8825,7 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
     uncertain, fragments, half, rejoined = 0, {}, 0, 0
     for label, rec in (state.get("records") or {}).items():
         for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
-            if r.get("status") == PROVATO and not any(issue_records.certain_fact(by_id[i])
+            if r.get("status") == PROVATO and not any(issue_records.certain_fact(by_id[i], r.get("text") or "")
                                                       for i in r.get("supporting") or [] if i in by_id):
                 uncertain += 1
         if rec.get("fragments"):
@@ -8816,6 +8912,12 @@ def surviving_fragments(state: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _lm_penal_keys() -> Tuple[str, ...]:
+    """v79.12.7: lawyer_method.penal_counts' keys (PENAL_COUNT_KEYS)."""
+    from .lawyer_method import PENAL_COUNT_KEYS
+    return tuple(PENAL_COUNT_KEYS)
+
+
 def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dict[str, Any]:
     """v79.8: the counters each block adds -- in the timings line and the nightly. A: graded_articles (round 1's and the
     answer's grading), samples_used (thesis samples, every client), llm_calls (round 1, the first read, the answer),
@@ -8841,7 +8943,8 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
               # v79.12.4 (items 1, 4, 5, 7: lawyer_method.item_counts)
               "victim_charge_civil", "main_fragment", "main_other_threat", "event_narrated_proven",
               "event_narrated_unproven", "event_narrated_causal", "defence_lines_40_43", "main_weak_defence",
-              "claims_refused_expired", "claims_expired_minority", "claims_expired_sustainable"):
+              "claims_refused_expired", "claims_expired_minority", "claims_expired_sustainable") + \
+            _lm_penal_keys():                                     # v79.12.7 (items 1, 3, 4, 5: penal_counts)
         out[k] = sum(int(c.get(k) or 0) for c in counts)
     # v79.10.2 (B1): the client read as resisting a demand (its role the defending one, never the claimant); the
     # answer's posture sets it (block_counters), else the intake's
@@ -8853,6 +8956,12 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
         out[k] = sum(int(c.get(k) or 0) for c in counts)
     # v79.10.3 (C3, review): the prose path's alternatives section printing one the event does not fit
     out["requalify_event_mismatch"] += int((state.get("block_counters") or {}).get("alternatives_event_mismatch") or 0)
+    # (review, v79.12.7 item 6): the delivered text's written rito sentences the computation does not back
+    blk = state.get("block_counters") or {}
+    out["rites_computation_mismatch"] = int(out.get("rites_computation_mismatch") or 0) + int(
+        blk.get("rites_prose_mismatch") or 0)
+    out["rites_without_computation"] = int(out.get("rites_without_computation") or 0) + int(
+        blk.get("rites_prose_uncomputed") or 0)
     fam = state.get("family_gate") or {}                                                            # v79.9 (C2)
     # v79.12.1: the modules active with the signal that switched each on -- the answer stage's (block_counters, set
     # below), else the retrieval's; code_articles_out_of_scope: the code articles of a Titolo / Capo outside the
@@ -9185,9 +9294,10 @@ def _single_update(message: str, state: Dict[str, Any], parsed: Dict[str, Any], 
         articles = (_isolated("article_citations", lambda: article_citations(state, answer), []) or []) \
             if kind == "regenerate" else []                                                         # v60q
         from .. import version      # v77: the parere written again ends with the footer, as single_shot's
-        return {"answer": version.with_footer(answer) if kind == "regenerate" else answer, "interaction": field,
+        return {"answer": with_version(answer) if kind == "regenerate" else answer, "interaction": field,
                 "state": state, "citations": citations or [], "kind": kind,
-                **({"article_citations": articles} if articles else {})}
+                **({"article_citations": articles} if articles else {}),
+                **({"version": version.current()} if kind == "regenerate" else {})}     # v79.12.7 (item 8)
     gives = bool(parsed.get("answers") or parsed.get("corrections") or parsed.get("statements") or parsed.get("client"))
     if "domanda_flusso" in intents and len(intents) == 1 and not gives:
         touch(state, "flow question")
