@@ -376,6 +376,23 @@ and the nightly report carry it. No environment variable changes it.
 | `ARTICLE_SCHEMAS_FILE` | `data/article_schemas.jsonl` | `src/rag/element_schemas.py:schema_file` (`FILE_ENV`) | The generated schemas (`scripts/article_cards_bulk.py --schemas`), one line per article keyed (document, article), the last line of a key winning. A relative path is read from the repository root. Read at call time and re-read when it changes. Never deployed over the server's own (`scripts/deploy_exclude.txt`). |
 | `ARTICLE_SCHEMAS_REVIEWED_FILE` | `data/article_schemas_reviewed.jsonl` | `src/rag/element_schemas.py:reviewed_file` (`REVIEWED_ENV`) | The lawyer's overlay (`scripts/schema_show.py --edit`, `--import-notes`), keyed by label. A reviewed schema wins over the generated one while its source hash is the article's. Tracked in git and never written by the generator. |
 
+## 5c.1 v79.12.3 additions (no new environment variable)
+
+No new flag either. With `ELEMENT_SCHEMAS` on, an offence's procedibilità also reads the element schema's
+«procedibilita» block (`src/rag/procedural_facts.py:with_schema`). The store's own value wins a conflict unless the
+schema is reviewed, or the store's d'ufficio is only the general rule and the schema reads the querela in the text's
+own words. With the flag off, the procedural facts are exactly the store's.
+
+The element schemas' checker maps the vocabulary's synonyms from `data/schema_vocabulary.json`
+(`src/rag/element_schemas.py:VOCABULARY_FILE`, re-read when it changes; a missing file maps nothing). That path is fixed,
+not an environment variable. The new options belong to the operator scripts:
+
+| Option | Default | Read in | What it does |
+|---|---|---|---|
+| `--regen-list FILE` | none | `scripts/schema_show.py --recheck` | Writes the (doc, article) keys that still need regenerating as JSONL (`{"doc", "article", "label", "reason", "detail"}`). These are an unusable line (by its first blocking check) and a line with no blocking check read with no element, every one dropped by the repair or none written (`no_elements`, not counted as usable after). A label the lawyer reviewed is never listed. The file is written with `--dry-run` too. |
+| `--only-keys FILE` | none | `scripts/article_cards_bulk.py --schemas` | Only these keys (the `--regen-list` JSONL, or `doc<TAB>article` lines), each made again (`asked`). A reviewed label is never made. |
+| `--regen-prompt` | off | `scripts/article_cards_bulk.py --schemas` | Also makes again the lines whose prompt alone changed (`prompt`). Without it they are kept and counted (`prompt_kept`), so a new `SCHEMA_SYSTEM` never remakes the whole file unasked. |
+
 ## 5d. v79.10 addition (addendum A5)
 
 | Name | Default | Read in | What it does |

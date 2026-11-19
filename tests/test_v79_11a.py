@@ -102,7 +102,7 @@ def test_a_clean_schemas_raise_nothing():
 
 @pytest.mark.parametrize("over,needle", [
     ({"tipo": []}, "tipo mancante"),
-    ({"tipo": ["incriminatrice"]}, "tipo sconosciuto"),
+    ({"tipo": ["punitiva"]}, "tipo sconosciuto"),                  # v79.12.3: «incriminatrice» maps to «reato»
     ({"legittimato": [{"ruolo": "il danneggiato", "condizione": None}]}, "ruolo sconosciuto"),
     ({"collegati": "583 c.p."}, "collegati"),
     ({"commi_speciali": [{"comma": "1", "kind": "boh", "schema": {"tipo": ["sanction"], "elementi": [],

@@ -3388,7 +3388,7 @@ def surviving_issues(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], ro
             if not rule_quote.offence(key):
                 continue
             row = by_key.get(key) or {}
-            pena = (row.get("_proc") or (procedural_facts.from_row(row) if row else {}) or {}).get("pena")
+            pena = procedural_facts.facts_of(row).get("pena")
             verdict = (records.get(_label(key)) or {}).get("verdict")
             if key in dead:
                 why[_label(key)] = "abrogato o non allineato"
@@ -6430,7 +6430,7 @@ def penal_route_text(route: Tuple[str, str], rows: Sequence[Dict[str, Any]], fet
         fetch = fetch or cenni.graph_tools(_documents)[0]
         row = next((r for r in _isolated("penal_route_fetch", lambda: fetch([key]), []) or [] if r.get("_article")),
                    None)
-    facts = (row.get("_proc") or procedural_facts.from_row(row)) if row else {}
+    facts = procedural_facts.facts_of(row)        # v79.12.3: the schema's procedibilità block too
     proc = procedural_facts.procedibilita_text(facts) if facts else ""
     out = lawyer_method.penal_route_line(art, name, proc)
     _log("penal_route", {"article": art, "row": row is not None, "procedibilita": proc[:160]})     # §1 and §9
@@ -6763,7 +6763,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     procedural code's article nor c.p. Libro I's, a cause di giustificazione aside). An article that cannot be
     decomposed gets no record (an existing one marked «undecomposed»: the method leaves it out). The rows no row
     holds read in one call (fetch: the graph's). Returns (the labels to link, the rows fetched); logged."""
-    from . import cenni, issue_records, lawyer_method, posture as posture_mod
+    from . import cenni, issue_records, lawyer_method, posture as posture_mod, procedural_facts
     from .article_text import row_abrogated as row_abrogated_
     records = state.get("records")
     if records is None:
@@ -6876,6 +6876,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
                 rec["schema"] = issue_records.schema_summary(line)
         if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
             rec["procedibilita"] = issue_records._conditions(row)
+        if path:                                # v79.12.3: where its procedibilità was read (the schema's block a source)
+            proc_source = procedural_facts.facts_of(row).get("procedibilita_source")
+            if proc_source:
+                rec["procedibilita_source"] = proc_source
         rec.pop("undecomposed", None)
         issue_records.seed(rec, row)
         link.append(label)
@@ -8659,15 +8663,26 @@ def element_counters(state: Dict[str, Any]) -> Dict[str, Any]:
     decimal; None with none), the same by path (schema / reviewed / text), element_paths {path: n} (every decomposition
     tried: state["element_paths"]), schema_rejected {why: n} (a schema there but not used: hash_mismatch, unusable:<check>,
     reviewed_stale, schema_empty), rules_selected {rule: n} (the schema elements' grading_rule). Neutral (None / {})
-    with the flag off."""
+    with the flag off. v79.12.3: schema_vocabulary_mapped (the synonyms the checker mapped in the records' schemas:
+    element_schemas.normalize, their summary's «mapped» actions) and schema_elements_dropped (the elements its checks
+    dropped); schema_procedibilita_moved (the elements moved out of the offence into the procedibilità block:
+    element_schemas.split_procedibilita) and procedibilita_from_schema (the records whose procedibilità took a key from
+    the schema's block: procedural_facts.with_schema)."""
     from . import element_schemas
     out: Dict[str, Any] = {"elements_per_article": None, "elements_per_article_by_path": {}, "element_paths": {},
-                           "schema_rejected": {}, "rules_selected": {}}
+                           "schema_rejected": {}, "rules_selected": {}, "schema_vocabulary_mapped": 0,
+                           "schema_elements_dropped": 0, "schema_procedibilita_moved": 0, "procedibilita_from_schema": 0}
     if not element_schemas.enabled():
         return out
     sizes: Dict[str, List[int]] = {}
     rules: Dict[str, int] = {}
     for rec in (state.get("records") or {}).values():
+        for a in ((rec.get("schema") or {}) if isinstance(rec.get("schema"), dict) else {}).get("dropped") or []:
+            if isinstance(a, dict) and a.get("action") in ("mapped", "dropped", "moved"):
+                key = {"mapped": "schema_vocabulary_mapped", "dropped": "schema_elements_dropped",
+                       "moved": "schema_procedibilita_moved"}[a["action"]]
+                out[key] += 1
+        out["procedibilita_from_schema"] += rec.get("procedibilita_source") in ("schema", "reviewed")
         reqs = [r for r in rec.get("requisites") or [] if r.get("kind") == "requisito"]
         for r in reqs:
             rule = (r.get("grading_rule") or {}).get("rule")

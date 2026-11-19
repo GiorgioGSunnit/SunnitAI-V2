@@ -485,7 +485,7 @@ def _conditions(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     the verdict)."""
     from . import procedural_facts
     from .interactive_flow import DA_PROVARE
-    facts = row.get("_proc") or procedural_facts.from_row(row)
+    facts = procedural_facts.facts_of(row)          # v79.12.3: with the schema's procedibilità block (ELEMENT_SCHEMAS)
     if not (facts and facts.get("querela")):
         return []
     conds = facts.get("ufficio_condizioni")

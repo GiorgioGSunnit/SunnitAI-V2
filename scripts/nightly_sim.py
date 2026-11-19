@@ -118,6 +118,13 @@ absence-phrased element «provato» with no supporting fatto certo stating the a
 lawyer_method.promote_by_pertinence) and main_outside_institution (a main line on the client's own norm outside the
 first read's institution -- must be 0) in the counters table (interactive_flow.case_counters).
 
+v79.12.3 (element schemas): with --element-schemas, the counters schema_vocabulary_mapped (the vocabulary's synonyms
+the checker mapped in the records' schemas: element_schemas.normalize) and schema_elements_dropped (the elements its
+checks dropped) in the counters table (interactive_flow.element_counters). v79.12.3 (item 4): also
+schema_procedibilita_moved (the elements the checker moved out of the offence into the schema's procedibilità block:
+element_schemas.split_procedibilita) and procedibilita_from_schema (the records whose procedibilità took a key from that
+block: procedural_facts.with_schema).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json

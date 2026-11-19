@@ -178,13 +178,13 @@ def test_an_ungrounded_element_is_dropped_and_the_schema_kept():
     s = _schema()
     s["elementi"][2] = _el("E3", "ne fa richiesta con raccomandata entro sei mesi", kind="termine")
     checks = E.check(s, TEXT)
-    assert checks["ungrounded"] == ["E3: parole assenti dal testo (raccomandata)"]
+    assert checks["ungrounded"] == ["E3: parole assenti dal testo (con, raccomandata)"]
     assert E.raised(checks) == [] and E.usable({"schema": s, "checks": checks})
     fixed, actions = E.repair(s, TEXT)
     assert _ids(fixed) == ["E1", "E2"] and _ids(s) == ["E1", "E2", "E3"]          # a copy: the input as it was
     assert fixed["logic"] == {"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]}
     assert _acts(actions) == [("", "E3", "ungrounded", "dropped"), ("", "logic", "logic_incomplete", "fixed")]
-    assert actions[0]["why"] == "parole assenti dal testo (raccomandata)" and actions[0]["comma"] == "1"
+    assert actions[0]["why"] == "parole assenti dal testo (con, raccomandata)" and actions[0]["comma"] == "1"
     again = E.check(fixed, TEXT)
     assert not any(again[k] for k in E.ELEMENT_CHECKS) and E.repair(fixed, TEXT)[1] == []   # idempotent
 
@@ -465,7 +465,7 @@ def _synthetic_file(tmp_path):
     notext = _old(_gen(number="906"), ungrounded=["E1: x"])
     notext.pop("text")
     lines = [_old(_gen(number="901")),                                                        # clean: usable both
-             _old(_gen(ung, number="902"), ungrounded=["E3: parole assenti dal testo (raccomandata)"]),
+             _old(_gen(ung, number="902"), ungrounded=["E3: parole assenti dal testo (con, raccomandata)"]),
              _old(_gen(uncited, number="903"), logic_errors=["E3: mai citato nella logic"]),
              _old(_gen(dangling, number="904"), logic_errors=["logic.all_of[3]: ref E9 senza elemento"]),
              E.make_line({"number": "905", "code": "c.c.", "text": TEXT}, "m-test", None, failed="HTTP 500", doc=DOC),
@@ -495,7 +495,7 @@ def test_recheck_on_a_synthetic_file(tmp_path, show):
     assert after[2]["checks"]["logic_errors"] == [] and after[2]["checks"]["logic_incomplete"]
     assert after[2]["rechecked_at"] == "2026-11-18T00:00:00+00:00"
     assert after[4] == lines[4]                                                    # the failed line as it was
-    assert {k: v for k, v in after[5].items() if k not in ("rechecked_at", "checks")} == \
+    assert {k: v for k, v in after[5].items() if k not in ("rechecked_at", "checks", "elements_after")} == \
         {k: v for k, v in lines[5].items() if k != "checks"}                     # no text: marked, nothing else
     assert after[5]["checks"]["ungrounded"] == ["E1: x"]                           # the text checks as recorded
     assert {k: after[5]["checks"][k] for k in E.TEXT_FREE} == {k: [] for k in E.TEXT_FREE}   # logic re-run
@@ -533,6 +533,6 @@ def test_the_review_view_shows_what_is_dropped(tmp_path, show):
     _write(tmp_path / "schemas.jsonl", [_gen(s)])
     text = show.render(show.view("901 c.c."))
     assert "ungrounded (elemento tolto o corretto)" in text
-    assert "ELEMENTI TOLTI O CORRETTI" in text and "E3 tolto (ungrounded): parole assenti dal testo (raccomandata)" \
-        in text
+    assert "ELEMENTI TOLTI O CORRETTI" in text and \
+        "E3 tolto (ungrounded): parole assenti dal testo (con, raccomandata)" in text
     assert os.environ["ARTICLE_SCHEMAS_FILE"].endswith("schemas.jsonl")

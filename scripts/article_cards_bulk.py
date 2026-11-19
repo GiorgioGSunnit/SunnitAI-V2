@@ -33,9 +33,13 @@ v79.11 SCHEMAS  --schemas: the element schemas (src/rag/element_schemas.py: SCHE
          JSON_NOTE, then failed. Accounting every 25 and at the end (made, failed, unusable by check, tokens, wall time,
          articles an hour, seconds a call); the end: coverage by code (usable / unusable / without), the checks, the cost.
          --dry-run: the order and the coverage, no call.
+         v79.12.3: a line whose prompt alone changed (its generation_hash is its own prompt_hash's) is kept, counted
+         "prompt" (--regen-prompt: made again); --only-keys FILE (schema_show.py --recheck --regen-list's JSONL, or
+         «doc<TAB>article» lines): only those articles, each made again ("asked") -- never a reviewed label.
 
     venv/bin/python scripts/article_cards_bulk.py --schemas --dry-run                      # the order and the coverage
     nohup venv/bin/python scripts/article_cards_bulk.py --schemas > article_schemas_bulk.log 2>&1 &
+    venv/bin/python scripts/article_cards_bulk.py --schemas --only-keys regen.jsonl     # v79.12.3: what --recheck lists
 """
 
 import argparse
@@ -381,11 +385,15 @@ def reviewed_hashes() -> dict:
     return {label: line.get("source_hash") for label, line in _es().reviewed().items() if line.get("reviewed") is True}
 
 
-def schema_due(article: dict, doc: str, have: dict, model: str, reviewed=frozenset(), force: bool = False) -> str:
-    """Why the article's schema is to be made: "new", "source" (its text changed), "generation" (schema version, prompt
-    or model changed), "failed", "force"; "" when its line is current; "reviewed" for a label the lawyer reviewed --
-    never made again, --force or not; "reviewed_stale" for one whose review's source_hash is no longer the text's (when
-    reviewed is reviewed_hashes()' {label: hash}; a set of labels gives "reviewed"), never made again either."""
+def schema_due(article: dict, doc: str, have: dict, model: str, reviewed=frozenset(), force: bool = False,
+               asked: bool = False) -> str:
+    """Why the article's schema is to be made: "new", "source" (its text changed), "generation" (schema version or
+    model changed), "failed", "force", "asked" (v79.12.3: a key of --only-keys); "" when its line is current;
+    "reviewed" for a label the lawyer reviewed -- never made again, --force, --only-keys or not; "reviewed_stale" for
+    one whose review's source_hash is no longer the text's (when reviewed is reviewed_hashes()' {label: hash}; a set of
+    labels gives "reviewed"), never made again either. v79.12.3: "prompt" when only the prompt changed (the line's
+    generation_hash is its own prompt_hash's) -- due only with --regen-prompt (is_due), so a new prompt never remakes
+    the whole file unasked."""
     es = _es()
     label = schema_label(article)
     if label in reviewed:
@@ -397,15 +405,48 @@ def schema_due(article: dict, doc: str, have: dict, model: str, reviewed=frozens
     source = es.text_hash(article["text"])
     if record.get("source_hash") != source:
         return "source"
+    prompt_only = False
     if record.get("generation_hash") != es.generation_hash(source, model):
-        return "generation"
+        own = record.get("prompt_hash")
+        if own and own != es.prompt_hash() and record.get("generation_hash") == es.generation_hash(source, model, own):
+            prompt_only = True
+        else:
+            return "generation"
     if (record.get("checks") or {}).get("failed"):
         return "failed"
-    return "force" if force else ""
+    if force:
+        return "force"
+    if asked:
+        return "asked"
+    return "prompt" if prompt_only else ""
 
 
-def is_due(why: str) -> bool:
-    return why not in ("", "reviewed", "reviewed_stale")
+def is_due(why: str, prompt: bool = False) -> bool:
+    """v79.12.3: "prompt" (only the prompt changed) is due only with --regen-prompt (prompt=True)."""
+    return why not in ("", "reviewed", "reviewed_stale") and (why != "prompt" or prompt)
+
+
+def read_keys(path: str) -> set:
+    """v79.12.3: the (doc, article) keys of --only-keys FILE -- schema_show.py --recheck --regen-list's JSONL ({"doc",
+    "article", ...} a line), or «doc<TAB>article» lines; blank and «#» lines skipped. The article lowercased, as
+    read_document numbers it."""
+    keys = set()
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            if raw.startswith("{"):
+                try:
+                    rec = json.loads(raw)
+                except ValueError:
+                    continue
+                doc, number = rec.get("doc"), rec.get("article")
+            else:
+                doc, _, number = raw.partition("\t")
+            if doc is not None and str(number or "").strip():
+                keys.add((str(doc), str(number).strip().lower()))
+    return keys
 
 
 def text_now(record: dict, article: dict):
@@ -484,15 +525,18 @@ def accounting(acc: dict, done: int, total: int, started: float) -> str:
 
 
 def run_schemas(items: list, endpoint: dict, path: str, have: dict, concurrency: int, throttle: Throttle,
-                force: bool = False, reviewed=frozenset(), every: int = 25) -> dict:
+                force: bool = False, reviewed=frozenset(), every: int = 25, asked: bool = False,
+                prompt: bool = False) -> dict:
     """items: [(doc, article)]. Appends each line as it is made (the last line of an article wins); a reviewed label is
-    never made ("reviewed_kept"). The accounting printed every `every` and at the end; returned with the counts."""
+    never made ("reviewed_kept"). The accounting printed every `every` and at the end; returned with the counts.
+    v79.12.3: asked -- the items are --only-keys' (each made, "asked", unless reviewed); prompt -- --regen-prompt (a
+    line whose prompt alone changed made too; else kept, counted "prompt")."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     reasons, todo = Counter(), []
     for doc, article in items:
-        why = schema_due(article, doc, have, endpoint["model"], reviewed, force)
+        why = schema_due(article, doc, have, endpoint["model"], reviewed, force, asked)
         reasons[why or "current"] += 1
-        if is_due(why):
+        if is_due(why, prompt):
             todo.append((doc, article))
         elif why in ("reviewed", "reviewed_stale") and have.get((doc, article["number"])):
             line = text_now(have[(doc, article["number"])], article)        # the text now beside a reviewed label's
@@ -531,7 +575,9 @@ def run_schemas(items: list, endpoint: dict, path: str, have: dict, concurrency:
     done = acc["made"] + acc["failed"]
     return {"due": len(todo), "reviewed_kept": reasons["reviewed"] + reasons["reviewed_stale"],
             "reviewed_stale": reasons["reviewed_stale"], "current": reasons["current"],
-            "why": {k: v for k, v in reasons.items() if k not in ("current", "reviewed", "reviewed_stale")},
+            "prompt_kept": 0 if prompt else reasons["prompt"],
+            "why": {k: v for k, v in reasons.items() if k not in ("current", "reviewed", "reviewed_stale")
+                    and (k != "prompt" or prompt)},
             "made": acc["made"], "failed": acc["failed"],
             "unusable": dict(acc["unusable"]), "prompt_tokens": acc["prompt_tokens"],
             "completion_tokens": acc["completion_tokens"], "calls": acc["calls"], "seconds": round(wall, 1),
@@ -618,15 +664,23 @@ def schemas_main(args) -> None:
                 if not documents[doc]:
                     sys.exit(f"--doc: no articles in {doc!r} (the exact document name)")
     items, bare, carded = schema_items(cards, documents, list(code_of), args.doc)
+    asked = bool(getattr(args, "only_keys", None))
+    if asked:                                   # v79.12.3: only the keys asked (schema_show --recheck --regen-list)
+        keys = read_keys(args.only_keys)
+        items = [(d, a) for d, a in items if (str(d), str(a["number"]).lower()) in keys]
+        print(f"--only-keys: {len(keys):,} keys, {len(items):,} of them in the order", flush=True)
     if args.limit:
         items = items[:args.limit]
     model = schema_model(args)
-    whys = Counter(schema_due(a, d, have, model, reviewed, args.force) for d, a in items)
+    prompt = bool(getattr(args, "regen_prompt", False))
+    whys = Counter(schema_due(a, d, have, model, reviewed, args.force, asked) for d, a in items)
     print(f"{len(items):,} articles: {len(carded):,} carded ({len(cards) - len(carded):,} of the cards file not found), "
           f"then the codes, then {len(args.doc)} --doc; {len(bare):,} only \"(abrogato)\", no schema; "
-          f"{sum(v for k, v in whys.items() if is_due(k)):,} to make ({model}), "
+          f"{sum(v for k, v in whys.items() if is_due(k, prompt)):,} to make ({model}), "
           f"{whys['reviewed'] + whys['reviewed_stale']:,} reviewed, kept ({whys['reviewed_stale']:,} stale: the text "
-          "changed after the review, the text path runs until the lawyer reviews it again)", flush=True)
+          "changed after the review, the text path runs until the lawyer reviews it again)" +
+          ("" if prompt or not whys["prompt"] else f"; {whys['prompt']:,} made with an earlier prompt, kept "
+           "(--regen-prompt to make them again)"), flush=True)
     if args.dry_run:
         for doc, article in items[:30]:
             print(f"  art. {article['number']} {doc}")
@@ -637,7 +691,7 @@ def schemas_main(args) -> None:
           f"{'on' if 'response_format' in endpoint['extra'] else 'off'}" +
           (f", at most {args.max_per_hour} an hour" if args.max_per_hour else ""), flush=True)
     outcome = run_schemas(items, endpoint, path, have, args.concurrency, Throttle(args.max_per_hour), args.force,
-                          reviewed)
+                          reviewed, asked=asked, prompt=prompt)
     compact(path, have)
     print(f"This run: {outcome}")
     print("\n".join(schema_summary(list(have.values()), schema_coverage(items, have, reviewed))))
@@ -665,6 +719,10 @@ def main() -> None:
     parser.add_argument("--json-mode", dest="json_mode", action="store_true", default=True,
                         help="--schemas: response_format json_object (default)")
     parser.add_argument("--no-json-mode", dest="json_mode", action="store_false")
+    parser.add_argument("--only-keys", metavar="FILE", help="--schemas (v79.12.3): only these (doc, article) keys, "
+                        "each made again unless reviewed -- schema_show.py --recheck --regen-list's file")
+    parser.add_argument("--regen-prompt", action="store_true", help="--schemas (v79.12.3): also make again the "
+                        "lines whose prompt alone changed (kept by default)")
     args = parser.parse_args()
     if args.schemas:
         schemas_main(args)

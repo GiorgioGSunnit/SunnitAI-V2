@@ -862,7 +862,7 @@ def offence_rows(rows: Iterable[Dict[str, Any]], hypotheses: Sequence[Dict[str, 
         ref = _ref(row)
         if ref is None or ref[1] != "c.p." or not rule_quote.offence(ref) or row_abrogated(row):
             continue
-        if not (row.get("_proc") or procedural_facts.from_row(row)).get("procedibilita"):
+        if not procedural_facts.facts_of(row).get("procedibilita"):
             continue
         rubrica = topic_step._content_stems(_rubrica(row))
         if row["_grade"] >= STRONG or any(n and len(n & rubrica) >= min(2, len(n)) for n in names):

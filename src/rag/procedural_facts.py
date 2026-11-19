@@ -669,11 +669,148 @@ def from_lines(facts: Optional[Dict[str, Any]], label: str) -> List[str]:
 
 
 def from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The facts computed from the row's own text (extract) -- what scripts/fill_procedural_store.py writes; never the
+    schema's procedibilità block (facts_of adds it at run time)."""
     from . import rule_quote
     ref = row.get("_article")
     if not ref or _code(ref[1]) not in CODES:
         return {}
     return extract(str(ref[0]), str(ref[1]), rule_quote.row_commi(row, suffixed=True))   # v67: «1-bis» its own
+
+
+# --- v79.12.3: the element schema's procedibilità block as a source ------------------------------------------------------
+
+_A_QUERELA_RE = re.compile(r"\ba\s+querela\b|\bquerela\s+(?:della\s+persona\s+offesa|di\s+parte)\b", re.IGNORECASE)
+_D_UFFICIO_RE = re.compile(r"\bd['’]\s*ufficio\b", re.IGNORECASE)
+
+
+def statement(text: Any) -> Dict[str, Any]:
+    """v79.12.3: what one passage says of procedibilità (element_schemas.split_procedibilita reads a moved element and
+    its comma with it) -- {"querela": it makes the offence punibile / procedibile a querela, "ufficio": it says
+    «d'ufficio», "conditions": conditions() of it (comma "testo"), "irrevocabile": the querela irrevocable or the
+    remissione excluded, "termine": the querela's own term («sei mesi») or ""}."""
+    t = " ".join(str(text or "").split())
+    term = _QUERELA_TERM_RE.search(t)
+    termine = ""
+    if term:
+        qty, unit = (term.group(1), term.group(2)) if term.group(1) else (term.group(3), term.group(4))
+        termine = f"{qty} {unit}"
+    return {"querela": bool(_QUERELA_RE.search(t) or _A_QUERELA_RE.search(t)), "ufficio": bool(_D_UFFICIO_RE.search(t)),
+            "conditions": conditions([(None, t)]) if t else [], "irrevocabile": bool(_IRREVOCABLE_RE.search(t)),
+            "termine": termine}
+
+
+# the keys the schema block may fill or contradict, beside the regime («querela» / «procedibilita»)
+SCHEMA_KEYS = ("querela_comma", "ufficio_condizioni", "querela_termine", "remissione")
+_UNSTATED = ("", None, [], QUERELA_DEFAULT, REMISSIONE_DEFAULT)     # the store's defaults: the text stated none
+
+
+def _cond_key(conds: Any) -> List[str]:
+    return sorted(" ".join(str((c or {}).get("text") or "").lower().split()) for c in conds or []
+                  if isinstance(c, dict))
+
+
+def with_schema(row: Optional[Dict[str, Any]], facts: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.12.3 (ELEMENT_SCHEMAS): the offence's facts with the article's element schema's procedibilità block
+    (element_schemas.procedibilita_facts) as a source -- only for a c.p. offence the store (or its text) holds facts
+    for. The regime (querela / d'ufficio) agreeing, each key the store leaves unstated (none, or its default: art. 124's
+    term, art. 152's remissione) is the schema's; a key both state differently is the store's unless the schema is the
+    lawyer's (reviewed), whose word wins; a regime the store contradicts keeps the store's facts whole (an unreviewed
+    schema), the reviewed schema's replaces them -- v79.12.3 (review): and so does an unreviewed schema's querela read
+    in the text's own words (explicit, grounded) when the store's d'ufficio is only the general rule (UFFICIO_DEFAULT:
+    its text reading found no querela), art. 124's term and art. 152's remissione then the defaults. "procedibilita_source": "store" | "computed" (nothing taken) |
+    "schema" | "reviewed" (a key taken), "procedibilita_from_schema" the keys taken, "procedibilita_conflicts" the keys
+    in conflict ({key: {"store", "schema", "kept"}}); logged (procedibilita_source). Flag off, no schema, no block: the
+    facts as they are."""
+    if not facts or not facts.get("procedibilita") or "procedibilita_source" in facts or not row:
+        return facts
+    from . import element_schemas
+    if not element_schemas.enabled():
+        return facts
+    ref = row.get("_article")
+    if not ref or _code(ref[1]) != "c.p.":
+        return facts
+    try:
+        line, _ = element_schemas.for_row(row)
+        block = element_schemas.procedibilita_facts(line) if line else {}
+    except Exception as exc:            # noqa: BLE001 -- the store's facts stand
+        logger.warning("procedural facts: schema block of %s not read: %s", ref, exc)
+        return facts
+    if not block:
+        return facts
+    reviewed = (line or {}).get("source") == "reviewed"
+    base = str(facts.get("source") or "computed")      # from_row's facts carry no source: computed now
+    out = dict(facts)
+    taken: List[str] = []
+    conflicts: Dict[str, Dict[str, Any]] = {}
+    regime_agrees = "querela" not in block or bool(block["querela"]) == bool(facts.get("querela"))
+    if not regime_agrees:
+        # v79.12.3 (review): the store's d'ufficio only by the general rule (its text reading found no querela) is
+        # unstated: a regime the schema reads in the text's own words (explicit, grounded: repair keeps none other)
+        # is the article's
+        sb = ((line or {}).get("schema") or {}).get(element_schemas.PROCEDIBILITA) or {}
+        stated_by_text = isinstance(sb, dict) and sb.get("grounding") == "explicit" and bool(sb.get("testo"))
+        wins = reviewed or (facts.get("procedibilita") == UFFICIO_DEFAULT and not facts.get("querela")
+                            and bool(block["querela"]) and stated_by_text)
+        conflicts["querela"] = {"store": facts.get("procedibilita"), "schema": block.get("procedibilita"),
+                                "kept": "schema" if wins else "store"}
+        if wins:
+            for k in ("querela", "procedibilita") + SCHEMA_KEYS:
+                out.pop(k, None)
+            out.update({k: v for k, v in block.items() if k in ("querela", "procedibilita") + SCHEMA_KEYS})
+            taken = [k for k in ("querela", "procedibilita") + SCHEMA_KEYS if k in block]
+            if not block["querela"]:
+                for k in SCHEMA_KEYS:
+                    out.pop(k, None)
+                taken = [k for k in taken if k not in SCHEMA_KEYS]
+            else:                               # a querela offence: art. 124's term, art. 152's remissione unless said
+                out.setdefault("ufficio_condizioni", [])
+                out.setdefault("querela_termine", QUERELA_DEFAULT)
+                out.setdefault("remissione", REMISSIONE_DEFAULT)
+    else:
+        for k in SCHEMA_KEYS:
+            if k not in block or (k != "querela_comma" and not facts.get("querela")):
+                continue
+            mine, theirs = facts.get(k), block[k]
+            if mine in _UNSTATED:
+                out[k] = theirs
+                taken.append(k)
+                continue
+            same = _cond_key(mine) == _cond_key(theirs) if k == "ufficio_condizioni" else \
+                " ".join(str(mine).lower().split()) == " ".join(str(theirs).lower().split())
+            if same:
+                continue
+            conflicts[k] = {"store": mine, "schema": theirs, "kept": "schema" if reviewed else "store"}
+            if reviewed:
+                out[k] = theirs
+                taken.append(k)
+    source = ("reviewed" if reviewed else "schema") if taken else base
+    out["procedibilita_source"] = source
+    if taken:
+        out["procedibilita_from_schema"] = taken
+    if conflicts:
+        out["procedibilita_conflicts"] = conflicts
+    label = f"{ref[0]} c.p."
+    logger.info("procedural facts: %s procedibilità from %s%s%s", label, source,
+                f" (schema: {', '.join(taken)})" if taken else "",
+                f"; in conflict: {', '.join(f'{k} kept {v['kept']}' for k, v in conflicts.items())}" if conflicts else "")
+    try:
+        from .verbose_logger import vlog
+        vlog("procedibilita_source", {"article": label, "source": source, "taken": taken,
+                                      "conflicts": {k: v["kept"] for k, v in conflicts.items()}})
+    except Exception:                   # noqa: BLE001
+        pass
+    return out
+
+
+def facts_of(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.12.3: a row's facts as the pipeline reads them -- its "_proc" (attach: the store's, else computed, with the
+    schema's block applied), else computed from its text now with the schema's block (with_schema); {} for none."""
+    if not row:
+        return {}
+    if row.get("_proc"):
+        return row["_proc"]
+    return with_schema(row, from_row(row))
 
 
 # v60s (6): the markers the corpus leaves in an article's text -- «(abrogato)», «(soppresso)», footnotes «(3)», «[196]» --
@@ -717,7 +854,9 @@ def lookup(session, rows: Iterable[Dict[str, Any]]) -> Dict[Tuple[str, str], Dic
 
 
 def attach(session, rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    """In place: each row of CODES its "_proc" -- the store's, else computed from its text. {"store", "computed"}."""
+    """In place: each row of CODES its "_proc" -- the store's, else computed from its text. {"store", "computed"}.
+    v79.12.3: with ELEMENT_SCHEMAS, the schema's procedibilità block applied (with_schema); "schema" (only when one
+    did) counts the rows that took a key from it."""
     from .topic_groups import unit_key
     mine = [r for r in rows if r.get("_article") and _code(r["_article"][1]) in CODES]
     stored = lookup(session, mine) if session is not None and mine else {}
@@ -729,13 +868,17 @@ def attach(session, rows: List[Dict[str, Any]]) -> Dict[str, int]:
                 computed = from_row(row)
                 facts = {**facts, "ufficio_condizioni": computed.get("ufficio_condizioni") or [],
                          "querela_comma": computed.get("querela_comma") or ""}
-            row["_proc"] = {**facts, "source": "store"}
+            row["_proc"] = with_schema(row, {**facts, "source": "store"})   # v79.12.3: the schema's block a source
             counts["store"] += 1
+            if row["_proc"].get("procedibilita_source") in ("schema", "reviewed"):
+                counts["schema"] = counts.get("schema", 0) + 1
             continue
         facts = from_row(row)
         if facts:
-            row["_proc"] = {**facts, "source": "computed"}
+            row["_proc"] = with_schema(row, {**facts, "source": "computed"})
             counts["computed"] += 1
+            if row["_proc"].get("procedibilita_source") in ("schema", "reviewed"):
+                counts["schema"] = counts.get("schema", 0) + 1
     from .verbose_logger import vlog
     vlog("procedural_facts", {"rows": len(mine), **counts})
     return counts
@@ -747,7 +890,7 @@ def by_number(rows: Iterable[Dict[str, Any]], code: str = "c.p.") -> Dict[str, D
     for row in rows or []:
         ref = row.get("_article")
         if ref and _code(ref[1]) == code:
-            facts = row.get("_proc") or from_row(row)
+            facts = facts_of(row)            # v79.12.3: the schema's procedibilità block too
             if facts and code != "c.p." and facts.get("version") != VERSION:     # v65: an older entry, read now
                 from . import rule_quote
                 commi = rule_quote.row_commi(row, suffixed=True)
