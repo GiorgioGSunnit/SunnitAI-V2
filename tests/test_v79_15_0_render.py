@@ -88,10 +88,13 @@ def test_the_tables_are_the_verified_verdicts_and_the_remedies_are_named_only():
 
 def test_the_summary_solutions_and_conclusions_carry_the_verified_line_only():
     v, _ = _verified_penal()
-    assert A.summary_text(v) == ("Linea principale: art. 640 c.p. — Gli artifizi non sono provati (elemento in gioco: "
-                                 "«con artifizi o raggiri»).")
+    # v79.15.3 (item 1): the code's tesi -- an imputato, the element in play contested; the model's tesi not printed
+    assert A.summary_text(v) == ("Linea principale: art. 640 c.p. — L'accusa deve provare «con artifizi o raggiri» "
+                                 "(art. 640 c.p.).")
     sol = A.solutions_text(v)
-    assert "| Linea principale | art. 640 c.p. | con artifizi o raggiri | Gli artifizi non sono provati |" in sol
+    assert "| Linea principale | art. 640 c.p. | con artifizi o raggiri | L'accusa deve provare «con artifizi o " \
+           "raggiri» (art. 640 c.p.) |" in sol
+    assert "Gli artifizi non sono provati" not in sol + A.summary_text(v) + A.conclusions_text(v)
     assert "Contenimento" not in sol and "Ammettere" not in sol
     concl = A.conclusions_text(v)
     assert concl.splitlines()[0].startswith("**Linea principale**: art. 640 c.p.")

@@ -126,29 +126,68 @@
   ],
   "reask_claimant": "Il cliente agisce come attore: l'elemento in gioco è uno degli elementi costitutivi elencati, mai un'eccezione o un limite.",
   "claimant": {
+    "_doc": "v79.15.3 (item 2): the client's side from the verified frame only (analysis_step.client_side). Each entry is a whole word or phrase, accent- and case-folded. First the verified ruolo (valore and intake, a «/» or «_» read as a space): a word of «roles» -> claimant, of «defendant_roles» -> defence. Else the verified ruolo_nel_fatto of the client's party (frame.parti, lato «cliente» or the client's name): only «roles» words -> claimant, only «defendant_roles» words -> defence, both or none -> neither. «worker»: its words count as a claimant's only when the verified rito is one of «riti» and the frame verifies an addebito_o_domanda (the claim is the worker's); otherwise they are no side word. No verified role -> neither (claimant False, as before). The brief's sets; the feminine and plural forms added (several clients: «committenti», «indagati»); locatore and conduttore both claimant (the brief lists both).",
     "roles": [
       "attore",
-      "ricorrente"
-    ],
-    "defendant_roles": [
-      "convenuto",
-      "resistente",
-      "imputato/indagato",
-      "imputato"
-    ],
-    "party_words": [
+      "attrice",
+      "ricorrente",
+      "committente",
       "creditore",
       "creditrice",
-      "committente",
-      "ricorrente",
-      "attore",
-      "attrice",
-      "mandante",
+      "promissario acquirente",
+      "promissaria acquirente",
+      "danneggiato",
+      "danneggiata",
       "locatore",
       "locatrice",
-      "danneggiato",
-      "danneggiata"
-    ]
+      "conduttore",
+      "conduttrice",
+      "attori",
+      "ricorrenti",
+      "committenti",
+      "creditori",
+      "creditrici",
+      "promissari acquirenti",
+      "promissarie acquirenti",
+      "danneggiati",
+      "danneggiate",
+      "locatori",
+      "locatrici",
+      "conduttori",
+      "conduttrici"
+    ],
+    "defendant_roles": [
+      "indagato",
+      "indagata",
+      "imputato",
+      "imputata",
+      "convenuto",
+      "convenuta",
+      "resistente",
+      "debitore",
+      "debitrice",
+      "indagati",
+      "indagate",
+      "imputati",
+      "imputate",
+      "convenuti",
+      "convenute",
+      "resistenti",
+      "debitori",
+      "debitrici"
+    ],
+    "worker": {
+      "words": [
+        "lavoratore",
+        "lavoratrice",
+        "lavoratori",
+        "lavoratrici"
+      ],
+      "riti": [
+        "lavoro"
+      ],
+      "needs_domanda": true
+    }
   },
   "exception": {
     "schema_kinds": [
@@ -179,6 +218,50 @@
       "denunzi\\w*",
       "denunci\\w*"
     ]
+  },
+  "rendering": {
+    "_doc": "v79.15.3 (items 1, 3): the texts the code prints from the verified analysis (user-visible, docs/copy_review.md). tesi: a verified linea_principale / linea_subordinata's printed sentence, by the client's side (analysis_step.client_side: difesa | attore | neutro) and the verified esito of its elemento_in_gioco; {elemento} the schema's text of the line's E-id, {art} the line's article, {fatti} the element verdict's cited sentences no other party asserts (reported_by: a counterparty's allegation never stands as the fact that proves or excludes; none: the line's own such sentences), each «as written» without its final stop, joined by «fatti_sep»; none: «nessun_fatto». The model's tesi is logged only (tesi_modello). obiezioni: §7's entries from the verified analysis, one form for all: the allegation's sentence as written («allegazione»; «allegazione_attribuita» when the sentence itself names no speaker) or the exception element («eccezione»), answered by the status of each element in words («stato», by side; «stato_attore» for a claimant) joined by «stati_sep», then «: » and the client's own cited sentences («risposta_con_fatti»), none: «risposta_senza_fatti».",
+    "tesi": {
+      "difesa": {
+        "da_provare": "L'accusa deve provare «{elemento}» (art. {art})",
+        "contestato": "L'accusa deve provare «{elemento}» (art. {art})",
+        "escluso": "«{elemento}» è escluso: {fatti}",
+        "provato": "«{elemento}» risulta provato: {fatti}"
+      },
+      "attore": {
+        "provato": "«{elemento}» risulta provato: {fatti}",
+        "da_provare": "«{elemento}» è da provare",
+        "contestato": "«{elemento}» è da provare",
+        "escluso": "«{elemento}» è da provare"
+      },
+      "neutro": {
+        "provato": "«{elemento}» risulta provato: {fatti}",
+        "da_provare": "«{elemento}» è da provare",
+        "contestato": "«{elemento}» è da provare",
+        "escluso": "«{elemento}» è escluso: {fatti}"
+      },
+      "fatto": "«{testo}»",
+      "fatti_sep": "; ",
+      "nessun_fatto": "nessun fatto citato"
+    },
+    "obiezioni": {
+      "allegazione": "{frase}",
+      "allegazione_attribuita": "Allegazione {di_parte}: «{frase}»",
+      "eccezione": "Eccezione dell'art. {art}: «{elemento}»",
+      "stato": {
+        "provato": "l'elemento «{elemento}» (art. {art}) risulta provato",
+        "escluso": "l'elemento «{elemento}» (art. {art}) è escluso",
+        "contestato": "l'elemento «{elemento}» (art. {art}) non è provato",
+        "da_provare": "l'elemento «{elemento}» (art. {art}) non è provato"
+      },
+      "stato_attore": {
+        "contestato": "l'elemento «{elemento}» (art. {art}) è da provare",
+        "da_provare": "l'elemento «{elemento}» (art. {art}) è da provare"
+      },
+      "stati_sep": "; ",
+      "risposta_con_fatti": "{stati}: {fatti}",
+      "risposta_senza_fatti": "{stati}"
+    }
   },
   "prompt_system": [
     "Sei un avvocato italiano. Ricevi il quadro verificato del caso, i fatti numerati (S1, S2, …), le norme ritenute applicabili con gli elementi del loro schema numerati (A<articolo>:E<n>) e il loro testo diviso in periodi numerati (A<articolo>.<n>), e i quesiti dell'utente. Decidi la linea e l'esito di ogni elemento. Ogni affermazione cita gli id su cui si fonda: il codice verifica ogni id e scarta ciò che non è citato o non esiste.",
@@ -430,5 +513,122 @@
         "r\\.\\s?d\\."
       ]
     }
+  },
+  "objection_answer_check": {
+    "_doc": "v79.15.3 (item 3): a §7 answer sentence (the plan's / model's objections kept after the verified ones; ProseReview with site «obiezioni», the answer) asserts an element as integrato / provato -- read clause by clause (analysis_step.asserted_unproven): «affirmations» taken out first (emphatic phrases, no negation); periods cut at «;», at «:» before a space and at «period_breaks», clauses at «,»; a period holding one of «attributions» reports another party's claim and asserts nothing; a clause asserts when it holds one of «verbs» (whole words from their start, any case) with none of «negations» BEFORE that verb in the same clause (a negation, a modal or conditional marker -- explicit word forms: «va provato», «deve essere provato», «resta da provare», «se fosse provato» assert nothing; «restituzione», «contesto», «il difetto» negate nothing); the element is the one the clause names -- its E-id («A640cp:E1»), «E<n>» or «elemento <n>» of a line article, its schema text folded, or at least «overlap» of the element's tokens (the Q&A's tokens(): words of 3+ letters, stopwords out; the denominator the element's) -- else the one a preceding verbless clause of the same period names. The element named best (id or text first, then the highest overlap; a tie with a «provato» or «escluso» one keeps the clause) held «da_provare» or «contestato» by the verified table -> the sentence dropped (objections_sentences_dropped, motivo «elemento_non_provato»), its anaphoric follower with it.",
+    "verbs": [
+      "integrat[oaie]",
+      "integra",
+      "integrano",
+      "provat[oaie]",
+      "sussist\\w*",
+      "dimostrat[oaie]",
+      "accertat[oaie]",
+      "realizzat[oaie]"
+    ],
+    "negations": [
+      "non",
+      "né",
+      "ne'",
+      "mai",
+      "nessun\\w*",
+      "manca",
+      "mancano",
+      "mancava",
+      "mancavano",
+      "mancante",
+      "mancanti",
+      "mancanza",
+      "difetta",
+      "difettano",
+      "difetto di prova",
+      "senza",
+      "contesta",
+      "contestano",
+      "contestava",
+      "contestato",
+      "contestata",
+      "contestati",
+      "contestate",
+      "contestazione",
+      "contestazioni",
+      "esclud\\w*",
+      "esclus[oaie]",
+      "va",
+      "vanno",
+      "deve",
+      "devono",
+      "debba",
+      "debbano",
+      "dovr\\w*",
+      "dovrebbe",
+      "dovrebbero",
+      "occorre",
+      "bisogna",
+      "resta",
+      "restano",
+      "restava",
+      "resti",
+      "restino",
+      "rimane",
+      "rimangono",
+      "rimaneva",
+      "rimanga",
+      "rimangano",
+      "se",
+      "qualora",
+      "ove",
+      "potrebbe",
+      "potrebbero",
+      "sarebbe",
+      "sarebbero"
+    ],
+    "affirmations": [
+      "senza (?:alcun|ombra di) dubbio",
+      "senza dubbio",
+      "senz['’]altro",
+      "non (?:c['’]è|vi è) dubbio che",
+      "non solo"
+    ],
+    "attributions": [
+      "afferm\\w*",
+      "sostien\\w*",
+      "sostengono",
+      "sosteneva\\w*",
+      "secondo",
+      "a (?:suo )?dire",
+      "a detta d\\w*",
+      "stando a",
+      "per l['’]accusa",
+      "per la procura",
+      "per il pubblico ministero",
+      "per il pm",
+      "per la controparte",
+      "per la parte (?:attrice|convenuta|ricorrente|resistente)",
+      "ritien\\w*",
+      "ritengono",
+      "assum\\w*",
+      "deduc\\w*",
+      "dedotto",
+      "lament\\w*",
+      "alleg\\w*",
+      "dichiar\\w*",
+      "accus[ao]",
+      "accusano",
+      "addebit\\w*",
+      "imput[ao]",
+      "imputano"
+    ],
+    "period_breaks": [
+      "ma",
+      "mentre",
+      "però",
+      "tuttavia",
+      "invece",
+      "bensì",
+      "eppure",
+      "anzi"
+    ],
+    "overlap": 0.6
   }
 }

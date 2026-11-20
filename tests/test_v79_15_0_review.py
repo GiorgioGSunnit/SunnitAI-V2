@@ -212,7 +212,9 @@ def test_compose_with_the_verified_analysis_never_prints_the_no_claim_sections(m
     log = {}
     text = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan, log=log)
     secs = B._sections(text)
-    assert secs[M.title("sintesi")].startswith("Linea principale: art. 1476 c.c. — Tizio chiede la consegna")
+    # v79.15.3 (item 1): the code's tesi on the verified esito (no verified role: the neutral wording)
+    assert secs[M.title("sintesi")].startswith("Linea principale: art. 1476 c.c. — «consegnare la cosa» risulta "
+                                               "provato: «Tizio ha consegnato la cosa a Caio».")
     assert secs[M.title("questione")] != M.NO_CLAIM_QUESTION.format(client="Tizio", materia="comodato")
     assert secs[M.title("obiezioni")] != M.NO_CLAIM_OBJECTIONS
     assert M.NO_CLAIM_OBJECTIONS not in text and M.NO_CLAIM_CONCLUSION not in text

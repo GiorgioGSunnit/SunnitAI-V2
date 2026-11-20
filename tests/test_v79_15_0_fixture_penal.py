@@ -166,8 +166,10 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert c["law_statements_kept"] == 1 and c["law_statements_dropped"] == 1
     # §1: the line on the charge's dolo element
     sintesi = H.section(answer, "sintesi")
-    assert sintesi.startswith("Linea principale: art. 646 c.p. — Il fine di profitto di Dario Melis non è provato")
-    assert "elemento in gioco: «per procurare a sé o ad altri un ingiusto profitto»" in sintesi
+    # v79.15.3 (item 1): the tesi is the code's -- the defence (ruolo indagato), the element in play contested
+    assert sintesi.startswith("Linea principale: art. 646 c.p. — L'accusa deve provare «per procurare a sé o ad altri "
+                              "un ingiusto profitto» (art. 646 c.p.).")
+    assert "Il fine di profitto di Dario Melis non è provato" not in answer      # the model's tesi: the log only
     # §4: the verified verdicts only; no allegation provato; 62-bis a remedy -- no table, no count
     col = H.esito_column(answer)
     assert col and all(x.startswith("646 c.p.") for x in col), col

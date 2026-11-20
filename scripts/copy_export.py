@@ -286,16 +286,7 @@ EXTRA = (
     ("analysis_step", "FALLBACK_TESI", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni»: la linea trovata "
                                        "dalla rubrica dell'addebito o della domanda nominati dal quadro, penale / "
                                        "civile (v79.15.1, voce 2)"),
-    ("analysis_step", "OBJ_ALLEGATION", "Metodo, «Obiezioni e risposte»: l'allegazione di un'altra parte che contesta "
-                                        "un elemento (v79.15.1, voce 3)"),
-    ("analysis_step", "OBJ_EXCEPTION", "Metodo, «Obiezioni e risposte»: l'eccezione o il limite della norma sollevati "
-                                       "contro la domanda del cliente (v79.15.1, voce 3)"),
-    ("analysis_step", "ANS_STATUS", "Metodo, «Obiezioni e risposte»: la risposta, l'esito verificato dell'elemento "
-                                    "(v79.15.1, voce 3)"),
-    ("analysis_step", "ANS_CLIENT_FACTS", "Metodo, «Obiezioni e risposte»: la risposta, i fatti del cliente citati "
-                                          "(v79.15.1, voce 3)"),
-    ("analysis_step", "ANS_NO_CLIENT_FACT", "Metodo, «Obiezioni e risposte»: nessun fatto del cliente citato "
-                                            "(v79.15.1, voce 3)"),
+    # v79.15.3 (items 1, 3): the tesi and §7's entries are data -- data/analysis_step.json «rendering» (DATA below)
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference
@@ -316,6 +307,9 @@ DATA = (
     # v79.12.7: the penal lines' printed texts -- the jurisprudential elements, the riqualificazione's elements
     ("penal_lines.json", "Metodo, «Analisi per elementi» e «Soluzioni a confronto»: elementi di fonte "
                          "giurisprudenziale, riqualificazioni e attenuanti dai fatti (v79.12.7)"),
+    # v79.15.3 (items 1, 3, ANALYSIS_STEP): the printed tesi of a verified line and §7's entries from the verified analysis
+    ("analysis_step.json", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni» (tesi) e «Obiezioni e risposte» "
+                           "(obiezioni): i testi scritti dal codice dall'analisi verificata (v79.15.3, voci 1 e 3)"),
 )
 
 
@@ -498,6 +492,9 @@ def data_rows():
         except (OSError, ValueError):
             continue
         stem = name.rsplit(".", 1)[0]
+        if "rendering" in data:                         # v79.15.3: analysis_step -- only its «rendering» texts
+            rows += rendering_rows(data["rendering"], f"data/{stem}.rendering", where)
+            continue
         if data.get("title"):
             rows.append((f"data/{stem}.title", data["title"], where))
         for fact in data.get("facts") or []:
@@ -573,6 +570,15 @@ def data_rows():
                         if block.get(key):
                             rows.append((f"{base}.{key}", block[key], where))
     return rows
+
+
+def rendering_rows(node, key, where):
+    """v79.15.3: data/analysis_step.json «rendering» -- every text, keyed by its path («….tesi.difesa.da_provare»); a
+    «_doc» left out."""
+    if isinstance(node, dict):
+        return [row for k, v in node.items() if not str(k).startswith("_")
+                for row in rendering_rows(v, f"{key}.{k}", where)]
+    return [(key, str(node), where)] if isinstance(node, str) else []
 
 
 def method_rows(data, stem, where):

@@ -299,15 +299,16 @@ def test_the_objections_render_labels_and_the_cases_sentences_only():
     res = A.analyse(inp, call=_Model(GOOD_APPALTO))
     items = A.objection_items(A.view(res, inp))
     assert [i["fonte"] for i in items] == ["allegazione", "eccezione"]
-    assert items[0]["obiezione"] == (
-        "Allegazione di Edilnova S.r.l.: «La Edilnova S.r.l. sostiene che Marta Galli ha accettato l'opera senza "
-        "riserve» — elementi contestati: «il committente ha accettato l'opera» (art. 1667 c.c.)")
-    assert items[0]["risposta"] == ("Esito verificato: «il committente ha accettato l'opera» contestato (allegazione "
-                                    "di Edilnova S.r.l.). Fatti del cliente: nessun fatto del cliente citato.")
-    assert items[1]["obiezione"] == ("Eccezione o limite dell'art. 1667 c.c.: «denunziare all'appaltatore le "
-                                     "difformità o i vizi entro sessanta giorni dalla scoperta»")
-    assert items[1]["risposta"] == ("Esito verificato: provato. Fatti del cliente: «Marta Galli ha denunziato i vizi "
-                                    "all'impresa con una raccomandata dieci giorni dopo la scoperta».")
+    # v79.15.3 (item 3): one plain form -- the allegation's sentence as written; the answer the status in words (a
+    # claimant: «è da provare»), then the client's own sentences
+    assert items[0]["obiezione"] == "La Edilnova S.r.l. sostiene che Marta Galli ha accettato l'opera senza riserve"
+    assert items[0]["risposta"] == "L'elemento «il committente ha accettato l'opera» (art. 1667 c.c.) è da provare."
+    assert items[1]["obiezione"] == ("Eccezione dell'art. 1667 c.c.: «denunziare all'appaltatore le difformità o i vizi "
+                                     "entro sessanta giorni dalla scoperta»")
+    assert items[1]["risposta"] == ("L'elemento «denunziare all'appaltatore le difformità o i vizi entro sessanta giorni "
+                                    "dalla scoperta» (art. 1667 c.c.) risulta provato: «Marta Galli ha denunziato i "
+                                    "vizi all'impresa con una raccomandata dieci giorni dopo la scoperta».")
+    assert not any("Esito verificato" in i["risposta"] or "Fatti del cliente" in i["risposta"] for i in items)
     # the step not ok: none
     assert A.objection_items(A.view(None, inp)) == []
 
@@ -372,7 +373,7 @@ def test_a_leading_line_verified_on_the_first_reply_survives_a_re_ask_that_rejec
     a, c = r["analysis"], r["counters"]
     assert c["analysis_calls"] == 2 and c["analysis_line_rejected"] == 2
     assert a["linea_principale"]["stato"] == A.VERIFIED and a["linea_principale"]["eid"] == "A640cp:E1"
-    assert a["linea_principale"]["tesi"] == "L'accusa deve provare gli artifizi."
+    assert a["linea_principale"]["tesi_modello"] == "L'accusa deve provare gli artifizi."      # v79.15.3: logged only
     assert c["analysis_line_kept_first"] == 1
     assert c["analysis_line_fallback_rubrica"] == 0 and c["analysis_line_undetermined"] == 0
     # the first reply's element verdict is read too (by id), the second reply having none for it

@@ -406,10 +406,11 @@ def test_the_civil_fixture_by_ids_with_the_allegation_as_its_objection(monkeypat
     assert step["lines"][0]["articolo"] == "1385 c.c." and c["analysis_line_rejected"] == 1
     assert c["analysis_fallback_skipped_reason"] == "line_verified" == step["fallback_skipped_reason"]
     obiezioni = H.section(answer, "obiezioni")
-    assert obiezioni.startswith("**Obiezione 1.** Allegazione di Ettore Bassi: «" + CIVIL.BASSI + "»")
-    assert "elementi contestati: «inadempiente è invece la parte che l'ha ricevuta» (art. 1385 c.c.)" in obiezioni
-    assert "**Risposta.** Esito verificato: «inadempiente è invece la parte che l'ha ricevuta» contestato " \
-           "(allegazione di Ettore Bassi)." in obiezioni
+    # v79.15.3 (item 3): the allegation's sentence as written; the answer the status in words, the client's sentences
+    assert obiezioni.startswith(f"**Obiezione 1.** {CIVIL.BASSI}.\n**Risposta.** L'elemento «inadempiente è invece la "
+                                "parte che l'ha ricevuta» (art. 1385 c.c.) è da provare: «Anna Corsi ha versato a "
+                                "Ettore Bassi 15.000 euro a titolo di caparra confirmatoria».")
+    assert "Esito verificato" not in obiezioni and "Fatti del cliente" not in obiezioni
     assert NO_OBJECTIONS not in answer
     assert c["objections_from_allegations"] == 1 and c["objections_from_exceptions"] == 0
 
@@ -421,9 +422,13 @@ def test_the_penal_fixture_one_objection_per_allegation(monkeypatch, tmp_path):
     _no_failed_steps(run)
     c, answer = run["state"]["block_counters"], run["answer"]
     obiezioni = H.section(answer, "obiezioni")
-    assert "**Obiezione 1.** Allegazione della Procura: «" + PENAL.PROCURA + "»" in obiezioni
-    assert "**Obiezione 2.** Allegazione della società: «" + PENAL.SOCIETA + "»" in obiezioni
-    assert "Fatti del cliente: «Dario Melis nega di aver trattenuto il denaro»." in obiezioni
+    # v79.15.3 (item 3): one plain form for both -- the sentence as written, the status in words (the defence: «non è
+    # provato»), the client's own sentence
+    assert f"**Obiezione 1.** {PENAL.PROCURA}.\n**Risposta.** L'elemento «per procurare a sé o ad altri un ingiusto " \
+           "profitto» (art. 646 c.p.) non è provato: «Dario Melis nega di aver trattenuto il denaro»." in obiezioni
+    assert f"**Obiezione 2.** {PENAL.SOCIETA}.\n**Risposta.** L'elemento «si appropria il denaro o la cosa mobile " \
+           "altrui di cui abbia» (art. 646 c.p.) non è provato." in obiezioni
+    assert "Esito verificato" not in obiezioni and "Fatti del cliente" not in obiezioni
     assert NO_OBJECTIONS not in answer
     assert c["objections_from_allegations"] == 2 and c["objections_from_exceptions"] == 0
     assert c["analysis_bad_eid"] == 0 and run["by"]["analysis_step"][0][0]["claimant"] is False
@@ -500,7 +505,7 @@ def test_the_civil_prose_is_replaced_and_never_left_in_fragments(monkeypatch, tm
     # (review) the written objection's unverified rule is dropped, never replaced by a statement of law: the objection,
     # emptied, leaves §7 (79.14.1's rule); only the verified objection from the allegation stays
     assert OBJ_RULE not in obiezioni and "**Obiezione 2.**" not in obiezioni and statement not in obiezioni
-    assert "**Obiezione 1.** Allegazione di Ettore Bassi" in obiezioni
+    assert f"**Obiezione 1.** {CIVIL.BASSI}." in obiezioni         # v79.15.3 (item 3): the sentence as written
     # the counters: each sentence once
     assert c["qa_sentences_replaced"] == 1 and c["qa_sentences_dropped"] == 1     # (review: §7's objection no longer
     assert c["qa_sentences_dropped_dependent"] == 2 and c["norms_sentences_dropped"] == 2      # replaced -- dropped)
@@ -561,15 +566,15 @@ def test_a_claimants_line_is_constitutive_and_the_allegation_is_the_objection(mo
     assert [r["articolo"] for r in step["rejected"]] == ["1667 c.c."]          # v79.15.2: «1667cc» read
     assert c["analysis_fallback_skipped_reason"] == "line_verified"
     sintesi = H.section(answer, "sintesi")
-    assert sintesi.startswith("Linea principale: art. 1667 c.c. — La Edilnova S.r.l. deve la garanzia")
-    assert "elemento in gioco: «L'appaltatore è tenuto alla garanzia per le difformità e i vizi dell'opera»" in sintesi
+    # v79.15.3 (item 1): the code's tesi -- a claimant (the committente), the element in play contested
+    assert sintesi == ("Linea principale: art. 1667 c.c. — «L'appaltatore è tenuto alla garanzia per le difformità e i "
+                       "vizi dell'opera» è da provare.")
+    assert "La Edilnova S.r.l. deve la garanzia" not in answer                  # the model's tesi: the log only
     assert "accettato l'opera" not in sintesi
     obiezioni = H.section(answer, "obiezioni")
-    assert obiezioni.startswith(f"**Obiezione 1.** Allegazione della Edilnova S.r.l.: «{AP_EDIL}» — elementi "
-                                "contestati: «L'appaltatore è tenuto alla garanzia per le difformità e i vizi "
-                                "dell'opera» (art. 1667 c.c.).")
-    assert "Fatti del cliente: «Dopo la consegna Marta Galli ha scoperto infiltrazioni d'acqua sotto il pavimento»." \
-        in obiezioni
-    assert "**Obiezione 2.** Eccezione o limite dell'art. 1667 c.c.: «il committente ha accettato l'opera" in obiezioni
+    assert obiezioni.startswith(f"**Obiezione 1.** {AP_EDIL}.\n**Risposta.** L'elemento «L'appaltatore è tenuto alla "
+                                "garanzia per le difformità e i vizi dell'opera» (art. 1667 c.c.) è da provare: «Dopo "
+                                "la consegna Marta Galli ha scoperto infiltrazioni d'acqua sotto il pavimento».")
+    assert "**Obiezione 2.** Eccezione dell'art. 1667 c.c.: «il committente ha accettato l'opera" in obiezioni
     assert NO_OBJECTIONS not in answer
     assert c["objections_from_allegations"] == 1 and c["objections_from_exceptions"] == 2

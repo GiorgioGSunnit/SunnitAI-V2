@@ -201,7 +201,9 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     # the counterparty's own assertion never «provato»
     assert c["analysis_provato_downgraded"] == 1
     sintesi = H.section(answer, "sintesi")
-    assert sintesi.startswith("Linea principale: art. 1385 c.c. — Anna Corsi può recedere ed esigere il doppio")
+    # v79.15.3 (item 1): the tesi is the code's -- a claimant (ruolo attore), the element in play contested
+    assert sintesi.startswith("Linea principale: art. 1385 c.c. — «inadempiente è invece la parte che l'ha ricevuta» "
+                              "è da provare.")
     assert "Linea subordinata" not in sintesi
     for remedy in ("1453", "2043"):
         assert not any(remedy in x for x in answer.splitlines() if "Linea principale" in x or "Linea subordinata" in x)
