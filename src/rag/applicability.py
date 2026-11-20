@@ -275,20 +275,26 @@ def passage_found(text: str, passage: str, lex=None) -> bool:
     preposition and «non» exactly; the text's articles and simple prepositions may be left out), and no negation of
     the text just before it (_negated_before: «è punibile» out of «non è punibile» is not the text). A passage with
     no content word is never found. lex: unused (kept for the callers)."""
+    return passage_at(text, passage) is not None
+
+
+def passage_at(text: str, passage: str) -> Optional[int]:
+    """v79.14.0: passage_found's match, as the index of the text's first word matched (None when not found) -- the
+    case frame (src/rag/case_frame.py) orders the questions it verifies by it."""
     es = _es()
     if not str(passage or "").strip() or not str(text or "").strip():
-        return False
+        return None
     if not [w for w, _ in es._tokens(passage) if w not in es.FUNCTION_WORDS]:
-        return False
+        return None
     ptoks, ttoks = _full_tokens(passage), _full_tokens(text)
     if not ptoks:
-        return False
+        return None
     starts_negated = _skey(ptoks[0]) in _word_sets()["negation_words"]
     for i in range(len(ttoks)):
         first = _align(ptoks, ttoks, i)
         if first is not None and (starts_negated or not _negated_before(ttoks, first)):
-            return True
-    return False
+            return first
+    return None
 
 
 def _clauses(text: str) -> List[List[Tuple[str, str, bool]]]:
@@ -611,14 +617,19 @@ def _norm_block(norm: Dict[str, Any], with_schema: bool) -> str:
     return block
 
 
-def build_messages(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str) -> List[Any]:
-    """[system, human] for one batch: the norms, the facts (id, label, text), the role."""
+def build_messages(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str,
+                   frame_context: str = "") -> List[Any]:
+    """[system, human] for one batch: the norms, the facts (id, label, text), the role. v79.14.0: frame_context -- the
+    verified case frame as context (case_frame.fit_context, CASE_FRAME on), first in the human message; "" adds
+    nothing (the message is 79.13.0's)."""
     from langchain_core.messages import HumanMessage, SystemMessage
     with_schema = _es().enabled()
     facts_txt = "\n".join(f"{f.get('id')} [{fact_label(f)}] {' '.join(str(f.get('text') or '').split())}"
                           for f in facts)
     human = (f"RUOLO DEL CLIENTE: {role or 'non indicato'}\n\nFATTI:\n{facts_txt}\n\nNORME CANDIDATE:\n\n"
              + "\n\n".join(_norm_block(n, with_schema) for n in norms))
+    if frame_context:
+        human = f"{frame_context}\n\n{human}"
     return [SystemMessage(content=prompt_system()), HumanMessage(content=human)]
 
 
@@ -689,11 +700,12 @@ def _match(items: List[Any], norms: Sequence[Dict[str, Any]]) -> Dict[int, Any]:
 
 
 def call_batch(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str,
-               call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None) -> Dict[str, Any]:
+               call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
+               frame_context: str = "") -> Dict[str, Any]:
     """One call: {"status": ok | failed | malformed, "seconds", "items": {norm index: item}, "error"}."""
     started = time.time()
     try:
-        reply = (call or _default_call)(build_messages(norms, facts, role), request_kwargs())
+        reply = (call or _default_call)(build_messages(norms, facts, role, frame_context), request_kwargs())
     except Exception as exc:    # noqa: BLE001 -- the batch's norms keep the current path
         return {"status": "failed", "seconds": time.time() - started, "items": {},
                 "error": f"{type(exc).__name__}: {exc}"[:300]}
@@ -712,11 +724,12 @@ def empty_counters() -> Dict[str, int]:
 
 def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str = "",
           call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
-          started: Optional[float] = None) -> Dict[str, Any]:
+          started: Optional[float] = None, frame_context: str = "") -> Dict[str, Any]:
     """The step over the admitted candidates. norms: [{article, text, rubrica, note?, elements?, schema?}]; facts:
     [{id, text, certainty}]; role: the client's. Every norm gets a record (judgments, input order; by_article); only a
     verified one may have an effect -- the caller's. No facts: nothing is sent (every record «nessun fatto»).
-    started: when the caller's step began (build B: the flow's, its inputs read) -- the deadline counts from then."""
+    started: when the caller's step began (build B: the flow's, its inputs read) -- the deadline counts from then.
+    frame_context: v79.14.0 -- the verified case frame as the calls' context (case_frame.fit_context); "" none."""
     t0 = started if started is not None else time.time()
     cfg = config()
     counters = empty_counters()
@@ -740,7 +753,8 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
         pool = ThreadPoolExecutor(max_workers=max(1, min(int(cfg.get("concurrency") or 4), len(groups))),
                                   thread_name_prefix="applicability")
         try:
-            futures = {pool.submit(contextvars.copy_context().run, call_batch, [norms[i] for i in g], facts, role, call): j
+            futures = {pool.submit(contextvars.copy_context().run, call_batch, [norms[i] for i in g], facts, role, call,
+                                   frame_context): j
                        for j, g in enumerate(groups)}
             done, _ = _wait(list(futures), timeout=max(0.0, deadline - (time.time() - t0)))
             for fut, j in sorted(futures.items(), key=lambda kv: kv[1]):

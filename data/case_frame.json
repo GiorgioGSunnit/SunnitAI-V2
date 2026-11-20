@@ -1,0 +1,445 @@
+{
+  "_doc": "v79.14.0: the case frame's tables (src/rag/case_frame.py, flag CASE_FRAME). One model call at the top of the pipeline reads the case frame from the request's full text (parti, cliente, ruolo, rito, stadio, addebito_o_domanda, istituto, quesiti); the code verifies every field against the text before it counts -- a field that fails is dropped (frame_unverified.<field>) and intake's and posture's rules fill it (frame_fallback.<field>). deadline_s: the call's wall-clock budget (the brief: one call, at most 15 s) -- a call not back by then leaves the whole frame empty (logged), every field to the fallback; max_tokens: the reply's budget; max_text_chars: a longer request is cut there in the prompt (logged; verification always reads the whole text). lati: the party sides; ruoli / riti / stadi: the frame's values, each mapped to the intake's own vocabulary (src/rag/intake.py ROLES, RITI, STAGES -- a test keeps them inside it); *_sinonimi: the spellings a model may use for a value (lowercased, accents as written). unknown: the value that says the text does not show it (valid only with its quote; without one the field is empty and falls back). penal_provisions: what a penal rito's charge article may be -- codes (the compact code keys: c.p.), code_ranges (a code's penal articles: the civil code's reati societari 2621-2642), laws (each penal law by its own «expression» on the article's code, or its data/special_laws.json entry «special_law_id», with its penal articles: «articles» ranges of the base number, «numbers» exact numbers, neither = every article; Code's draft of the penal titles, to be checked by the lawyer); an article led by another code (c.c., c.p.c., c.p.p., c.p.a., Cost.) is that code's; anything else in a penal rito is dropped and counted charge_rito_dropped (and, at binding, refused by a penal posture). company_forms: the company forms written one way for the name match («S.r.l.», «Srl» -> srl; names are matched word by word, exactly, never by stem). controparte_words: an off-schema lato holding one of them is a controparte for the client rule. client_signals / client_signal_window: the words (stems) that say the lawyer assists or defends a party, within that many words of its name with no counterparty marker between -- such a party named «a carico di» is still the client. role_refinements: the rules' finer word for the frame role's side, kept (persona_offesa -> parte_civile). counterparty_markers: the words that make the name after them the subject the questions are about, not the client («quali reati a carico di X»): a cliente whose own quoted passage names it only after one of them is not shown by that passage (dropped). name_titles: the words (accent-folded) that may stand between such a marker and the name («contro la società Alfa»). fit_context: the labels of the frame as the 79.13 applicability judgment receives it (context only). prompt_system: the system prompt (joined with newlines), hashed and logged with every run.",
+  "deadline_s": 15,
+  "max_tokens": 1500,
+  "max_text_chars": 40000,
+  "lati": [
+    "cliente",
+    "controparte",
+    "terzo",
+    "autorità"
+  ],
+  "lati_sinonimi": {
+    "autorita": "autorità",
+    "autorita'": "autorità",
+    "autorità giudiziaria": "autorità",
+    "controparti": "controparte",
+    "parte avversa": "controparte",
+    "avversario": "controparte",
+    "terza": "terzo",
+    "terzi": "terzo",
+    "assistito": "cliente",
+    "assistita": "cliente"
+  },
+  "unknown": "sconosciuto",
+  "ruoli": {
+    "attore": "attore",
+    "convenuto": "convenuto",
+    "imputato/indagato": "imputato",
+    "persona_offesa": "persona_offesa",
+    "ricorrente": "attore",
+    "resistente": "convenuto",
+    "sconosciuto": "sconosciuto"
+  },
+  "ruoli_sinonimi": {
+    "imputato": "imputato/indagato",
+    "imputata": "imputato/indagato",
+    "indagato": "imputato/indagato",
+    "indagata": "imputato/indagato",
+    "imputato / indagato": "imputato/indagato",
+    "indagato/imputato": "imputato/indagato",
+    "attrice": "attore",
+    "convenuta": "convenuto",
+    "persona offesa": "persona_offesa",
+    "parte offesa": "persona_offesa",
+    "parte civile": "persona_offesa",
+    "ricorrenti": "ricorrente",
+    "resistenti": "resistente",
+    "non indicato": "sconosciuto",
+    "ignoto": "sconosciuto"
+  },
+  "riti": {
+    "civile": "civile",
+    "lavoro": "lavoro",
+    "famiglia": "famiglia",
+    "esecuzione": "esecuzione",
+    "penale": "penale",
+    "penale_gdp": "penale_gdp",
+    "amministrativo": "amministrativo",
+    "tributario": "tributario",
+    "fallimentare": "fallimentare",
+    "sconosciuto": "sconosciuto"
+  },
+  "riti_sinonimi": {
+    "penale giudice di pace": "penale_gdp",
+    "penale davanti al giudice di pace": "penale_gdp",
+    "giudice di pace penale": "penale_gdp",
+    "del lavoro": "lavoro",
+    "rito del lavoro": "lavoro",
+    "amministrativa": "amministrativo",
+    "esecuzione forzata": "esecuzione",
+    "esecutivo": "esecuzione",
+    "tributaria": "tributario",
+    "fallimento": "fallimentare",
+    "concorsuale": "fallimentare"
+  },
+  "stadi": {
+    "pre_filing": "pre_filing",
+    "indagini": "indagini",
+    "primo_grado": "primo_grado",
+    "appello": "impugnazione",
+    "cassazione": "impugnazione",
+    "impugnazione": "impugnazione",
+    "esecuzione": "esecuzione",
+    "sconosciuto": "sconosciuto"
+  },
+  "stadi_sinonimi": {
+    "stragiudiziale": "pre_filing",
+    "precontenzioso": "pre_filing",
+    "pre-contenzioso": "pre_filing",
+    "prima del giudizio": "pre_filing",
+    "indagini preliminari": "indagini",
+    "udienza preliminare": "primo_grado",
+    "primo grado": "primo_grado",
+    "dibattimento": "primo_grado",
+    "secondo grado": "appello",
+    "giudizio di appello": "appello",
+    "ricorso per cassazione": "cassazione",
+    "legittimità": "cassazione"
+  },
+  "penal_provisions": {
+    "codes": [
+      "cp"
+    ],
+    "code_ranges": {
+      "cc": [
+        [
+          2621,
+          2642
+        ]
+      ]
+    },
+    "laws": [
+      {
+        "name": "d.lgs. 74/2000 (reati tributari)",
+        "expression": "\\b74\\s*/\\s*2000\\b|reati tributari",
+        "articles": [
+          [
+            2,
+            11
+          ]
+        ]
+      },
+      {
+        "name": "legge fallimentare (r.d. 267/1942)",
+        "expression": "\\b267\\s*/\\s*1942\\b|legge fallimentare|\\bl\\.\\s*fall\\.",
+        "articles": [
+          [
+            216,
+            237
+          ]
+        ]
+      },
+      {
+        "name": "codice della crisi (d.lgs. 14/2019)",
+        "expression": "\\b14\\s*/\\s*2019\\b|codice della crisi|\\bc\\.?\\s?c\\.?\\s?i\\.?\\s?i\\.?(?![a-z])",
+        "articles": [
+          [
+            322,
+            347
+          ]
+        ]
+      },
+      {
+        "name": "leggi sulle armi (l. 110/1975, l. 895/1967)",
+        "expression": "\\b110\\s*/\\s*1975\\b|\\b895\\s*/\\s*1967\\b|legge sulle armi|\\blegge armi\\b"
+      },
+      {
+        "name": "legge Merlin (l. 75/1958)",
+        "expression": "\\b75\\s*/\\s*1958\\b"
+      },
+      {
+        "name": "d.lgs. 152/2006 (ambiente)",
+        "expression": "\\b152\\s*/\\s*2006\\b|codice dell['’]?\\s*ambiente|testo unico ambientale",
+        "articles": [
+          [
+            137,
+            137
+          ],
+          [
+            255,
+            261
+          ],
+          [
+            279,
+            279
+          ]
+        ]
+      },
+      {
+        "name": "l. 633/1941 (diritto d'autore)",
+        "expression": "\\b633\\s*/\\s*1941\\b|legge sul diritto d['’]\\s*autore",
+        "articles": [
+          [
+            171,
+            174
+          ]
+        ]
+      },
+      {
+        "name": "d.P.R. 309/1990 (stupefacenti)",
+        "special_law_id": "testo_unico_stupefacenti",
+        "articles": [
+          [
+            73,
+            86
+          ]
+        ]
+      },
+      {
+        "name": "d.lgs. 286/1998 (immigrazione)",
+        "special_law_id": "testo_unico_immigrazione",
+        "articles": [
+          [
+            12,
+            14
+          ],
+          [
+            22,
+            22
+          ]
+        ],
+        "numbers": [
+          "10-bis"
+        ]
+      },
+      {
+        "name": "codice della strada (d.lgs. 285/1992)",
+        "special_law_id": "codice_della_strada",
+        "articles": [
+          [
+            186,
+            187
+          ],
+          [
+            189,
+            189
+          ]
+        ]
+      },
+      {
+        "name": "TUF (d.lgs. 58/1998)",
+        "special_law_id": "testo_unico_finanza",
+        "articles": [
+          [
+            166,
+            185
+          ]
+        ]
+      },
+      {
+        "name": "TUB (d.lgs. 385/1993)",
+        "special_law_id": "testo_unico_bancario",
+        "articles": [
+          [
+            130,
+            140
+          ]
+        ]
+      },
+      {
+        "name": "d.lgs. 81/2008 (sicurezza sul lavoro)",
+        "special_law_id": "testo_unico_sicurezza_lavoro",
+        "articles": [
+          [
+            55,
+            60
+          ],
+          [
+            68,
+            68
+          ],
+          [
+            87,
+            87
+          ],
+          [
+            159,
+            159
+          ],
+          [
+            165,
+            165
+          ],
+          [
+            170,
+            170
+          ],
+          [
+            178,
+            178
+          ],
+          [
+            219,
+            219
+          ],
+          [
+            262,
+            262
+          ],
+          [
+            282,
+            282
+          ],
+          [
+            297,
+            297
+          ]
+        ]
+      },
+      {
+        "name": "d.lgs. 231/2007 (antiriciclaggio)",
+        "special_law_id": "antiriciclaggio",
+        "articles": [
+          [
+            55,
+            55
+          ]
+        ]
+      },
+      {
+        "name": "d.P.R. 380/2001 (edilizia)",
+        "special_law_id": "testo_unico_edilizia",
+        "articles": [
+          [
+            44,
+            44
+          ],
+          [
+            71,
+            76
+          ],
+          [
+            95,
+            95
+          ]
+        ]
+      },
+      {
+        "name": "d.lgs. 196/2003 (codice privacy)",
+        "special_law_id": "codice_privacy",
+        "articles": [
+          [
+            167,
+            172
+          ]
+        ]
+      },
+      {
+        "name": "d.lgs. 231/2001 (i reati presupposto dell'ente)",
+        "special_law_id": "dlgs_231_2001",
+        "articles": [
+          [
+            24,
+            26
+          ]
+        ]
+      }
+    ]
+  },
+  "fit_context": {
+    "title": "QUADRO DEL CASO (letto dal testo e verificato; solo contesto, non il giudizio):",
+    "cliente": "Cliente",
+    "ruolo": "Ruolo del cliente",
+    "rito": "Rito",
+    "stadio": "Fase",
+    "addebito_o_domanda": "Addebito o domanda (ipotesi)",
+    "istituto": "Rapporto o istituto"
+  },
+  "prompt_system": [
+    "Leggi la richiesta di un avvocato e ricavane il quadro del caso. Non dai pareri, non qualifichi oltre il testo e non aggiungi nulla che il testo non dica.",
+    "Rispondi solo con un oggetto JSON con queste chiavi:",
+    "{\"parti\": [{\"nome\": \"...\", \"ruolo_nel_fatto\": \"...\", \"lato\": \"cliente | controparte | terzo | autorità\"}],",
+    " \"cliente\": {\"nome\": \"...\", \"perche\": \"«...»\"} oppure null,",
+    " \"ruolo\": {\"valore\": \"attore | convenuto | imputato/indagato | persona_offesa | ricorrente | resistente | sconosciuto\", \"perche\": \"«...»\"},",
+    " \"rito\": {\"valore\": \"civile | lavoro | famiglia | esecuzione | penale | penale_gdp | amministrativo | tributario | fallimentare | sconosciuto\", \"perche\": \"«...»\"},",
+    " \"stadio\": {\"valore\": \"pre_filing | indagini | primo_grado | appello | cassazione | esecuzione | sconosciuto\", \"perche\": \"«...»\"},",
+    " \"addebito_o_domanda\": {\"articolo\": \"numero e codice, es. 640 c.p.\" oppure null, \"descrizione\": \"...\", \"frase\": \"«...»\"} oppure null,",
+    " \"istituto\": {\"testo\": \"...\", \"frase\": \"«...»\"} oppure null,",
+    " \"quesiti\": [\"...\"]}",
+    "Regole:",
+    "- Ogni «perche» e ogni «frase» riporta tra « » le parole esatte del testo (la frase, o la sua parte, che lo mostra), copiate senza cambiarle.",
+    "- parti: ogni persona, società o ente che il testo indica come parte del fatto, con il nome scritto come nel testo; ruolo_nel_fatto: che cosa ha fatto, con le parole del testo; lato: cliente (la parte per cui sono scritte le domande), controparte, terzo, autorità (giudice, pubblico ministero, polizia, amministrazione che decide).",
+    "- cliente: la parte per cui sono scritte le domande, cioè chi l'avvocato assiste («assisto…», «il mio cliente…», «quali strategie difensive…», la prospettiva delle domande). Il perche cita la frase che lo mostra. Se il testo non lo mostra, cliente è null: non indovinare. Le domande scritte «a carico di X» o «contro X» fanno di X la controparte, non il cliente. Il cliente non è mai una parte che indichi come controparte, e il cliente è uno solo.",
+    "- ruolo: la posizione del cliente nel giudizio (o nel giudizio che si prospetta). Chi resiste a una pretesa altrui (una penale, una risoluzione, un pagamento chiesto, un ricorso) è convenuto o resistente, mai attore o ricorrente. Chi è sottoposto a indagine o a processo penale è imputato/indagato. Se il testo non lo mostra: sconosciuto, con la frase che lo lascia aperto.",
+    "- rito e stadio: con la frase che li mostra; pre_filing quando nessun giudizio e nessun procedimento è ancora iniziato. Se il testo non li mostra: sconosciuto.",
+    "- addebito_o_domanda: il reato contestato o la domanda proposta, come ipotesi; articolo solo se il testo lo indica o è certo, con il suo codice o la sua legge, altrimenti null. In un rito penale l'articolo è una norma penale (codice penale o legge penale speciale), mai una norma civile.",
+    "- istituto: il rapporto o l'istituto giuridico con le parole dell'avvocato (testo) e la frase su cui si fonda.",
+    "- quesiti: le domande del testo, copiate parola per parola, nell'ordine in cui compaiono.",
+    "Un campo che il testo non mostra è null (o una lista vuota): mai inventato."
+  ],
+  "counterparty_markers": [
+    "a carico di",
+    "a carico del",
+    "a carico della",
+    "contro",
+    "nei confronti di",
+    "nei confronti del",
+    "nei confronti della",
+    "verso"
+  ],
+  "name_titles": [
+    "avv",
+    "ditta",
+    "dott",
+    "dottor",
+    "dottoressa",
+    "dottssa",
+    "geom",
+    "gli",
+    "i",
+    "il",
+    "impresa",
+    "ing",
+    "l",
+    "la",
+    "le",
+    "lo",
+    "on",
+    "prof",
+    "professor",
+    "professoressa",
+    "ra",
+    "rag",
+    "sig",
+    "signor",
+    "signora",
+    "signore",
+    "sigra",
+    "soc",
+    "societa",
+    "spett",
+    "spettabile",
+    "ssa"
+  ],
+  "company_forms": {
+    "scarl": "\\bs\\.?\\s?c\\.?\\s?a\\.?\\s?r\\.?\\s?l\\b\\.?",
+    "srls": "\\bs\\.?\\s?r\\.?\\s?l\\.?\\s?s\\b\\.?",
+    "srl": "\\bs\\.?\\s?r\\.?\\s?l\\b\\.?",
+    "spa": "\\bs\\.?\\s?p\\.?\\s?a\\b\\.?",
+    "sapa": "\\bs\\.?\\s?a\\.?\\s?p\\.?\\s?a\\b\\.?",
+    "sas": "\\bs\\.?\\s?a\\.?\\s?s\\b\\.?",
+    "snc": "\\bs\\.?\\s?n\\.?\\s?c\\b\\.?",
+    "ss": "\\bs\\.\\s?s\\."
+  },
+  "controparte_words": [
+    "controparte",
+    "controparti",
+    "avvers"
+  ],
+  "client_signals": [
+    "assist",
+    "difend",
+    "difens",
+    "patrocin",
+    "rappresent",
+    "tutel",
+    "cliente"
+  ],
+  "client_signal_window": 8,
+  "role_refinements": {
+    "persona_offesa": [
+      "parte_civile"
+    ]
+  }
+}

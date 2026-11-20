@@ -519,6 +519,11 @@ def read_institutions(read: Dict[str, Any], top: int = FIRST_READ_MAX) -> List[D
                                  "rubricated": " ".join(str(a.get("rubricated") or "").split()),
                                  "claim": str(a.get("why") or ""), "alternative": True})
     lines = _line_institutions(read, top)
+    framed = (read or {}).get("frame_institution") or {}
+    if framed.get("testo"):         # v79.14.0 (CASE_FRAME): the frame's institution first, in the lawyer's words
+        name = " ".join(str(framed["testo"]).split())
+        lines = [{"name": name, "rubricated": "", "claim": str(framed.get("frase") or ""), "frame": True}] + \
+            [x for x in lines if _low(x["name"]) != _low(name)]
     have = {_low(x["name"]) for x in lines}
     return lines + [a for a in alternatives if _low(a["name"]) not in have][:ALTERNATIVES_MAX]
 
@@ -1565,11 +1570,30 @@ def _analysed_and_retrieved(text: str, request: str, lang: str, analysis: Dict[s
     return {**found, "_t1": t1, "_t2": time.time()}
 
 
-def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, Any]:
-    """Step 1: the analysis object, as a new state (TOPICS_OFFERED is set by round1)."""
+def framed_args(intake: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.14.0: analyse_case's frame argument -- {"frame": the intake's case frame} with CASE_FRAME on and a frame, {}
+    otherwise (the call as 79.13.0's)."""
+    got = intake_frame(intake)
+    return {"frame": got} if got is not None else {}
+
+
+def intake_frame(intake: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """v79.14.0: the case frame an intake carries (CASE_FRAME on), else None."""
+    from . import case_frame
+    got = (intake or {}).get("case_frame") if isinstance(intake, dict) else None
+    return got if case_frame.enabled() and isinstance(got, dict) and isinstance(got.get("frame"), dict) else None
+
+
+def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional[Dict[str, Any]] = None
+                 ) -> Dict[str, Any]:
+    """Step 1: the analysis object, as a new state (TOPICS_OFFERED is set by round1). v79.14.0: frame -- the request's
+    case frame (CASE_FRAME): its institution the first read's first (frame_institution), its client the read's."""
     from . import case_read, defensive_generation as dg, render_computed, stage_meter
     t0 = time.time()
     pending = case_read.start(text, request, lang) if case_first_enabled() else None     # v60 (A): beside the rest
+    framed_client = str((((frame or {}).get("frame") or {}).get("cliente") or {}).get("nome") or "")
+    if pending is not None and frame_institution(frame):
+        pending = _FramedRead(pending, frame_institution(frame))
     meter = stage_meter.Meter()                 # v60: seconds and calls per stage, one journal line
     with meter.active(), _case_branches_early(text, request):
         meter.mark("analysis")
@@ -1588,6 +1612,11 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         hypotheses = read.get("hypotheses") or []
         # v60e: the client known now (the analysis', else the read's): its lines; unknown: every party's
         known = str(analysis.get("parte_assistita") or (read.get("client") or {}).get("name") or "").strip()
+        if framed_client:           # v79.14.0: the frame's client, whatever the extraction or the read say
+            from . import case_frame
+            if known and not case_frame.same_value("cliente", known, framed_client):
+                case_frame.conflict(frame, "cliente", "first_read.client", known, framed_client)
+            known = framed_client
         mine = case_read.side(hypotheses, known) if known else []
         read_side = known if mine else ""
         unanchored, method = attach_side(found["topics"], mine or hypotheses, found.get("vectors"),
@@ -2206,7 +2235,13 @@ def state_of_mind(point: Any, client: str = "", names: Sequence[str] = ()) -> bo
 
 
 def client_of(state: Dict[str, Any]) -> str:
-    """The client's name: the one the answer settled, else the extraction's."""
+    """The client's name: the one the answer settled, else the extraction's. v79.14.0: the frame's, when it holds one."""
+    from . import case_frame
+    framed = case_frame.bound(state, "cliente")
+    if framed:
+        return str(framed)
+    if case_frame.no_client(state):     # the frame left no client: never the extraction's (a counterparty, a guess)
+        return ""
     name = str((state.get("client") or {}).get("name") or "")
     return name or (_client_name(_restored_analysis(state["analysis"])) if state.get("analysis") else "")
 
@@ -5599,7 +5634,15 @@ def derived_role(state: Dict[str, Any], analysis: Dict[str, Any]) -> str:
 def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str, str]:
     """D: (the client, the line saying it was assumed). Stated or answered: (it, ""). Asked and unanswered: the party the
     case puts a carico, convenuto or ricorrente (never the first name), set in this answer's analysis only, with
-    CLIENT_ASSUMED; none: ("", CLIENT_UNKNOWN). Not asked (the facts name the client): ("", "")."""
+    CLIENT_ASSUMED; none: ("", CLIENT_UNKNOWN). Not asked (the facts name the client): ("", ""). v79.14.0
+    (CASE_FRAME): the frame's client is the client (another, answered or assumed, logged frame_conflict); a verified
+    «sconosciuto» role with no frame client -- no party assumed, the honesty line (CLIENT_UNKNOWN; with a client the
+    rules name, ROLE_UNKNOWN_CLIENT): neither side's wording."""
+    from . import case_frame
+    if case_frame.held(state) is not None:
+        framed = _isolated("settle_client_frame", lambda: settle_framed(state, analysis), None)
+        if framed is not None:
+            return framed
     answered = (state.get("answered") or {}).get("parte_assistita")
     if answered:
         client = str(analysis.get("parte_assistita") or answered)
@@ -5632,6 +5675,88 @@ def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str,
             or C.fill(C.SINGLE_SHOT_CLIENT, client=shown)                   # v60r (5): with the frame's label
         return pick["name"], "" if quiet else party_names.contract(line or "")
     return pick["name"], "" if quiet else party_names.contract(C.fill(C.CLIENT_ASSUMED, name=shown, role=role) or "")
+
+
+def settle_framed(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """v79.14.0: settle_client under the frame -- (client, line) when the frame decides it, None when the rules do."""
+    from . import case_frame, party_names
+    framed = case_frame.bound(state, "cliente")
+    quiet = bool(state.get("answered_in_reply")) and not single_mode(state)
+    answered = str((state.get("answered") or {}).get("parte_assistita") or "")
+    if framed:
+        case_frame.defer(state, "cliente", "settle_client", answered or str(analysis.get("parte_assistita") or ""))
+        analysis["parte_assistita"] = framed
+        if case_frame.role_unknown_held(state):
+            line = C.fill(C.ROLE_UNKNOWN_CLIENT, client=party_names.label(framed, str(analysis.get(CASE_KEY) or "")))
+            return framed, "" if quiet else party_names.contract(line or "")
+        return framed, (known_client_line(state, analysis, framed) if single_mode(state) and not quiet else "")
+    if not case_frame.role_unknown_held(state):
+        if answered:
+            return None
+        asked = any(q.get("id") == "parte_assistita" for q in state.get("questions") or [])
+        would = (str((_assumed_party(state, analysis) or {}).get("name") or "") if asked else
+                 (_client_name(analysis) if single_mode(state) else ""))
+        others = case_frame.counterparty_names(case_frame.held(state))
+        if would and any(case_frame.same_party(would, x) for x in others):
+            # a party the frame lists as controparte is never the client -- neither assumed nor read from the facts
+            case_frame.conflict(state, "cliente", "settle_client", would, "")
+            framed_no_client(state, analysis)
+            _log("client_settled", {"how": "frame_counterparty_refused", "refused": would, "line": not quiet})
+            return "", "" if quiet else C.CLIENT_UNKNOWN
+        return None
+    if answered:                    # the user's own words named one (the rules' client): never a side's label
+        line = C.fill(C.ROLE_UNKNOWN_CLIENT, client=party_names.label(answered, str(analysis.get(CASE_KEY) or "")))
+        return answered, "" if quiet else party_names.contract(line or "")
+    would = (_client_name(analysis) if not any(q.get("id") == "parte_assistita" for q in state.get("questions") or [])
+             else str((_assumed_party(state, analysis) or {}).get("name") or ""))
+    if would:
+        case_frame.conflict(state, "cliente", "settle_client", would, "")
+    framed_no_client(state, analysis)
+    _log("client_settled", {"how": "frame_role_unknown", "line": not quiet})
+    return "", "" if quiet else C.CLIENT_UNKNOWN
+
+
+def frame_plan(state: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.14.0 (CASE_FRAME): the plan under the frame -- its parte_assistita the frame's client (none when the frame
+    leaves none; never a party the frame lists as controparte), its posizione the frame role's side
+    (case_frame.position: another side logged frame_conflict «plan.posizione», it loses; «sconosciuto»: none). The
+    client it serves kept in state["plan_client"] (the audit's role_flip). Unchanged with no frame held."""
+    from . import case_frame
+    got = case_frame.held(state)
+    if got is None:
+        return plan
+    out = dict(plan)
+    who = str(out.get("parte_assistita") or "")
+    framed = case_frame.bound(state, "cliente")
+    if framed:
+        if who and not case_frame.same_value("cliente", who, framed):
+            case_frame.conflict(state, "cliente", "plan.parte_assistita", who, framed)
+        out["parte_assistita"] = framed
+    elif case_frame.no_client(state) or any(case_frame.same_party(who, x) for x in
+                                             case_frame.counterparty_names(got) if who):
+        if who:
+            case_frame.conflict(state, "cliente", "plan.parte_assistita", who, "")
+        out["parte_assistita"] = ""
+    pos = case_frame.position(state, out.get("posizione"), "plan.posizione")
+    if pos is not None:
+        out["posizione"] = pos
+    state["plan_client"] = str(out.get("parte_assistita") or "")
+    return out
+
+
+def framed_no_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> None:
+    """v79.14.0 (CASE_FRAME): the frame leaves no client (the honesty line) -- the extraction's client gone from this
+    answer's analysis and the state's (parte_assistita, the facts' client_side), the state's client marked
+    case_frame.NO_CLIENT_HOW: client_of, the plan, mark_sides and the method serve no party."""
+    from . import case_frame
+    for a in (analysis, state.get("analysis")):
+        if not isinstance(a, dict):
+            continue
+        a["parte_assistita"] = ""
+        facts = (a.get("fact_signals") or {}).get("facts") if isinstance(a.get("fact_signals"), dict) else None
+        if isinstance(facts, dict) and facts.get("client_side"):
+            facts["client_side"] = ""
+    state["client"] = {"name": "", "how": case_frame.NO_CLIENT_HOW}
 
 
 def intake_labels(state: Dict[str, Any], case: str = "") -> Tuple[str, str]:
@@ -5887,6 +6012,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     plan, analysis_p = ptw.for_the_plan(plan, analysis)
     if client:                  # v60 (D): the client settled (stated, answered or assumed) is the plan's
         plan = {**plan, "parte_assistita": client}
+    if state.get("case_frame"):  # v79.14.0 (CASE_FRAME): the plan's client and position the frame's
+        plan = _isolated("frame_plan", lambda: frame_plan(state, plan), plan) or plan
     if posture.get("entry"):    # v62: the main line's act and goal from the posture (the default cell: today's plan)
         plan = posture_mod.apply_plan(plan, posture, rites)     # v79.10.3 (C1): the riti the charge admits
         _log("plan_posture", {"atto": plan.get("atto"), "obiettivo": plan.get("obiettivo")})
@@ -6207,6 +6334,27 @@ _MULTI_CLIENT_RE = re.compile(r"\b(?i:assisto|assistiamo|assisti|assistete|difen
 
 
 def clients_of(state: Dict[str, Any]) -> List[Dict[str, str]]:
+    """_clients_of (below); v79.14.0 (CASE_FRAME): the rules' several clients stand when the frame's client is one of
+    them and none is a party the frame lists on another side (controparte, terzo, autorità): the multi-client parere;
+    otherwise they contradict the frame -- logged frame_conflict («clients_of») and lose ([]: the single-client
+    parere). The frame leaving no client (case_frame.no_client): none either."""
+    found = _clients_of(state)
+    from . import case_frame
+    got = case_frame.held(state)
+    if got is None or not found:
+        return found
+    framed = case_frame.bound(state, "cliente")
+    others = [p["nome"] for p in (got.get("frame") or {}).get("parti") or [] if p.get("lato") != "cliente"]
+    clash = any(case_frame.same_party(c["name"], x) for c in found for x in others)
+    if framed and any(case_frame.same_party(c["name"], framed) for c in found) and not clash:
+        return found
+    if framed or clash or case_frame.no_client(state):
+        case_frame.conflict(state, "cliente", "clients_of", ", ".join(c["name"] for c in found), framed or "")
+        return []
+    return found
+
+
+def _clients_of(state: Dict[str, Any]) -> List[Dict[str, str]]:
     """v79.6 (item 2): the parties the user assists, [{name, role}] -- the first read's «clienti», else the user's own
     words («Sono il difensore di Tizio e di Caio»); fewer than two: [] (the single-client parere). v79.10.2 (B3): the
     plural also in the second person and the role forms («sei l'avvocato di X e Y», «difendi X e Y», «assisti X e Y»,
@@ -7009,7 +7157,9 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     sents = state.get("sentences") or case_sentences(state)
     facts = applicability.facts_input(sents)
     role = str((posture or {}).get("role") or "")
-    result = applicability.judge(norms, facts, role, started=started)
+    from . import case_frame                    # v79.14.0 (CASE_FRAME): the verified frame as the judgment's context
+    context = case_frame.fit_context(state.get("case_frame")) if case_frame.enabled() else ""
+    result = applicability.judge(norms, facts, role, started=started, frame_context=context)
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
     known = [f["id"] for f in facts]
@@ -7202,6 +7352,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     case = case_text(state)
     wanted: Dict[str, str] = {}
     victim = posture_mod.victim(posture)
+    from . import case_frame
+    framed = case_frame.bound(state, "addebito_o_domanda", posture)
+    if framed:                  # v79.14.0 (CASE_FRAME): the frame's charge decomposed first, whatever the rules read
+        wanted[framed] = DECOMPOSE_WHY["charge"]
     for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
         # v79.12.4 (item 1): the victim's charge is the querela's offence -- a civil article its remedy, never decisive
         wanted.setdefault(x, DECOMPOSE_WHY["remedy"] if victim and not posture_mod.penal_article(x)
@@ -8685,7 +8839,64 @@ def take_intake(state: Dict[str, Any], intake: Optional[Dict[str, Any]], message
         intake = intake_mod.request_intake(request or message, message if request else "",
                                            refers_to_upload=bool(request))
     state["intake"] = intake_mod.resolve(intake, state.get("analysis") or {})
+    _isolated("case_frame", lambda: hold_frame(state))        # v79.14.0 (CASE_FRAME): the frame, in the state
     _log("intake_state", {**intake_mod.log_view(state["intake"]), "source": state["intake_source"]})
+
+
+def hold_frame(state: Dict[str, Any]) -> None:
+    """v79.14.0 (CASE_FRAME): the intake's case frame kept in the state (state["case_frame"], once: the intake keeps
+    only its outcome) -- the single source of its fields for every later step (case_frame.bound / defer); the first
+    read's institution the frame's (frame_institution, when the analysis ran without it). Flag off: nothing."""
+    from . import case_frame
+    got = (state.get("intake") or {}).pop("case_frame", None) if isinstance(state.get("intake"), dict) else None
+    if not case_frame.enabled() or not isinstance(got, dict):
+        return
+    state["case_frame"] = got
+    if isinstance(state.get("analysis"), dict):     # the extraction's «posizione»: the frame role's side
+        pos = case_frame.position(state, state["analysis"].get("posizione"), "analysis.posizione")
+        if pos is not None:
+            state["analysis"]["posizione"] = pos
+    framed = case_frame.bound(state, "istituto")
+    if framed and isinstance(state.get("read"), dict) and not state["read"].get("frame_institution"):
+        state["read"]["frame_institution"] = frame_institution(got)
+    _log("case_frame_held", {"status": got.get("status"), "verified": got.get("verified"),
+                             "fallback": got.get("fallback"), "prompt_hash": got.get("prompt_hash")})
+
+
+def frame_institution(frame: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """v79.14.0: the frame's verified institution as the first read carries it (read["frame_institution"]): {testo,
+    frase}; {} without one."""
+    inst = ((frame or {}).get("frame") or {}).get("istituto") or {}
+    return {"testo": str(inst.get("testo") or ""), "frase": str(inst.get("frase") or "")} if inst.get("testo") else {}
+
+
+class _FramedRead:
+    """v79.14.0: the first read's pending call, its result carrying the frame's institution (frame_institution) --
+    every reader of the read's institutions (read_institutions: the first-read search, the family gate, module
+    activation at both stages) takes the frame's first."""
+
+    def __init__(self, pending: Any, institution: Dict[str, str]):
+        self._pending, self._institution = pending, institution
+
+    def result(self, *args, **kwargs):
+        got = self._pending.result(*args, **kwargs)
+        if isinstance(got, dict) and not got.get("frame_institution"):
+            got["frame_institution"] = dict(self._institution)
+        return got
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pending, name)
+
+
+def bound_said(state: Dict[str, Any], said: Dict[str, str]) -> Dict[str, str]:
+    """v79.14.0 (CASE_FRAME): the user's stated client (stated) bound to the frame's -- a different one is logged
+    frame_conflict («interactive_flow.stated») and loses; unchanged with no frame client."""
+    from . import case_frame
+    framed = case_frame.bound(state, "cliente")
+    if not framed:
+        return said
+    case_frame.defer(state, "cliente", "interactive_flow.stated", said.get("client") or "")
+    return {**said, "client": framed, "client_role": ""}
 
 
 def entry_args(message: str, case: Optional[str] = None) -> Tuple[str, str]:
@@ -8719,9 +8930,9 @@ def start(message: str, lang: str = "it", request: str = "", intake: Optional[Di
     state (the request when the case is an upload, else the message) are consumed (apply_stated). v61: the intake kept
     in the state (take_intake)."""
     t0 = time.time()
-    state = analyse_case(message, request, lang)
+    state = analyse_case(message, request, lang, **framed_args(intake))      # v79.14.0: with its frame
     _isolated("intake", lambda: take_intake(state, intake, message, request))
-    said = stated(request or message)
+    said = bound_said(state, stated(request or message))        # v79.14.0: the frame's client, when it holds one
     _isolated("stated", lambda: apply_stated(state, said))
     reply, field = round1(state)
     state["timings"]["round1_s"] = round(time.time() - t0, 1)
@@ -9014,12 +9225,12 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     assumes, whose side orders the topics (prepare_side); every graded topic answered (write_answer); timed
     (single_shot_timings). v61: the intake kept in the state (take_intake), its requested blocks passed to the plan."""
     t0 = time.time()
-    state = analyse_case(message, request, lang)
+    state = analyse_case(message, request, lang, **framed_args(intake))      # v79.14.0: with its frame
     state["mode"] = "single_shot"
     if case_id:                 # v71: the run's id, for the thesis log (logs/thesis_<case>.json)
         state["case_id"] = case_id
     _isolated("intake", lambda: take_intake(state, intake, message, request))
-    said = stated(request or message)
+    said = bound_said(state, stated(request or message))        # v79.14.0: the frame's client, when it holds one
     _isolated("stated", lambda: apply_stated(state, said))
     if not (state.get("answered") or {}).get("parte_assistita"):
         _isolated("prepare_side", lambda: prepare_side(state))       # the assumed client's lines order the topics
@@ -9031,6 +9242,8 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     state["state"] = ANSWERED
     state["last_answer"], state["last_snapshot"] = text, _snapshot(state)
     touch(state, "single shot")
+    if state.get("case_frame"):         # v79.14.0 (CASE_FRAME): the frame against the delivered answer
+        _isolated("case_frame_audit", lambda: _log("case_frame_audit", frame_audit(state)))
     timings = single_shot_timings(state, t0, t1)
     _log("single_shot_funnel", single_shot_funnel(state, numbers))
     field = interaction(state, 3, ("deepen", "add_fact"))
@@ -9270,7 +9483,19 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out.update(shadow_counters(counts))                                                             # v79.11 (6)
     out["questions_extracted"] = len(asked_questions(state))                                        # v79.10.2 (B2)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
+    if state.get("case_frame"):         # v79.14.0 (CASE_FRAME): the frame's counters on the delivered answer
+        out.update({k: v for k, v in frame_audit(state).items() if k != "frame_audit"})
     return out
+
+
+def frame_audit(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.14.0: case_frame.audit on the state ({} on a failure, logged)."""
+    from . import case_frame
+    try:
+        return case_frame.audit(state)
+    except Exception as exc:          # noqa: BLE001 -- a counter never fails the answer
+        _log("case_frame_audit_failed", {"error": f"{type(exc).__name__}: {exc}"[:200]})
+        return {}
 
 
 def role_counters(got: Dict[str, Any]) -> Dict[str, int]:

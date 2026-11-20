@@ -115,6 +115,15 @@ def of(state: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
         resist = resist or intake_mod.resisting(case, str((resolved.get("client") or {}).get("name") or ""))
         if resist:
             role = "convenuto"
+    from . import case_frame
+    if case_frame.held(state) is not None:      # v79.14.0 (CASE_FRAME): the frame's rito, role and stage -- never
+        for c in resolved.get("frame_conflicts") or []:         # resolve's own (it lost): kept in the state
+            case_frame.conflict(state, c.get("field"), c.get("step"), c.get("proposed"), c.get("frame"))
+        rito = case_frame.defer(state, "rito", "posture.of", rito)     # this step's own (logged, it loses)
+        role = case_frame.defer(state, "ruolo", "posture.of", role)
+        stage = case_frame.defer(state, "stadio", "posture.of", stage)
+        resist = resist if role == "convenuto" else ""
+        read = case_frame.bound(state, "rito") or read
     out = {"rito": rito, "family": family(rito), "role": role, "stage": stage, "resisting": resist,
            "querela_stated": querela_stated(case), "prior_decisions": list(resolved.get("prior_decisions") or []),
            "from_intake": bool(raw), "intake_rito": read if read != UNKNOWN else ""}      # v75: the tables' key
@@ -313,6 +322,7 @@ def intake_charges(posture: Optional[Dict[str, Any]]) -> List[str]:
 
 
 CHARGE_OUTCOME = "contestazione"
+FRAME_CHARGE_RULE = "case_frame"        # v79.14.0: choose_charge's rule when the verified frame holds the charge
 CLAIM_ROLES = {"attore": "principale", "convenuto": "controparte"}     # v75: whose line is the attore's claim
 PENAL_LINE = "principale"       # v79 (C4): a criminal case's charge, when none is stated: the read's main hypothesis
 
@@ -585,6 +595,11 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
         named = [x for x in named if not event_refuses(x, event, attempt)]
         if named:
             article, rule, extra, chosen_h = named[0], "rubrica_match", named, attempt
+    from . import case_frame
+    framed = case_frame.bound(state, "addebito_o_domanda", posture) if isinstance(state, dict) else None
+    if framed and article != framed and framed not in repealed:     # v79.14.0 (CASE_FRAME): the frame's charge --
+        case_frame.defer(state, "addebito_o_domanda", "posture.choose_charge", article)     # the rule's logged, loses
+        article, rule, extra, chosen_h = framed, FRAME_CHARGE_RULE, [], None
     order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))
     # v79.12.4 (item 3): the heaviest charged fattispecie -- (review) never a circumstance (583 c.p., counted False),
     # the same filter main_threat and charge_rites read

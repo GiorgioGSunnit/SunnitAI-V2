@@ -54,6 +54,7 @@ UNKNOWN = "sconosciuto"
 OUT_OF_CORPUS = ("tributario", "fallimentare")
 CASE_DELIVERABLES = ("parere", "atto")
 RULE, MODEL, DEFAULT = "rule", "model", "default"
+FRAME = "frame"             # v79.14.0: a field the verified case frame decided (case_frame.FRAME_HOW)
 FIELDS = ("deliverable", "rito", "role", "stage")
 
 CASE_FIRST, GENERATION, DOCUMENT, RAG, OUT_OF_SCOPE = "case_first", "generation", "document", "rag", "out_of_scope"
@@ -1286,9 +1287,9 @@ def route_of(result: Dict[str, Any], has_upload: bool = False) -> str:
     """What the API runs for the intake: the deliverable's route (ROUTES); an upload to fill is the document route, a
     review without an upload the plain answer; a parere on an out-of-corpus matter the rules found, the out-of-scope
     copy -- a question or a calculation on it keeps the plain answer, whose calculation gate reaches the tax
-    calculators."""
+    calculators. v79.14.0: the rito the verified case frame read (FRAME) is the text's as much as a rule's."""
     deliverable = result.get("deliverable") or "altro"
-    if result.get("rito") in OUT_OF_CORPUS and (result.get("confidence") or {}).get("rito") == RULE \
+    if result.get("rito") in OUT_OF_CORPUS and (result.get("confidence") or {}).get("rito") in (RULE, FRAME) \
             and deliverable == "parere":
         return OUT_OF_SCOPE
     if deliverable == "atto" and has_upload and (result.get("why") or {}).get("deliverable", "").startswith(
@@ -1636,10 +1637,13 @@ def derive_role(text: str, rito: str = "", name: str = "") -> Tuple[str, str, st
 
 
 def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (), *, model: bool = True,
-           refers_to_upload: bool = False, upload_role: str = "") -> Dict[str, Any]:
+           refers_to_upload: bool = False, upload_role: str = "", frame: Optional[Dict[str, Any]] = None
+           ) -> Dict[str, Any]:
     """The intake of one request (see the module's doc). message: the user's words; upload: the text of the document
     the request carries ("" without one); history: the conversation's earlier messages [{role, content}], read by the
-    model only; model False: the rules and the defaults alone (scripts/intake_check.py --rules-only)."""
+    model only; model False: the rules and the defaults alone (scripts/intake_check.py --rules-only). v79.14.0: frame
+    -- the case frame (case_frame.read, CASE_FRAME): its verified rito, role, stage, client and questions taken first
+    (confidence «frame»), the rules, the model and derive_role only for what it leaves; None: today's intake."""
     message = message or ""
     upload = upload or ""
     sig = _signals(message)
@@ -1654,9 +1658,16 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
 
     deliverable, reason = deliverable_rule(message, upload, refers_to_upload, sig)
     take("deliverable", deliverable, RULE, reason)
+    view = _frame_first(frame, take)            # v79.14.0: the verified frame before any rule
     rito, reason = rito_rule(message, upload)
     take("rito", rito, RULE, reason)
-    client = client_rule(message, upload, penal=(rito or "").startswith("penale"))
+    client = client_rule(message, upload, penal=(values.get("rito") or rito or "").startswith("penale"))
+    if view is not None and view.get("client"):     # v79.14.0: the frame's client; the rule's never replaces it
+        from . import case_frame
+        if client["name"] and not case_frame.same_value("cliente", client["name"], view["client"]):
+            case_frame.conflict(frame, "cliente", "intake.client_rule", client["name"], view["client"])
+        client = {**client, "name": view["client"]}
+    _refine_frame_role(frame, values, why, client)      # v79.14.0: the rules' finer word for the frame's side
     take("role", client["role"], RULE, client["why"])
     stage, reason = stage_rule(message, upload)
     case = values.get("deliverable") in CASE_DELIVERABLES or (not values.get("deliverable") and facts)
@@ -1694,7 +1705,7 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
             unknown_why = derived_why
     take("rito", UNKNOWN, DEFAULT, "l'area del caso la decide (frame)")
     take("role", UNKNOWN, DEFAULT, unknown_why or "la logica del cliente la decide")
-    if not case and confidence.get("role") != RULE:
+    if not case and confidence.get("role") not in (RULE, FRAME):
         values["role"], confidence["role"] = UNKNOWN, DEFAULT
     from .query_router import party_kinds
     try:
@@ -1705,9 +1716,10 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         "deliverable": values["deliverable"],
         "requested_blocks": requested_blocks(message),
         "named_articles": named_articles(message, client["name"]),        # v65: with their verb and use
-        "questions": questions(message),                                  # v79.6 (item 1): every explicit question
+        "questions": (list(view["questions"]) if view and view.get("questions") else
+                      questions(message)),                                # v79.6 (item 1): every explicit question
         "role_reading": "",                                               # v79.6 (item 5): resolve's reading
-        "resisting": client.get("resisting") or "",                        # v79.10.2 (B1): the client resists a demand
+        "resisting": (client.get("resisting") or "") if view is None or values["role"] == "convenuto" else "",
         "rito": values["rito"], "role": values["role"], "stage": values["stage"],
         "prior_decisions": prior_decisions(f"{message}\n{upload}"),
         "client": {"name": client["name"], "side": side_of(values["role"]),
@@ -1722,7 +1734,81 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         "why": {f: why.get(f, "") for f in FIELDS},
     }
     result["route"] = route_of(result, bool(upload))
+    if frame is not None:                       # v79.14.0: the frame read, carried to the flow (take_intake)
+        result["case_frame"] = frame
+        if frame.get("frame_conflicts"):
+            result["frame_conflicts"] = list(frame["frame_conflicts"])
     return result
+
+
+def _frame_first(frame: Optional[Dict[str, Any]], take) -> Optional[Dict[str, Any]]:
+    """v79.14.0: the frame's verified rito, role and stage taken first (FRAME, the quote as the why) -- a rito or a
+    stage «sconosciuto» binds nothing (the rules read the text's silence), a role «sconosciuto» binds (the honesty
+    line); its intake view (case_frame.intake_view), None without a frame."""
+    if not isinstance(frame, dict) or not isinstance(frame.get("frame"), dict):
+        return None
+    from . import case_frame
+    view = case_frame.intake_view(frame)
+    for field, key, frame_field in (("rito", "rito", "rito"), ("role", "role", "ruolo"), ("stage", "stage", "stadio")):
+        value = view.get(key)
+        if value and (field == "role" or value != UNKNOWN):
+            take(field, value, FRAME, case_frame.why_of(frame, frame_field))
+    return view
+
+
+def _refine_frame_role(frame: Optional[Dict[str, Any]], values: Dict[str, str], why: Dict[str, str],
+                       client: Dict[str, Any]) -> None:
+    """v79.14.0: the frame's role and the rules' finer word for the same side (data/case_frame.json
+    «role_refinements»: persona_offesa -> parte_civile, the victim constituted parte civile): the rules' word kept,
+    the frame's quote its why -- in the intake and in the frame's own intake value, so every later step (bound) reads
+    it. Another side is never a refinement: the frame's role stands."""
+    if not isinstance(frame, dict) or not isinstance(frame.get("frame"), dict):
+        return
+    from . import case_frame
+    role = (frame["frame"].get("ruolo") or {})
+    finer = str(client.get("role") or "")
+    if not role or values.get("role") != role.get("intake") or not finer or finer == role.get("intake"):
+        return
+    if finer in ((case_frame.config().get("role_refinements") or {}).get(role.get("intake")) or []):
+        role["intake"] = finer
+        values["role"] = finer
+        why["role"] = f"{why.get('role', '')}; {client.get('why') or ''}".strip("; ")
+
+
+def _frame_wanted(message: str, upload: str = "", refers_to_upload: bool = False) -> bool:
+    """v79.14.0: the request may be a case -- the frame's call is worth its seconds. False only when the deliverable
+    rule decides a plain answer (a point of law, an institution explained, a calculation, case law: no parere, no
+    atto) and the text narrates no facts: no case pipeline reads a frame there."""
+    try:
+        sig = _signals(message or "")
+        deliverable, _ = deliverable_rule(message or "", upload or "", refers_to_upload, sig)
+        facts = narrates_facts(message or "", sig) or bool(upload and narrates_facts(upload))
+    except Exception:                           # noqa: BLE001 -- unsure: the frame is read
+        return True
+    return not (deliverable and deliverable not in CASE_DELIVERABLES and not facts)
+
+
+def read_frame(message: str, upload: str = "", refers_to_upload: bool = False) -> Optional[Dict[str, Any]]:
+    """v79.14.0 (CASE_FRAME): the case frame of the request's full text (case_frame.read: one call, verified), the
+    rules' rito its hint for the charge rule; None with the flag off, and for a request no case pipeline reads (a plain
+    question with no facts: _frame_wanted -- logged, no call). Never raises (a failure: every field to the rules,
+    logged)."""
+    from . import case_frame
+    if not case_frame.enabled():
+        return None
+    if not _frame_wanted(message, upload, refers_to_upload):
+        vlog("case_frame_skipped", {"why": "no case: a plain answer, no facts"})
+        return None
+    text = f"{message or ''}\n{upload or ''}".strip()
+    try:
+        hint = rito_rule(message or "", upload or "")[0]
+    except Exception:                           # noqa: BLE001 -- no hint: the frame's own rito decides
+        hint = ""
+    try:
+        return case_frame.read(text, rito_hint=hint)
+    except Exception as exc:                    # noqa: BLE001 -- read never raises; belt and braces
+        logger.error("intake: the case frame failed, the rules decide: %s", exc, exc_info=True)
+        return None
 
 
 def safe_detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (), **kwargs) -> Dict[str, Any]:
@@ -1755,18 +1841,26 @@ def request_intake(message: str, upload: str = "", history: Sequence[Dict[str, A
     upload and the upload's role; the [VERBOSE:intake] line logged here, timed."""
     import time
     t0 = time.time()
+    frame = read_frame(message, upload or "", refers_to_upload)    # v79.14.0 (CASE_FRAME): the frame, before the rules
+    extra = {"frame": frame} if frame is not None else {}
     result = safe_detect(message, upload or "", list(history or [])[-HISTORY_TURNS:], refers_to_upload=refers_to_upload,
-                         upload_role=upload_role or "")
+                         upload_role=upload_role or "", **extra)
+    if frame is not None:                       # a failed detect's defaults carry the frame too
+        result.setdefault("case_frame", frame)
     vlog("intake", log_view(result), (time.time() - t0) * 1000)
     return result
 
 
 def log_view(result: Dict[str, Any]) -> Dict[str, Any]:
     """The [VERBOSE:intake] line: the fields, their confidence and reasons, the blocks, the route."""
-    return {k: result.get(k) for k in ("deliverable", "route", "rito", "role", "stage", "requested_blocks",
-                                        "named_articles", "prior_decisions", "client", "facts", "upload", "case_in", "confidence", "why",
-                                        "error")
-            if k in result}
+    out = {k: result.get(k) for k in ("deliverable", "route", "rito", "role", "stage", "requested_blocks",
+                                       "named_articles", "prior_decisions", "client", "facts", "upload", "case_in", "confidence", "why",
+                                       "error")
+           if k in result}
+    frame = result.get("case_frame")
+    if isinstance(frame, dict):                 # v79.14.0: the frame's outcome, with CASE_FRAME only
+        out["case_frame"] = {k: frame.get(k) for k in ("status", "verified", "fallback", "prompt_hash", "seconds")}
+    return out
 
 
 # --- the atto's context -------------------------------------------------------------------------------------------------
@@ -1799,6 +1893,32 @@ def case_record(message: str, upload: str = "", lang: str = "it") -> str:
 # --- downstream: the defaults the analysis decides --------------------------------------------------------------------------
 
 def resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """_resolve (below); v79.14.0: a rito or a role the frame decided (confidence «frame») is never changed -- what the
+    analysis would derive instead is logged frame_conflict («intake.resolve») and loses, with its side, reading and
+    why."""
+    out = _resolve(result, analysis)
+    if not result or not out:
+        return out
+    held = [f for f in ("rito", "role") if (result.get("confidence") or {}).get(f) == FRAME]
+    if not held:
+        return out
+    from . import case_frame
+    for field in held:
+        if out.get(field) != result.get(field):
+            case_frame.conflict(out, {"rito": "rito", "role": "ruolo"}[field], "intake.resolve", out.get(field),
+                                result.get(field))
+            out[field] = result.get(field)
+            out["confidence"][field] = FRAME
+            if field == "role":
+                out["client"] = {**(out.get("client") or {}), "side": side_of(str(result.get("role") or ""))}
+                for k in ("role_reading", "role_why", "resisting"):
+                    out[k] = result.get(k, "") if k in result else ""
+                if not result.get("role_why"):
+                    out.pop("role_why", None)
+    return out
+
+
+def _resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The intake with its default role and rito filled as the existing logic reads them once the case is analysed: the
     rito from the frame's area (interactive_flow.frame_families), the role from the client's side
     (fact_signals.client_side: accused -> imputato in penale, convenuto otherwise; victim -> persona_offesa in penale,

@@ -44,6 +44,17 @@ def _intake_without_model(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _case_frame_without_model(monkeypatch):
+    """v79.14.0: no test reaches a model through the case frame (src/rag/case_frame._default_call): with CASE_FRAME on
+    and no fake, the call fails and every field falls back to the rules. A test of the frame fakes the call itself."""
+    from src.rag import case_frame
+
+    def refuse(messages, kwargs):
+        raise RuntimeError("no model in the tests")
+    monkeypatch.setattr(case_frame, "_default_call", refuse)
+
+
+@pytest.fixture(autouse=True)
 def _corpus_names_unknown(monkeypatch):
     """v79.9 (B2): no test reads the graph's document names -- unknown, so no missing-laws line, unless a test sets them
     (corpus_laws.set_names, or missing_laws(ctx, known))."""

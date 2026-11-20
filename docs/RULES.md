@@ -943,6 +943,131 @@ nothing: every word of its judgment is checked by code before it has any effect.
   `fit_check`, `fit_lines`, `run_followup`;
   `scripts/fit_timing.py` (`--flow`: the step as the flow runs it).
 
+### 11.13 79.14.0 (`CASE_FRAME`: the case frame and its binding)
+
+Behind `CASE_FRAME` (default off; off, nothing runs and the output is 79.13.0's). The tables, the vocabularies and the
+prompt are `data/case_frame.json`; the module is `src/rag/case_frame.py`. One model call reads the case frame from the
+request's full text; the code verifies every field against the text before it counts and never overrides a verified
+field with a regex. Intake's and posture's rules are the fallback for a field the model leaves empty or that fails
+verification; the verified frame is bound across the whole pipeline (below, «The binding»). Not
+`CASE_FRAME_ENABLED` (the older frame of `defensive_generation._case_frame`).
+
+- **The call** (`case_frame.read`). One call through the repo's chat model (`ai_chat.chat_model`, the env's `LLM_*`
+  config), thinking off (`chat_template_kwargs.enable_thinking = false`), temperature 0, a JSON reply, the request's
+  full text (cut only past `max_text_chars`, logged), within `deadline_s` (15 s: the brief's budget). The system prompt
+  is hashed (`prompt_hash`) and logged with each run (`case_frame_read`). The reply: `parti` [{nome, ruolo_nel_fatto,
+  lato cliente / controparte / terzo / autorità}], `cliente` {nome, perche}, `ruolo` {valore attore / convenuto /
+  imputato/indagato / persona_offesa / ricorrente / resistente / sconosciuto, perche}, `rito` {valore: intake's riti,
+  perche}, `stadio` {valore pre_filing / indagini / primo_grado / appello / cassazione / esecuzione / sconosciuto,
+  perche}, `addebito_o_domanda` {articolo or null, descrizione, frase}, `istituto` {testo, frase}, `quesiti` (verbatim,
+  in order). Each value maps onto intake's own vocabulary by the data (`ruoli`, `riti`, `stadi`: imputato/indagato ->
+  imputato, ricorrente -> attore, resistente -> convenuto, appello / cassazione -> impugnazione; the spellings a model
+  may use in `*_sinonimi`); a verified value carries both (`valore`, `intake`).
+- **Failures.** A call that fails, a reply that is no JSON object, a call not back in 15 s: the whole frame empty,
+  every field to the fallback (`frame_failed`), logged, never a crash. A field of the wrong shape: that field alone
+  dropped.
+- **The verification** (`case_frame.verify`, no model). Every quote is matched as the 79.13 fit checker matches a
+  passage (`applicability.passage_at`, the match `passage_found` reads: word by word, content words by stem, numbers,
+  short words and «non» exactly, never just after a negation of the text). A perché or a frase: its «…» passages each
+  in the text, or with no quote marks the whole of it. A name (a party's, the client's) is matched exactly, never by
+  stem (`name_found`: its words one after the other, accents folded, the data's `name_titles` aside, the company forms
+  of `company_forms` written one way -- «Mario Rossi» is not «Maria Rossi», «Orsa Srl» is «Orsa S.r.l.»). `parti`:
+  each name in the text and its lato in the vocabulary, else that party dropped (an off-schema lato that says
+  controparte -- `controparte_words` -- still counts as controparte for the client rule); a ruolo_nel_fatto with a
+  content word not in the text blanked. `cliente`: one only; a quote found (none: never accepted); its name in the
+  text; never a party the reply lists as controparte; never another listed party than the one the user says they
+  assist («assisto X», `interactive_flow.stated`); a quote naming another listed party and not the client refused; a
+  name its own quote names only after one of the data's `counterparty_markers` («quali reati a carico di X»: X is
+  whom the questions are about) refused, unless the text signals that the lawyer assists or defends that party
+  (`client_signals` within `client_signal_window` words of the name, no marker between: «a carico di X, che mi ha
+  chiesto di difenderlo»); a quote that is only the client's name refused; one of the verified parties with lato
+  cliente. A client refused on its sides (listed as controparte, contradicting «assisto X», a quote showing another
+  party, the «a carico» subject, a party of another lato) takes the reply's ruolo with it (`frame_unverified.ruolo`:
+  the role is the refused client's). `ruolo` / `rito` / `stadio`:
+  a vocabulary value and its quote found (none: never accepted); «sconosciuto» with its quote found is a verified value
+  (`role_unknown`: the honesty line, neither side's wording), with no quote the field is empty and falls back.
+  `addebito_o_domanda`: its frase found; a descrizione with words not in the text blanked; in a penal rito (the
+  frame's -- a verified «sconosciuto» is none --, else the fallback's `rito_hint`) its articolo a penal provision
+  (`is_penal`: the c.p.; the civil code's reati societari, 2621-2642 c.c.; a penal law's penal articles,
+  `penal_provisions.laws` -- each law by its own expression or its `data/special_laws.json` entry, with the ranges of
+  its penal articles: d.lgs. 74/2000 artt. 2-11, the legge fallimentare's 216-237, d.P.R. 380/2001 art. 44, d.lgs.
+  196/2003 artt. 167-172 ...; an article led by another code -- c.c., c.p.c., c.p.p., c.p.a., Cost. -- is that
+  code's whatever follows; a law's other articles are not penal: «117 TUB», «67 l. fall.», «142 codice della
+  strada») -- else the article dropped and counted `charge_rito_dropped`; a bare number takes the code the text cites
+  it with, else dropped. `istituto`: its frase found and its testo in the text's words. `quesiti`: each a whole
+  question of the text (`question_units`: a «?» clause, with or without its lead-in before «:», or a question intake
+  reads as a request or a task, also as its whole sentence) -- never a statement, never a question cut short --, else
+  dropped; the kept ones in the text's order, once each. A field that fails is dropped and logged
+  (`case_frame_unverified`, `frame_unverified.<field>`; a party or a question dropped counts one each, a part blanked
+  `frame_unverified.<field>.<part>`).
+- **Where it runs.** `intake.request_intake` (`read_frame`), before intake's rules: once per request -- the API
+  (`api._request_intake`), the case-first flow (`interactive_flow.take_intake` when no intake is handed to it) and the
+  sims (`request_case_first`) all read the intake there; the rules' rito is the call's `rito_hint`. No call for a
+  request no case pipeline reads (`intake._frame_wanted`: the deliverable rule decides a plain answer -- a point of
+  law, an institution, a calculation, case law -- and the text narrates no facts; logged `case_frame_skipped`). The
+  result rides in
+  the intake (`case_frame`; `log_view` shows its status) into the state (`interactive_flow.hold_frame`:
+  `state["case_frame"]`). A follow-up reuses the state's frame (no second call); a new case is a new request with its
+  own frame. Flag off: no call, no key, nothing below runs.
+- **The binding.** The verified frame is the single source of client, role, rito, stage, charge or claim, institution
+  and questions: intake takes its rito, role and stage first (`intake._frame_first`, confidence `frame`, the why «quadro
+  del caso: «quote»»), its client over `client_rule`'s and its questions over `intake.questions`; the rules, the model
+  and `derive_role` fill only what it leaves. Every later step that re-derives one defers (`case_frame.defer`: a
+  different value is logged `frame_conflict` with the step's name and loses): `intake.resolve` (the analysis' rito and
+  role, its side, reading and why), `posture.of` (rito, role, stage; the resisting override), `posture.choose_charge`
+  (the frame's article the charge, rule `case_frame`; `decompose_records` splits it first), `interactive_flow.stated`'s
+  client (`bound_said`), `settle_client` (`settle_framed`: the frame's client over an answered or assumed one), `client_of`
+  (the sentences' sides), `clients_of` (one verified client: never several), the first read's client (`analyse_case`) and
+  institution (the frame's first in `read_institutions` -- the first-read search, the family gate, module activation at
+  both stages: `_FramedRead`, `frame_institution`), the method's «Risposte ai quesiti» (intake's questions). So the
+  posture, `mark_sides`, the method's header («POSIZIONE», `method_material`), the thesis call and the objections call
+  read the frame. A verified «sconosciuto» role: no party assumed and the honesty line (`CLIENT_UNKNOWN`; with a client,
+  `ROLE_UNKNOWN_CLIENT`), the posture's role unknown (neither side's wording). With the frame's client empty, the rules'
+  assumption never takes a party the frame lists as controparte (`CLIENT_UNKNOWN`, logged). With no client under the
+  frame (`framed_no_client`): the extraction's client goes from the analysis (parte_assistita, the facts'
+  client_side) and the state's client is marked `case_frame.NO_CLIENT_HOW` -- `client_of`, the plan
+  (`frame_plan`), `mark_sides` and the method serve no party. The plan's client and position are the frame's
+  (`frame_plan`: another client, or a position reading the other side, logged and lost; the client it serves kept for
+  the audit), and so is the extraction's «posizione» (`hold_frame`, `case_frame.position`: the stance party of the
+  plan, section and review prompts, the checklist's side, `fit_to_role`, the ruling cards). `clients_of` keeps the
+  rules' several clients when the frame's client is one of them and none is a party the frame lists on another side
+  (the multi-client parere), else they lose. The frame's charge binds only where the posture admits it
+  (`bound(..., posture)`: in a penal posture an article that is no penal provision is refused -- logged and counted
+  `charge_rito_dropped` -- and the rules' charge fills it). The rules' finer word for the frame role's side stands
+  (`role_refinements`: persona_offesa -> parte_civile, the victim constituted parte civile). The out-of-scope copy
+  reads the frame's rito as a rule's (`route_of`: a tributario or fallimentare parere). A verified «sconosciuto» rito
+  or stage binds nothing (the rules read the text's silence).
+- **The API** (`case_frame`): `held`, `bound`, `defer`, `conflict`, `audit`, `printable_delivered`, `fallback_fields`,
+  `intake_view` (the verified frame in intake's words: client, role, rito, stage, charge, institution, questions,
+  role_unknown), `role_unknown`, `fit_context`. With `APPLICABILITY_FIT` on, the verified frame
+  (`state["case_frame"]`) goes to the 79.13 fit judgment as context, first in each call's human message, labelled «solo
+  contesto, non il giudizio» (`applicability.judge(frame_context=…)`, `interactive_flow.applicability_fit`); flag off or
+  no frame: the message is 79.13.0's.
+- **Counters** (`case_frame.audit` on the delivered answer, into `interactive_flow.case_counters`; logged
+  `case_frame_audit`). `frame_fields_verified` (of the eight), `frame_unverified.<field>`, `charge_rito_dropped` (the
+  reply's civil article as a penal charge, dropped), `frame_failed`, `frame_seconds`; `frame_fallback.<field>` (1: the
+  frame binds nothing for the field -- empty, dropped, a charge with its article dropped, a «sconosciuto» rito or stage
+  -- and the rules filled it); `frame_conflict` (a bound field the delivered answer carries changed: must be 0);
+  `frame_conflict_attempts` (the later steps that disagreed and lost); `role_flip` (the frame's, else intake's, role is
+  not the method's -- the posture's --, or the client served is a party the frame lists as controparte: must be 0);
+  `charge_rito_mismatch` (a penal rito whose held charge is no penal provision: must be 0). `role_flip` reads every
+  reader of the client: the settled one, `client_of`, the plan's and the analysis' (a counterparty in any of them
+  counts).
+- **The nightly** (`scripts/nightly_sim.py`) sets `CASE_FRAME=true` for its cells (`--no-case-frame` skips it); the
+  counters go to the counters table; the section «Case frame (CASE_FRAME)» prints per cell the counters and the frame
+  field by field -- its quote, a dropped field with why, the fallback value the rules filled it with -- and every step
+  that disagreed (`frame_of`, `frame_lines`): the pipeline's frame, else the nightly's own read of the cell's text. Check
+  `case_frame` (`frame_check`) fails the cell when `frame_conflict`, `role_flip` or `charge_rito_mismatch` is above 0.
+- **The budget.** `scripts/frame_timing.py` runs the real call on five synthetic request texts against the configured
+  model (on the server) and prints the seconds per call; `--stub-latency` times the code alone.
+
+  — `case_frame.read`, `verify`, `quote_check`, `found_at`, `name_found`, `names_in`, `question_units`, `canon`,
+  `same_party`, `parse_article`, `lead_code`, `is_penal`, `position`, `no_client`,
+  `fallback_fields`, `count_fallback`, `intake_view`, `role_unknown`, `fit_context`, `printable`;
+  `applicability.passage_at`, `build_messages(frame_context=…)`, `judge(frame_context=…)`;
+  `interactive_flow.applicability_fit`, `frame_plan`, `framed_no_client`; `intake._frame_wanted`,
+  `_refine_frame_role`; `scripts/nightly_sim.py:frame_of`, `frame_lines`; `scripts/frame_timing.py`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -1016,4 +1141,5 @@ nothing: every word of its judgment is checked by code before it has any effect.
 | v79.12.7 (items 7, 8: text residue, version footer) | (7) The tables are `data/text_hygiene.json`, applied by `src/rag/text_hygiene.py`. (a) Element codes (R1, C2, P3) and a ruling's stance mark («(contro)», «(a favore)», «(verso l'integrazione: contro)») never outside the tables and the quoted passages. Cause: «Risposte ai quesiti» is built after the sections' reader check (`compose`'s `reader_wording`) from the writer's quesito section and the forecast's why («la prova degli elementi R1, R2») and only ran Block B's prose check; §5 and the head were never read; a stance mark had no strip at all (the registry gives the calls «verso l'integrazione: contro»). Fix: the block runs `reader_wording`, `text_hygiene.stance_out`, `codes_out` and `whole_citations`; every section the stance and code strip (§5 outside its quotes); a bare R-code no record holds («R9») drops its sentence in the prose check (`unknown_codes_out`: an objection whose reply it empties is dropped, the fallback fills §7); and the last text step (`interactive_flow.text_residue`, after `law_titles_cited`) strips codes, stances, draft-status sentences and headless citations wherever a path left them. The nightly's reader_wording check counts the stance marks too (`wording_hits`). (b) A headless reference goes with its date (`rulings._headless_span_re`: «, 11.04.2025»), and a date left before a closing parenthesis with no head is removed (`text_hygiene.orphan_dates`, `citation_spans`, in `whole_citations`; `rulings.printed_problems` reports one); quoted passages are never touched. Cause: the span stopped at the number, so «(Sez. 4, n. …/2025, 11.04.2025)» left «11.04.2025)». (c) A procedural act narrated (the PM's contestazione, an avviso, a notifica, the rinvio a giudizio, a decreto) is «accertato» unless what is left once the act's words are out is attributed or hedged (`issue_records.certainty`, `text_hygiene.procedural_act`, `act_remainder`); its sentence carries «act», shows in §2's «Fatti certi» (`stated_certain`) and grounds «provato» or «non risulta» only for an element naming the act (`certain_fact(sentence, element)`, `act_bears`): it proves the act was done, not what it charges. Cause: «contestato a Gamma» read as an attribution («contest… a <Nome>»), «ipotizza» as a hedge. (d) «elenco interno»: no data value or code string prints it (79.12.5 item 8 held; checked by a test over data/*.json and src/rag); a sentence holding a draft status is removed by the last pass. (e) The main line at most once per section, tables included: §9's «Obiettivo realistico» no longer repeats it (`conclusions_from_selection`), §6's strategy names the table's («Linea principale: la tesi indicata come principale nella tabella», `STRATEGY_MAIN_IN_TABLE`), a later answer of «Risposte ai quesiti» refers to the first that prints it (`MAIN_LINE_SEE_ANSWER`); `text_hygiene.main_line_repeated` counts the rest. (f) A «Cenni» section's rule statement (RULE_VERBS and «stabilisce», «dispone», «sancisce», «prescrive», «impone») stays only when grounded in the article it cites -- one comma of its text (`interactive_flow.cenni_article_texts`, the cenni rows: two content words and half of its own) or Block B's sources on that article --, naming none its section's articles (`text_hygiene.cenni_check`, in `compose` in place of Block B's answer-wide check there). Cause: a cenno naming no article traced to any record element of the answer, and «stabilisce» was no rule verb. Counters: residue_codes_stripped, residue_stance_stripped, internal_notes_removed, headless_citations_removed (what the last pass found: a path to fix when not 0), residue_left (0), procedural_acts_certain, procedural_acts_uncertain, main_line_repeated (0), cenni_rules_removed, cenni_rules_unsourced (0). (8) The version is the response's metadata: `version` in the reply (`ChatResponse.version`), in the single-shot and regenerate results and in the session message's metadata; `FOOTER_IN_BODY` (default on, live output unchanged) keeps the footer in the body, off drops it (`interactive_flow.footer_in_body`, `with_version`); the nightly's version_footer check reads the metadata. |
 | v79.12.7 (review: items 1-7) | (1) A note or a kept passage stating that the jurisprudential element is NOT required («non è richiesta la prevedibilità in concreto», «indipendentemente da …») is no source of it (`penal_lines.states_element`, the rule's «denial_patterns», read in the statement around the hit). (2) The provocazione's patterns no longer read «persona offesa» / «parti offese» nor «provocò la caduta» (a cause, not a provocazione); 62 n. 6's steps skip a hit whose clause is the victim's claim («chiede il risarcimento», «da quantificare», «in separata sede»: «step_exclude_patterns»); the «esclusa» prose check works per clause (`lawyer_method._excl_clauses`): another institute's exclusion in the same sentence stays, each circumstance excluded is rewritten on its own, a subjectless «…, è esclusa» binds to the clause naming the circumstance; an aggravante is rewritten only when the record holds it (`penal_lines.aggravanti_held`), never raised against the client; more ways of excluding («non spetta», «vanno negate», «non può essere invocata»). The «natura del diverbio» point reaches §10 through `collect_points` (tested in test_v79_12_6_b). (3) The soccorso is the offender's: never the place «pronto soccorso», never in a clause naming passers-by, a neighbour, a witness or a passive («fu portato»: «not_by_offender_patterns»), never negated in its clause (`penal_lines.clause_at`); prepare makes the flow's records (state["records"]) agree with the absorption (`penal_lines.absorb_into`, each client's view and the shared state), and absorbed_as_autonomous reads them (ctx["flow_records"]). (4) A riqualificazione fact the sentence denies («nega di aver dato alcuna spinta», «non vi fu alcuna spinta») or a motive («spinto dalla rabbia») bears on nothing (the rule's «negation_pattern»). (5) A trigger the facts deny («non soffriva di alcuna patologia», «esclude errori dei sanitari», «nulla di anomalo») lifts no cap («trigger_negation_pattern»); a capped causation line never leads while another line is eligible, nor demotes the containment line (`never_main`, MAIN_DEMOTED_WHY «causation_capped», logged). (6) The code's own rito lines are never a written offer (`own_rite_sentence`: the precluded patteggiamento's «Calcolo: … art. 444 …» was being dropped by the final rites check); the PM's consent line is printed with the precluded computation too for a listed offence; a contravvenzione (arresto) gets the abbreviato's half (art. 442, co. 2, c.p.p.: «reduction_contravvenzione»); a written sentence on a computed rito stating a figure the computation does not print, or the resulting pena with no figure (`data/penal_lines.json` «rite_prose»), is dropped (`rite_prose_out`, in `rites_out`) -- counters rites_prose_removed, rites_prose_mismatch and rites_prose_uncomputed (0), added by case_counters to rites_computation_mismatch and rites_without_computation. (7a) Code ranges and pairs («R1-R3», «R1/R2», «(R1-R3)») are read as their codes; a stance heading or closing a citation's parenthesis («(contro, Cass. …)») goes; with no known code, a parenthesis of R-codes and a sentence using a bare R-code as an element («code_context_patterns») go. (7b) The headless reference takes its «del / udienza / depositata il» date, «Rv. … - 01», «sent. n.» / «ord. n.». (7c) The iscrizione nel registro degli indagati, the capo d'imputazione and the PM's «ipotizza il reato» are acts; a sentence with a modal or a conditional («potrebbe contestare»: «procedural_act_modals») narrates no act done. (7f) A cenno grounded in a comma's words is still ungrounded when, against the comma it draws on most, it inverts a negation or adds an absolute («sempre», «in ogni caso»: «cenni_absolutes»). No new flag; tests/test_v79_12_6_review.py (synthetic facts only). |
 | v79.13.0 (applicability judgment, `APPLICABILITY_FIT`) | For every admitted candidate the model judges whether the provision governs the facts (si / no / dipende, a one-sentence perché quoting the article and naming fact ids, a condizione as a question, an ambito), in batches of at most 8, thinking off, temperature 0; the code verifies the quoted passage in the text, the fact ids, every content word against the passage, the named facts and the reviewed note, and the condizione against the text and the facts; an unverified judgment has no effect (`fit_unverified`), one adding content is counted (`fit_added_content`). The step runs once per answer after the family gate and the cap, before the decomposition (`interactive_flow.applicability_fit`, `decompose_records`' hook), within 20 s from its start: a verified «no» removes the norm from the records, the candidates and §4 (`state["fit_removed"]`; the last pass drops a sentence still citing it; put back and judged again when the user later names it or the facts change, all undone when the flag is turned off), except a norm the user names or the text charges -- kept, the judgment printed as the defence's contest (`contest_fit`) or the other side's objection; a «dipende» forces the touched elements «da provare» (`issue_records.settle` reads `fit_open`) and asks its condizione in §10. Counters norms_removed_by_fit, fit_kept_named, fit_added_content_in_effects (0), fit_seconds, fit_removed_stripped, fit_removed_left (0); the nightly turns it on and lists every removed norm with its passage (check applicability_fit, also failing when the last pass had to strip a removed norm; the follow-up checked too). Review: a «no» or «dipende» must rest on the quoted passage (no count or restriction it does not set, a requirement the facts lack, a negation), the quote is matched with numbers and short words exact and never cut after a negation, a perché never contradicts its fact, the reply's article matched however spelt, conflicting duplicates unjudged, a queued batch cancelled at the deadline, a special law's charge protected under its store alias, a kept named norm printed with no method record and on the prose path. See 11.12. |
+| v79.14.0 (case frame, `CASE_FRAME`) | One model call at the top of the pipeline (`intake.request_intake`, before intake's rules; once per request, a follow-up reusing it) reads the case frame from the request's full text (parti with their lato, cliente, ruolo, rito, stadio -- each with a quoted perché --, addebito_o_domanda, istituto, quesiti), thinking off, temperature 0, within 15 s; the code verifies every field against the text with the 79.13 fit checker's quote match (`applicability.passage_at`) before it counts: a field that fails is dropped (`frame_unverified.<field>`) and the rules fill it (`frame_fallback.<field>`); a cliente or a ruolo with no quote never accepted, a party listed as controparte never the client, a name quoted only «a carico di» never the client, a penal rito's charge article a penal provision (c.p., 2621-2642 c.c., a penal law's penal articles) or dropped (`charge_rito_dropped`), names matched exactly, a client's quote showing it and never contradicting «assisto X», the quesiti whole questions of the text; a failed, malformed or late call leaves every field to the rules (`frame_failed`). The verified frame is the single source of client, role, rito, stage, charge, institution and questions for the whole pipeline -- intake (confidence `frame`), resolve, the posture, the charge rule, the stated, settled and multiple clients, the first read's client and institution (module activation), the method's header and thesis call, the plan's client and position, «Risposte ai quesiti» --: a later step that disagrees is logged `frame_conflict` with its name and loses; with no client under the frame no reader serves a party; a «sconosciuto» role prints the honesty line (`ROLE_UNKNOWN_CLIENT` new) with neither side's wording. On the delivered answer: `frame_conflict`, `role_flip`, `charge_rito_mismatch` (each must be 0; the nightly's check `case_frame` fails a cell on any), `frame_conflict_attempts`. The verified frame goes to the fit judgment as context (`frame_context`). The nightly turns it on and prints the frame per cell with each fallback's value; `scripts/frame_timing.py` times the call. See 11.13. |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

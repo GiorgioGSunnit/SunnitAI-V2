@@ -224,6 +224,17 @@ with its quoted passage and perché, every kept-named «no», every «dipende» 
 step's seconds; check applicability_fit -- no judgment with added content had an effect and no removed norm is cited
 in the delivered answer (a cell where the step did not run passes, «not run»).
 
+v79.14.0 (CASE_FRAME): the run sets CASE_FRAME=true (--no-case-frame skips it): one call reads the case frame from the
+cell's text and the code verifies every field against it (src/rag/case_frame.py). In the counters table:
+frame_fields_verified, frame_unverified.<field>, frame_fallback.<field> (the rules filled a field the frame left),
+charge_rito_dropped (the reply's civil article as a penal charge, dropped), frame_failed, frame_seconds, and on the
+delivered answer (case_frame.audit) frame_conflict (a bound field changed), frame_conflict_attempts (the steps that
+disagreed and lost), role_flip (intake's role not the method's, or the counterparty as client), charge_rito_mismatch (a
+civil article as the penal charge): check case_frame fails the cell when frame_conflict, role_flip or
+charge_rito_mismatch is above 0. The section «Case frame» prints, per cell, the frame field by field -- its quote, a
+dropped field with why, the fallback value the rules filled it with -- and every step that disagreed: the pipeline's
+frame (state["case_frame"]), else the nightly's own read of the cell's text («source»).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -340,6 +351,10 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
         out["applicability"] = fit_of(st)                                                       # v79.13.0
         out["checks"].append(fit_check(out["answer"], st))
+        out["case_frame"] = frame_of(st, spec["text"])                                          # v79.14.0
+        for k, v in (out["case_frame"].get("counters") or {}).items():
+            out["counters"].setdefault(k, v)
+        out["checks"].append(frame_check(out["case_frame"], out["counters"]))
         if spec.get("followup"):                                                                # v79.12.5 (10)
             run_followup(spec, out["answer"], result.get("state") or {}, out)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
@@ -552,6 +567,78 @@ def fit_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
                                 f"(a path brings it back)" if stripped else "",
                                 f"{left} removed norms still cited after the last pass" if left else "") if x)
     return {"check": "applicability_fit", "ok": not (added or cited or stripped or left), "why": why, "cited": cited}
+
+
+def frame_of(state: Dict[str, Any], text: str) -> Dict[str, Any]:
+    """v79.14.0: the cell's case frame (CASE_FRAME) -- the pipeline's (state["case_frame"]: every field with its quote,
+    or the fallback value the rules filled it with, and the audit's counters on the delivered answer), else, with the
+    flag on, the nightly's own read of the cell's text (src/rag/case_frame.read: one call); {ran, source, status,
+    prompt_hash, seconds, lines (the frame printed, field by field), counters, log, conflicts}; {"ran": False} with the
+    flag off."""
+    from src.rag import case_frame
+    got = state.get("case_frame") if isinstance(state.get("case_frame"), dict) else None
+    source = "pipeline"
+    if got is not None and case_frame.enabled():
+        audit = case_frame.audit(state)
+        detail = audit.pop("frame_audit", {}) or {}
+        return {"ran": True, "source": source, "status": got.get("status"), "prompt_hash": got.get("prompt_hash"),
+                "seconds": got.get("seconds"), "lines": case_frame.printable_delivered(got, detail.get("filled")),
+                "counters": audit, "log": list(got.get("log") or []), "conflicts": list(detail.get("conflicts") or []),
+                "changed": list(detail.get("changed") or [])}
+    if got is None:
+        if not case_frame.enabled():
+            return {"ran": False}
+        try:
+            got = case_frame.read(text, rito_hint=str((state.get("intake") or {}).get("rito") or ""))
+            source = "nightly"
+        except Exception as exc:        # noqa: BLE001 -- the frame never fails the cell
+            return {"ran": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    return {"ran": True, "source": source, "status": got.get("status"), "prompt_hash": got.get("prompt_hash"),
+            "seconds": got.get("seconds"), "lines": case_frame.printable(got), "counters": dict(got.get("counters") or {}),
+            "log": list(got.get("log") or [])}
+
+
+FRAME_KEYS = ("frame_fields_verified", "frame_failed", "charge_rito_dropped", "charge_rito_mismatch", "frame_conflict",
+              "frame_conflict_attempts", "role_flip", "frame_seconds")
+FRAME_MUST_BE_ZERO = ("frame_conflict", "role_flip", "charge_rito_mismatch")
+
+
+def frame_check(frame: Dict[str, Any], counters: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.14.0: check case_frame -- the delivered answer carries no changed frame field (frame_conflict), the method's
+    role is intake's and the counterparty is never the client (role_flip), no civil article as a penal charge
+    (charge_rito_mismatch): each must be 0. A cell where the frame did not run passes («not run»)."""
+    if not (frame or {}).get("ran"):
+        return {"check": "case_frame", "ok": True, "why": "not run"}
+    bad = {k: int(counters.get(k) or 0) for k in FRAME_MUST_BE_ZERO if int(counters.get(k) or 0)}
+    why = "; ".join(f"{k} {v}" for k, v in bad.items())
+    if bad.get("frame_conflict"):
+        why += " (" + ", ".join(f"{c.get('field')}: {c.get('delivered')!r} ≠ {c.get('frame')!r}"
+                                for c in frame.get("changed") or []) + ")"
+    return {"check": "case_frame", "ok": not bad, "why": why}
+
+
+def frame_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.14.0: per cell, the case frame -- its counters (frame_unverified.* and frame_fallback.* summed; the cell's
+    own in the counters table) and the frame printed field by field, with why a field fell back."""
+    rows = [c for c in results if (c.get("case_frame") or {}).get("ran")]
+    if not rows:
+        return []
+    lines = ["", "## Case frame (CASE_FRAME)", "",
+             "| cell | " + " | ".join(FRAME_KEYS) + " | unverified | fallback | status | prompt |",
+             "|---" * (len(FRAME_KEYS) + 5) + "|"]
+    for c in rows:
+        fr = c["case_frame"]
+        k = {**(fr.get("counters") or {}), **{x: v for x, v in (c.get("counters") or {}).items() if x in FRAME_KEYS}}
+        unver = sum(int(v or 0) for x, v in k.items() if x.startswith("frame_unverified."))
+        fall = sum(int(v or 0) for x, v in k.items() if x.startswith("frame_fallback."))
+        lines.append(f"| {c['id']} | " + " | ".join(str(k.get(x, "—")) for x in FRAME_KEYS)
+                     + f" | {unver} | {fall} | {fr.get('status') or '—'} ({fr.get('source')}) | "
+                     f"{fr.get('prompt_hash') or '—'} |")
+    for c in rows:
+        lines += ["", f"**{c['id']}**"] + [f"- {x}" for x in c["case_frame"].get("lines") or []]
+        lines += [f"- conflitto ({x.get('step')}): {x.get('field')} «{x.get('proposed')}» → quadro «{x.get('frame')}»"
+                  for x in c["case_frame"].get("conflicts") or []]
+    return lines
 
 
 def fit_lines(results: List[Dict[str, Any]]) -> List[str]:
@@ -1198,6 +1285,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += counts_lines(results, baseline)
     lines += counter_lines(results, baseline)
     lines += fit_lines(results)                     # v79.13.0
+    lines += frame_lines(results)                   # v79.14.0
     lines += headline_lines(results, baseline)      # v79.11
     lines += ranked_lines(results)
     lines += family_lines(results)                  # v79.9 (C2)
@@ -1228,6 +1316,8 @@ def main(argv=None) -> int:
                     help="v79.10 (A5): skip the family gate's shadow grading (the alarm on a proxy count)")
     ap.add_argument("--no-applicability-fit", action="store_true",
                     help="v79.13.0: run the cells with APPLICABILITY_FIT off (the judgment is on by default here)")
+    ap.add_argument("--no-case-frame", action="store_true",
+                    help="v79.14.0: run the cells with CASE_FRAME off (the frame is on by default here)")
     args = ap.parse_args(argv)
     if not args.answers and os.path.isfile(args.env):
         from dotenv import load_dotenv
@@ -1242,6 +1332,8 @@ def main(argv=None) -> int:
     os.environ["FAMILY_GATE_SHADOW_GRADE"] = "false" if args.no_family_shadow_grade else "true"
     # v79.13.0: the applicability judgment on for the cells -- over the env file's, for this run
     os.environ["APPLICABILITY_FIT"] = "false" if args.no_applicability_fit else "true"
+    # v79.14.0: the case frame on for the cells -- over the env file's, for this run
+    os.environ["CASE_FRAME"] = "false" if args.no_case_frame else "true"
     baseline = read_baseline(args.baseline)             # v79.7: before any cell runs
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]

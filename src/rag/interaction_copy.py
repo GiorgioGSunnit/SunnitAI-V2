@@ -272,6 +272,11 @@ ROLE_READING = "Il quesito non indica la posizione del cliente: il parere la leg
 CLIENT_DERIVED = "Il quesito non indica chi assisti: il parere è impostato per la parte {role}, come si ricava dal caso."   # v79
 CLIENT_UNKNOWN = ("Non mi hai indicato chi assisti e il caso non lo fa capire: il parere esamina la posizione delle parti "
                   "senza assumerne una. Dimmi chi assisti e lo riscrivo dal suo punto di vista.")
+# v79.14.0 (my draft): the case frame reads the client but no role (a verified «sconosciuto»): the honesty line, neither
+# side's wording
+ROLE_UNKNOWN_CLIENT = ("Il quesito non indica la posizione di {client} nella vicenda: il parere esamina la posizione "
+                       "delle parti senza assumerne una. Dimmi in quale veste assisti {client} e lo riscrivo dal suo "
+                       "punto di vista.")                                     # client
 
 # --- closing and follow-ups -------------------------------------------------------------------------------------------
 CLOSING = ("Se vuoi, posso approfondire anche: {topics}. Puoi anche darmi un fatto nuovo, e aggiorno il parere, o "
