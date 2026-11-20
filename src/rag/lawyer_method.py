@@ -456,6 +456,19 @@ def facts_section(split: Dict[str, List[Any]]) -> str:
 # --- Fase 4: the subsumption, element by element --------------------------------------------------------------------------
 
 ESITO = {PROVATO: "integrato", DA_PROVARE: "da provare", NON_RISULTA: "escluso"}
+# v79.14.3 (item 1): an element only another party's allegation supports (issue_records.contested) -- its «Esito» and
+# its «Fatto che lo integra» cell (my drafts)
+CONTESTED_ESITO = "contestato (allegazione {di_parte})"
+CONTESTED_FACT = "nessun fatto certo; solo l'allegazione: {fact}"
+
+
+def esito_label(r: Dict[str, Any]) -> str:
+    """The element's «Esito»: ESITO's, or v79.14.3 (item 1) CONTESTED_ESITO for a contested one."""
+    from . import issue_records
+    if issue_records.contested(r):
+        return CONTESTED_ESITO.format(di_parte=issue_records.of_party(r.get("contested_by")))
+    status = r.get("status") or DA_PROVARE
+    return ESITO.get(status, status)
 
 
 def _sentence_text(ids: Sequence[str], by_id: Dict[str, Dict[str, Any]]) -> str:
@@ -466,10 +479,17 @@ def _sentence_text(ids: Sequence[str], by_id: Dict[str, Dict[str, Any]]) -> str:
 def subsumption_rows(rec: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> List[Tuple[str, str, str]]:
     """[(elemento, fatto che lo integra, esito)] of the record's live elements."""
     out = []
+    from . import issue_records
     for r in _live(rec):
         status = r.get("status") or DA_PROVARE
         if status == PROVATO:
-            fact = _sentence_text(r.get("supporting") or [], by_id) or "i fatti estratti dal caso"
+            # v79.14.3 (item 1): the certain facts first -- an allegation never shown as what integrates it
+            sup = [i for i in r.get("supporting") or [] if i in by_id]
+            sure = [i for i in sup if issue_records.certain_fact(by_id[i], r.get("text") or "")]
+            fact = _sentence_text(sure or sup, by_id) or "i fatti estratti dal caso"
+        elif issue_records.contested(r):        # v79.14.3 (item 1): the allegation, said as one
+            fact = CONTESTED_FACT.format(fact=_sentence_text(r.get("contested_ids") or [], by_id) or
+                                         ", ".join(r.get("contested_ids") or []))
         elif status == NON_RISULTA:
             fact = _sentence_text(r.get("contradicting") or [], by_id) or "i fatti estratti lo escludono"
         elif r.get("fit_open") and _fit_on():   # v79.13.0: the applicability judgment's «dipende» -- the question
@@ -482,7 +502,7 @@ def subsumption_rows(rec: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> L
             text = f"{text} (alternativa che ricorre: «{_short(r['branch'], 80)}»)"
         if r.get("jurisprudential") and r.get("source"):    # v79.12.7 (item 1): not in the text -- its source named
             text = f"{text} ({JURISPRUDENTIAL_ROW.format(source=_short(r['source'], 120))})"
-        out.append((text, fact, ESITO.get(status, status)))
+        out.append((text, fact, esito_label(r)))
     return out
 
 
@@ -675,7 +695,7 @@ def frame_binding(state: Optional[Dict[str, Any]], records: Dict[str, Dict[str, 
             rec.pop(FRAME_EXCLUDED, None)
     mode = binding_mode(state)
     out: Dict[str, Any] = {"mode": mode, "applied": bool(mode), "charge_set": [], "kept": [], "excluded": [],
-                           "empty": False}
+                           "empty": False, "rescued": False}
     if not mode:
         return out
     for label, rec in (records or {}).items():
@@ -687,7 +707,80 @@ def frame_binding(state: Optional[Dict[str, Any]], records: Dict[str, Dict[str, 
     out["kept"] = [x for x in charge_set if not frame_excluded(records[x])]
     out["excluded"] = [x for x in charge_set if frame_excluded(records[x])]
     out["empty"] = bool(charge_set) and not out["kept"]
+    out["frame_charge"] = frame_charge(state, mode)
+    out["charge_in_corpus"] = charge_in_corpus(out["frame_charge"])
+    if out["empty"]:
+        rescue(out, records, (state or {}).get("records") if isinstance(state, dict) else None)
     return out
+
+
+# --- v79.14.3 (item 3): an empty plan with a verified charge ---------------------------------------------------------
+# The binding emptied the charge set while the verified frame names its charge (addebito_o_domanda's article) and that
+# article is a code's (code_law) or a law data/institution_laws.json lists: the theses are built on that article's
+# elements -- its record (prepare's, by its label) marked the threat (rec["frame_rescued"]), so the charge, the
+# assessment and the contests (its «da provare» and «contestato» elements, item 1) are its own -- never a fall through to
+# «Ammettere la condotta» (never without ADMISSION_VERIFIED) nor the corpus line. frame_binding_rescued counts it; logged
+# «frame_binding_rescue». The record missing (or with no live element): no rescue (logged with its reason) -- and still
+# no corpus line for a code article or a law in the corpus (charge_in_corpus).
+def frame_charge(state: Optional[Dict[str, Any]], mode: str = "") -> str:
+    """v79.14.3 (item 3): the verified frame's charge or claim article (case_frame.bound «addebito_o_domanda»), "" when
+    none, or when the binding's own side of the law refuses it."""
+    from . import case_frame
+    label = case_frame.bound(state, "addebito_o_domanda") if isinstance(state, dict) else None
+    label = str(label or "")
+    return label if label and binding_allows(mode, label) else ""
+
+
+def charge_in_corpus(label: str) -> bool:
+    """v79.14.3 (item 3): the charge's article is a code's (code_law: c.p., c.c., c.p.p. …) or of a law
+    data/institution_laws.json lists (the laws the corpus is read for) -- the corpus line never names it."""
+    from . import case_frame
+    if not label:
+        return False
+    rest = str(case_frame.parse_article(label).get("rest") or "")
+    if code_law(rest) or case_frame.lead_code(rest):
+        return True
+    key = _law_key(rest)
+    return bool(key) and any(_law_key(e.get("law")) and _law_key(e.get("law")) in key for e in institution_laws())
+
+
+def _same_label(a: str, b: str) -> bool:
+    return _law_key(a) == _law_key(b)
+
+
+def rescue(out: Dict[str, Any], records: Dict[str, Dict[str, Any]],
+           read: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    """v79.14.3 (item 3), in place: the emptied charge set rescued on the frame's verified charge (see above). read:
+    the flow's records -- the charge's record the method's view left out as noise (method_records: «nessun fatto» rows
+    beside other records) is taken back into records through method_records alone, as the charge always is."""
+    label = out.get("frame_charge") or ""
+    why = ""
+    if not label:
+        why = "il quadro non indica un addebito verificato"
+    elif not out.get("charge_in_corpus"):
+        why = "l'addebito non è un articolo dei codici né di una legge del corpus"
+    found = next((x for x in (records or {}) if _same_label(x, label)), "") if not why else ""
+    if not why and not found and isinstance(read, dict):
+        flow_label = next((x for x in read if _same_label(x, label)), "")
+        if flow_label and isinstance(read.get(flow_label), dict):
+            taken = method_records({flow_label: read[flow_label]})
+            if isinstance(records, dict) and taken.get(flow_label):
+                records[flow_label] = taken[flow_label]
+                found = flow_label
+    rec = (records or {}).get(found) if found else None
+    if not why and not isinstance(rec, dict):
+        why = "nessuna scheda dell'articolo tra le norme lette"
+    elif not why and (rec.get("ranked_candidate") or frame_excluded(rec) or not any(r.get("id") for r in _live(rec))):
+        why = "la scheda dell'articolo non ha elementi da contestare"
+    if why:
+        out["rescued"] = False
+        _log("frame_binding_rescue", {"charge": label, "rescued": False, "why": why})
+        return
+    rec.pop("unprinted", None)
+    rec["side"], rec["frame_rescued"] = "threat", True
+    out.update(rescued=True, rescued_charge=found, kept=[found], empty=False)
+    _log("frame_binding_rescue", {"charge": found, "rescued": True,
+                                  "elements": [r.get("id") for r in _live(rec) if r.get("id")]})
 
 
 def candidate_subjects(records: Dict[str, Dict[str, Any]]) -> Callable[[Dict[str, Any]], List[str]]:
@@ -723,8 +816,9 @@ def binding_materia(state: Optional[Dict[str, Any]], mode: str) -> str:
 
 def bound_assessment(a: Dict[str, Any], b: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """v79.14.2 (B): the assessment of a charge set the binding emptied -- no article, its why the corpus line's
-    («il corpus non contiene ancora informazioni sufficienti su …»); any other assessment as it is."""
-    if not (b or {}).get("empty") or a.get("article"):
+    («il corpus non contiene ancora informazioni sufficienti su …»); any other assessment as it is. v79.14.3 (item 3):
+    never the corpus line's why for a charge the corpus holds (charge_in_corpus: a code article, a listed law)."""
+    if not (b or {}).get("empty") or a.get("article") or (b or {}).get("charge_in_corpus"):
         return a
     materia = b.get("materia") or BINDING_MATERIA[1 if b.get("mode") == "civile" else 0]
     return {**a, "frame_binding_empty": True,
@@ -734,9 +828,22 @@ def bound_assessment(a: Dict[str, Any], b: Optional[Dict[str, Any]]) -> Dict[str
 def binding_empty_line(ctx: Dict[str, Any]) -> str:
     """v79.14.2 (B): §1's corpus line for a charge set the binding emptied (CORPUS_LINE, with its stop); "" else."""
     b = ctx.get("frame_binding") or {}
-    if not b.get("empty"):
+    if not b.get("empty") or b.get("charge_in_corpus"):     # v79.14.3 (item 3): never for a charge the corpus holds
         return ""
-    return CORPUS_LINE.format(materia=b.get("materia") or BINDING_MATERIA[1 if b.get("mode") == "civile" else 0]) + "."
+    line = CORPUS_LINE.format(materia=b.get("materia") or BINDING_MATERIA[1 if b.get("mode") == "civile" else 0]) + "."
+    return "" if corpus_line_on_code(line, ctx) else line   # (item 3) nor on a materia whose law is a code
+
+
+def method_counters(counters: Dict[str, Any], ctx: Dict[str, Any]) -> None:
+    """v79.14.3: the method's counters into block_counters (several clients: the largest count, the lists unioned) --
+    (item 1) elements_contestato, theses_from_contestato; (item 3) frame_binding_rescued; (item 4) excluded_dropped (the
+    excluded and fit-removed articles kept out of §4, §5, §7 and «Fatti mancanti»; compose adds what it dropped)."""
+    for k, v in contested_counts(ctx).items():
+        counters[k] = max(int(counters.get(k) or 0), int(v))
+    counters["frame_binding_rescued"] = max(int(counters.get("frame_binding_rescued") or 0),
+                                            int(bool((ctx.get("frame_binding") or {}).get("rescued"))))
+    counters["excluded_dropped"] = list(dict.fromkeys(list(counters.get("excluded_dropped") or [])
+                                                      + list(ctx.get("excluded_dropped") or [])))
 
 
 def binding_counters(counters: Dict[str, Any], b: Optional[Dict[str, Any]]) -> None:
@@ -748,6 +855,61 @@ def binding_counters(counters: Dict[str, Any], b: Optional[Dict[str, Any]]) -> N
     counters["frame_binding_empty"] = max(int(counters.get("frame_binding_empty") or 0), int(bool(b.get("empty"))))
     counters["frame_binding_excluded"] = list(dict.fromkeys(list(counters.get("frame_binding_excluded") or [])
                                                            + list(b.get("excluded") or [])))
+
+
+def excluded_labels(ctx: Dict[str, Any]) -> List[str]:
+    """v79.14.3 (item 4): the articles excluded means excluded applies to -- the records the frame's binding excluded,
+    the charge set and candidates it refused, the norms a verified «no» removed."""
+    b = ctx.get("frame_binding") or {}
+    return list(dict.fromkeys(list(ctx.get("excluded_articles") or []) + list(b.get("excluded") or [])
+                              + list(ctx.get("fit_removed") or [])))
+
+
+def cites_excluded(text: str, labels: Sequence[str]) -> List[str]:
+    """v79.14.3 (item 4): the excluded articles a text cites (by number and code, however spelt), in labels' order."""
+    if not labels or not str(text or "").strip():
+        return []
+    from . import posture as posture_mod
+    cited = posture_mod.sentence_articles(str(text))
+    return [x for x in dict.fromkeys(labels) if any(_same_label(x, c) for c in cited)]
+
+
+def excluded_blocks_out(norms: str, labels: Sequence[str], log: Optional[List[str]] = None) -> str:
+    """v79.14.3 (item 4): §4's per-article blocks (a «**Art. N …**» heading to the next bold line, as charged_blocks
+    reads them) of an excluded article dropped whole; every other line as it is. (review) Any bold heading whose cited
+    articles are all excluded («**Il risarcimento (art. 2043 c.c.)**») heads such a block too."""
+    from . import citations, posture as posture_mod
+    if not labels or not norms:
+        return norms
+    out: List[str] = []
+    skipping = False
+    for line in norms.split("\n"):
+        if line.strip().startswith("**"):
+            skipping = False
+            refs = citations.article_refs(line) if _ART_HEAD_RE.match(line) else []
+            label = f"{refs[0][0]} {refs[0][1]}" if refs else ""
+            hit = next((x for x in labels if label and _same_label(x, label)), "")
+            cited = posture_mod.sentence_articles(line) if not hit else []
+            if cited and all(any(_same_label(x, c) for x in labels) for c in cited):
+                hit = next(x for x in labels if any(_same_label(x, c) for c in cited))
+            if hit:
+                skipping = True
+                if log is not None:
+                    log.append(hit)
+                continue
+        if not skipping:
+            out.append(line)
+    # a paragraph outside any heading whose cited articles are all excluded is that article's scheda too
+    kept: List[str] = []
+    for para in "\n".join(out).split("\n\n"):
+        cited = posture_mod.sentence_articles(para) if not para.strip().startswith("**") else []
+        gone = [c for c in cited if any(_same_label(x, c) for x in labels)]
+        if cited and len(gone) == len(cited):
+            if log is not None:
+                log += [x for x in labels if any(_same_label(x, c) for c in gone)]
+            continue
+        kept.append(para)
+    return "\n\n".join(kept)
 
 
 def _charged(records: Dict[str, Dict[str, Any]]) -> List[str]:
@@ -2176,6 +2338,8 @@ SUSTAINABLE, MINORITY = "sostenibile", "minoritaria"
 CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "excluded": "L'elemento «{el}» ({id}) dell'art. {art} è escluso dai fatti: l'addebito su questa norma non regge",
     "open": "L'elemento «{el}» ({id}) dell'art. {art} non è provato",
+    # v79.14.3 (item 1): an element only another party's allegation supports -- the defence client's primary thesis
+    "contested": "{who} deve provare «{el}» ({id}) dell'art. {art}: i fatti narrano solo un'allegazione {di_parte}",
     "integrated": "Contestare l'elemento «{el}» ({id}) dell'art. {art}, che i fatti integrano",
     "requalify": "Riqualificazione nell'art. {art}{rubrica}",
     # v79.12.7 (item 1): an element the note or a ruling states and the text does not -- contesting it is sostenibile
@@ -2573,12 +2737,25 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 admitted_by=JURISPRUDENTIAL_ADMITTED)
             return
         causal = kind == "open" and bool(r.get("event_narrated"))     # v79.12.7 (item 5): the causal link contested
+        if kind == "open" and issue_records.contested(r):       # v79.14.3 (item 1): «l'accusa deve provare «…»»
+            add("contest_open", CANDIDATE_TEXTS["contested"].format(
+                who=contested_who(posture), el=_short(r.get("text"), 80), id=r["id"], art=label,
+                di_parte=issue_records.of_party(r.get("contested_by"))),
+                contesta=[r["id"]], label=SUSTAINABLE, contested=True, contested_by=str(r.get("contested_by") or ""),
+                **({"causation": True, "causation_capped": bool(cap.get("capped"))} if causal else {}))
+            return
         add(f"contest_{kind}", CANDIDATE_TEXTS[kind].format(el=_short(r.get("text"), 80), id=r["id"], art=label),
             contesta=[r["id"]], label=MINORITY if kind == "integrated" else SUSTAINABLE,
             **({"causation": True, "causation_capped": bool(cap.get("capped"))} if causal else {}))
     # v79.7 (item 2): the imputato's contests in the elements' order (an «integrato» one labelled minoritaria);
-    # another role's as before -- the excluded and open ones first, the integrated ones last
-    for label, r in in_order if offender else contests["excluded"] + contests["open"]:
+    # another role's as before -- the excluded and open ones first, the integrated ones last. v79.14.3 (item 1): for a
+    # defence client (the accused, the convenuto / resistente) the contested elements are the primary theses -- first
+    # (the accused's), first after the excluded ones (another defending role's); the rest in their order
+    defending = offender or role in DEFENDING_ROLES
+    first = lambda pairs: [x for x in pairs if issue_records.contested(x[1])] + \
+        [x for x in pairs if not issue_records.contested(x[1])]          # noqa: E731
+    for label, r in (first(in_order) if offender else contests["excluded"] + (
+            first(contests["open"]) if defending else contests["open"])):
         contest(label, r)
     if victim:                  # v75: the victim's set -- never the offender's circumstances
         _victim_candidates(ctx, add, fatt)
@@ -2831,6 +3008,25 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 JURISPRUDENTIAL_ADMITTED = "elemento di fonte giurisprudenziale dell'addebito"       # v79.12.7 (item 1)
+DEFENDING_ROLES = ("convenuto", "resistente")       # v79.14.3 (item 1): a civil client resisting the claim
+CONTESTED_WHO = ("L'accusa", "La controparte")      # my drafts: who must prove a contested element
+
+
+def contested_who(posture: Dict[str, Any]) -> str:
+    """v79.14.3 (item 1): who must prove a contested element -- the accusation in a penal matter, else the other side."""
+    return CONTESTED_WHO[0] if criminal(posture or {}) else CONTESTED_WHO[1]
+
+
+def contested_counts(ctx: Dict[str, Any]) -> Dict[str, int]:
+    """v79.14.3 (item 1): elements_contestato (the printed records' live contested elements, the excluded aside) and
+    theses_from_contestato (the plan's candidates on one)."""
+    from . import issue_records
+    records = ctx.get("records") or {}
+    n = sum(1 for x, rec in records.items() if isinstance(rec, dict) and not frame_excluded(rec)
+            and not rec.get("ranked_candidate") and not rec.get("unprinted")
+            for r in _live(rec) if issue_records.contested(r))
+    return {"elements_contestato": n,
+            "theses_from_contestato": sum(1 for c in ctx.get("candidates") or [] if c.get("contested"))}
 
 
 def _fit_on() -> bool:
@@ -3801,19 +3997,18 @@ def candidates_block(cands: Sequence[Dict[str, Any]]) -> str:
 
 
 def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """The thesis call's SCHEDE. v79.14.3 (item 4): never a record the frame's binding excluded (excluded means
+    excluded: no scheda, no context); (item 1) a contested element's esito as the table prints it (esito_label)."""
     lines = []
     for label, rec in list((records or {}).items()) + list((circ or {}).items()):
         live = _live(rec)
-        if not live:
+        if not live or frame_excluded(rec):
             continue
         side = {"threat": "addebito o domanda contro il cliente", "weapon": "norma del cliente"}.get(
             str(rec.get("side") or ""), "circostanza" if rec.get("circumstance") else "")
-        if frame_excluded(rec) and rec.get("side") == "threat":     # v79.14.2 (B): context, never the charge
-            side = ""
         lines.append(f"- art. {label}" + (f" — {_plain(rec.get('rubrica'))}" if rec.get("rubrica") else "")
                      + (f" [{side}]" if side else ""))
-        lines += [f"  · [{r.get('id')}] {_short(r.get('text'), 140)}: {ESITO.get(r.get('status'), r.get('status'))}"
-                  for r in live]
+        lines += [f"  · [{r.get('id')}] {_short(r.get('text'), 140)}: {esito_label(r)}" for r in live]
     return "\n".join(lines)
 
 
@@ -4285,7 +4480,8 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
                   "candidate_articles": [", ".join(candidate_subjects(ctx.get("records") or {})(c))     # v79.14.2
                                          for c in ctx["candidates"]],                                    # (B)
                   "frame_binding": {k: (ctx.get("frame_binding") or {}).get(k) for k in
-                                    ("mode", "applied", "excluded", "empty")},
+                                    ("mode", "applied", "excluded", "empty", "rescued")},     # v79.14.3: rescued
+                  "contestato": contested_counts(ctx),                                        # v79.14.3 (item 1)
                   "samples": [x["score"] for x in scored], "best": best,
                   "choice": ctx["thesis_choice"], "counts": ctx["selection_counts"],
                   "dropped": clean_log.get("dropped"),
@@ -5045,14 +5241,39 @@ def barred(thesis: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> List[str
     return [x for x in thesis.get("contesta") or [] if (known.get(x) or {}).get("status") == PROVATO]
 
 
+# v79.14.3 (item 3): «Ammettere la condotta, contestare l'inquadramento / contenere la pena» (the posture table's
+# fallback_main) admits the conduct -- offered only when the verified frame says the client admits it. The frame
+# (case_frame.FIELDS: parti, cliente, ruolo, rito, stadio, addebito_o_domanda, istituto, quesiti) has no field saying so,
+# so the line is never generated -- with or without a held frame (no frame: no verified field says it either). Only a
+# posture prepare marks ADMISSION_VERIFIED (frame_admits_conduct) offers it; the containment line that admits nothing
+# (CONTAINMENT_LINE) takes its place everywhere else.
+ADMISSION_VERIFIED = "admission_verified"
+
+
+def frame_admits_conduct(state: Optional[Dict[str, Any]]) -> bool:
+    """v79.14.3 (item 3): the held frame's verified fields say the client admits the conduct -- never: no field of the
+    frame states it (see ADMISSION_VERIFIED)."""
+    return False
+
+
 def posture_fallback(posture: Dict[str, Any]) -> str:
-    """The posture table's main line when every thesis is barred («fallback_main» of the cell's entry)."""
+    """The posture table's main line when every thesis is barred («fallback_main» of the cell's entry). v79.14.3 (item
+    3): "" unless the posture is marked ADMISSION_VERIFIED (the verified frame says the client admits the conduct)."""
+    if not (posture or {}).get(ADMISSION_VERIFIED):
+        return ""
     return str(((posture or {}).get("entry") or {}).get("fallback_main") or "")
 
 
 def fallback_thesis(a: Dict[str, Any], riti: Sequence[str], posture: Optional[Dict[str, Any]] = None
                     ) -> Dict[str, Any]:
     main = posture_fallback(posture or {})
+    if not main and not (posture or {}).get(ADMISSION_VERIFIED) and ((posture or {}).get("entry") or {}).get("fallback_main") \
+            and _family_key(posture or {}) in ("penale", ""):
+        return {"tesi": CONTAINMENT_LINE,           # v79.14.3 (item 3): the containment line, admitting nothing
+                "pro": "non contesta alcun elemento integrato" + (
+                    f"; {riti_names(riti, 3)}" if riti_names(riti, 3) else ""),
+                "contro": "presuppone l'accertamento della responsabilità", "realismo": ALTO, "minoritaria": False,
+                "contesta": [], "poggia_su": [], "fallback": True}
     if main:
         return {"tesi": main[0].upper() + main[1:], "pro": "non contesta alcun elemento integrato" + (
                     f"; {riti_names(riti, 3)}" if riti_names(riti, 3) else ""),       # v79.10.3 (C1): admitted only
@@ -5991,9 +6212,34 @@ def orientations_section(plan: Dict[str, Any], rulings: Sequence[Any], log: Opti
 
 
 def orientations_text(ctx: Dict[str, Any], plan: Dict[str, Any], rulings: Sequence[Any], log: Optional[List[str]] = None,
-                      points: Optional[List[str]] = None) -> str:
+                      points: Optional[List[str]] = None, excluded: Sequence[str] = (),
+                      dropped: Optional[List[str]] = None) -> str:
     """§5: v78 (RULINGS_RECORD), the registry's -- the rulings with their quoted passage, the computed orientations, the
-    lawyer's pronunce di riferimento, the corpus line (rulings.section_text); else v71's (orientations_section)."""
+    lawyer's pronunce di riferimento, the corpus line (rulings.section_text); else v71's (orientations_section).
+    v79.14.3 (item 4): never a ruling, an orientation or a point on an excluded article -- the record read through a view
+    without them (the rulings' own record untouched), the v71 points and rulings filtered alike; dropped gets their
+    articles."""
+    if excluded:
+        on = lambda label: next((x for x in excluded if _same_label(x, str(label or ""))), "")     # noqa: E731
+        if ctx.get("rulings_record"):
+            rec = ctx["rulings_record"]
+            gone = [on(r.get("article")) for r in rec.get("kept") or []] + \
+                [on(o.get("article")) for o in rec.get("orientations") or []] + [on(k) for k in rec.get("landmarks") or {}]
+            if dropped is not None:
+                dropped += [x for x in gone if x]
+            view = {**rec, "kept": [r for r in rec.get("kept") or [] if not on(r.get("article"))],
+                    "orientations": [o for o in rec.get("orientations") or [] if not on(o.get("article"))],
+                    "landmarks": {k: v for k, v in (rec.get("landmarks") or {}).items() if not on(k)}}
+            from . import rulings as rulings_mod
+            return rulings_mod.section_text(view, points)
+        kept = [r for r in rulings or [] if not (isinstance(r, dict) and on(r.get("article")))]
+        points_in = [o for o in plan.get("orientamenti") or [] if not cites_excluded(
+            f"{o.get('punto') or o.get('tema') or ''} {o.get('pronuncia') or ''}", excluded)]
+        if dropped is not None:
+            dropped += [on(r.get("article")) for r in rulings or [] if isinstance(r, dict) and on(r.get("article"))]
+            dropped += [x for o in plan.get("orientamenti") or [] if o not in points_in for x in cites_excluded(
+                f"{o.get('punto') or o.get('tema') or ''} {o.get('pronuncia') or ''}", excluded)]
+        return orientations_section({**plan, "orientamenti": points_in}, kept, log, points)
     if ctx.get("rulings_record"):
         from . import rulings as rulings_mod
         return rulings_mod.section_text(ctx["rulings_record"], points)
@@ -6679,7 +6925,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     def checked(text: str, rules: bool = True, keep: Sequence[str] = ()) -> str:     # v79 (E3): prose, its removals
         return tracked("prose", text, prose(text, rules, keep))                     # into the ledger
     charged_log: List[str] = []         # v75b: the charged article's paragraph from its sussunzione rows only
-    norms = checked(charged_blocks(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
+    excluded = excluded_labels(ctx)     # v79.14.3 (item 4): excluded means excluded -- only «Altri profili» names them
+    dropped_log: List[str] = []
+    norms = checked(charged_blocks(excluded_blocks_out(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
+                                                       excluded, dropped_log),
                                  ctx.get("charged_prose") or {}, charged_log))
     quesiti = [(t, x) for t, x in others if t.endswith("?")]
     normative = [(t, x) for t, x in others if not t.endswith("?")]
@@ -6693,7 +6942,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         # Block B's sources on it; naming none, its section's articles -- in place of Block B's answer-wide check
         done = checked(x, rules=False)
         return tracked("cenni", done, text_hygiene.cenni_check(done, ctx.get("cenni_texts") or {}, rule_src, cenni_log))
-    norms_parts += [f"**{t}**\n\n{normative_text(t, x)}" for t, x in normative if x]
+    norms_parts += [f"**{t}**\n\n{normative_text(t, excluded_blocks_out(x, excluded, dropped_log))}"
+                    for t, x in normative if x and excluded_blocks_out(x, excluded)]
     if ctx.get("subsumption"):
         norms_parts.append(f"{ANALYSIS_TITLE}\n\n{ctx['subsumption']}")
     if profiles:
@@ -6740,6 +6990,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     strong = {} if kind else strongest_open(ctx, sols, main)       # v79.14.1 (item 6): every element open
     objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
     for o in plan.get("obiezioni") or []:
+        gone = cites_excluded(f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)
+        if gone:                            # v79.14.3 (item 4): an objection on an excluded article -- never in §7
+            dropped_log += gone
+            tracked("objections", f"{o.get('obiezione') or ''} {o.get('risposta') or ''}".strip(), "")
+            continue
         rules_before = len(rules_log)       # v79.14.1 (item 6): the rule check removed nothing of it -- grounded
         said = planned(o.get("obiezione") or "")
         if not said:
@@ -6781,6 +7036,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # v79.6 (item 1): the quesiti are answered first, in «Risposte ai quesiti» -- §9 no longer appends them
     fallback_objections = [] if kind or strong else \
         list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
+    fallback_objections = [o for o in fallback_objections if not cites_excluded(      # v79.14.3 (item 4)
+        f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)]
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
                               "fallback": 0 if strong else max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
     orientation_points: List[str] = []
@@ -6811,7 +7068,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
          question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
                           log)),                                                         # v79.10.5 (E1)
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
-        ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points)),
+        ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points, excluded,
+                                           dropped_log)),                                # v79.14.3 (item 4)
         ("soluzioni", no_claim_solutions(ctx, kind) if kind else solutions_section(
             sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
@@ -6831,6 +7089,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     headless_log: List[str] = []        # v79.9 (D4): a ruling's reference whole or not at all, every written section
     keyed = [(k, x if k == "orientamenti" else tracked("citations", x, whole_citations(x, headless_log)))
              for k, x in keyed]
+    ctx["excluded_dropped"] = list(dict.fromkeys(list(ctx.get("excluded_dropped") or []) + dropped_log))
+    log["excluded_dropped"] = ctx["excluded_dropped"]          # v79.14.3 (item 4)
     log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
                 "registry_labels_out": labels_log,
                 "coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
@@ -7120,10 +7380,18 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     # v79.12.4 (item 4): an element naming the event the certain facts narrate is never «da provare»
     event_proven = narrated_event_proven(every, " ".join(str(x.get("text") or "") for x in sentences
                                                          if issue_records_certain(x)))
-    # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
-    # assesses (the record below: §2, §4, the assessment, the objections' fallback)
-    records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
     binding = frame_binding(state, every)       # v79.14.2 (B): the verified frame binds the charge set (marks every)
+    # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
+    # assesses (the record below: §2, §4, the assessment, the objections' fallback). v79.14.3 (item 3): after the
+    # binding -- a record its rescue made the charge is printed
+    records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
+    if frame_admits_conduct(state):         # v79.14.3 (item 3): «Ammettere la condotta» only when the verified frame
+        posture = {**(posture or {}), ADMISSION_VERIFIED: True}         # says the client admits it -- else never
+    # v79.14.3 (item 4): excluded means excluded -- the records the binding excluded (and, below, the norms a verified
+    # «no» removed) never in §4's tables, «Fatti mancanti», §7's objections; only «Altri profili» may name them
+    fit_gone = [str(x.get("article")) for x in (state.get("fit_removed") or []) if isinstance(x, dict) and x.get("article")]
+    shown = {x: r for x, r in records.items() if not frame_excluded(r) and not any(_same_label(x, y) for y in fit_gone)}
+    excluded_dropped = [x for x in records if x not in shown]
     # v79.12.7 (item 2): the attenuanti the facts trigger (data/penal_lines.json «circumstance_triggers»: a diverbio, a
     # concrete step of the riparazione, a favourable element) -- candidates, held «da provare» by the fact
     triggers: Dict[str, Dict[str, Any]] = {}
@@ -7150,6 +7418,10 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     a = assessment(records, posture or {}, main, client, event=event_of(certain))      # v79.10.3 (C2, review)
     if binding["empty"]:        # v79.14.2 (B): no fallback to the excluded -- the corpus line's path for the charge
         binding["materia"] = binding_materia(state, binding["mode"])
+        # v79.14.3 (item 3): never the corpus line on a materia whose governing law is a code (corpus_line_on_code)
+        if corpus_line_on_code(CORPUS_LINE.format(materia=binding["materia"]) + ".",
+                               {"institutions": read_institutions(state.get("read") or {}), "records": records}):
+            binding["charge_in_corpus"] = True
         a = bound_assessment(a, binding)
     # v79.10.3 (C1): the riti the charge's pena from the procedural store admits (charge_rites); a precluded one is §8's.
     # (review) the gate on what is written (ctx["rites"]: compose's rites_out) is the imputato's before the sentence
@@ -7169,7 +7441,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     procedibilita = procedibility(records, rows)
     article_texts = [str((r.get("s") or {}).get("plain_text") or "") for r in rows or [] if r.get("_article")]
     facts_log: Dict[str, Any] = {}
-    facts = facts_split(sentences, records, penal, questions, article_texts, facts_log)
+    facts = facts_split(sentences, shown, penal, questions, article_texts, facts_log)     # v79.14.3 (item 4)
     note = aggravante_note(circ, records) if penal else ""          # v79 (E2): never in a civil matter
     when, when_points = temporal(case, posture or {}, abrogated)
     unknown = [x["name"] for x in rites if x["status"] == TO_VERIFY_RITE] if riti else []
@@ -7202,16 +7474,18 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "objection_party": objection_party(state, client, posture),   # v79.14.1 (item 6): the frame's under CASE_FRAME
            "facts": facts, "assessment": a, "riti": riti,
            "rites": rites, "riti_precluded": riti_out,                        # v79.10.3 (C1)
-           "subsumption": subsumption_section(records, order, by_id, circ, note),
+           "subsumption": subsumption_section(shown, order, by_id, circ, note),       # v79.14.3 (item 4): shown
            "temporal": when, "points": when_points,
            "litisconsorzio": litisconsorzio_lines(case, records, posture or {}),
            "stragiudiziale": stragiudiziale_line(posture or {}, procedibilita.get(a.get("article") or "", "")),
            "rulings": [r for r in rulings if isinstance(r, dict) and r.get("id") and r.get("massima")],
            "lines": list(lines),
-           "objections_fallback": fit_objections + objections_fallback(records, a, penal, by_id, objections),
+           "objections_fallback": [o for o in fit_objections + objections_fallback(shown, a, penal, by_id, objections)
+                                   if not cites_excluded(f"{o.get('obiezione') or ''} {o.get('risposta') or ''}",
+                                                         excluded_dropped + fit_gone)],      # v79.14.3 (item 4)
            "open_questions": [point_sentence(str(q.get("text") or "")) for q in questions or []      # v75b: §10
                               if isinstance(q, dict) and q.get("text")],
-           "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
+           "charged_prose": charged_prose(shown, by_id),                      # v75b: from its sussunzione rows
            "store_fields": _store_fields(rows),                               # v79 (B1): a rule statement's sources
            "records_view": view_log,                                          # v79.7: the ranked trace reads it
            "institutions": read_institutions(state.get("read") or {}),        # v79.8 (B2)
@@ -7234,6 +7508,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "refresh_inputs": {"main": main, "order": list(order), "aggravante_note": note,
                               "id_floor": max_element_id(all_records, every)}}
     ctx["frame_binding"] = binding                  # v79.14.2 (B)
+    ctx["excluded_dropped"] = list(excluded_dropped)        # v79.14.3 (item 4): compose adds what it drops
+    ctx["excluded_articles"] = list(dict.fromkeys(excluded_dropped + fit_gone))
     held_charge = str((ctx["charge"] or {}).get("article") or "")
     if binding["applied"] and held_charge and not binding_allows(binding["mode"], held_charge):
         binding_excluded(ctx, [held_charge])        # the held charge on the other side of the law: no charge printed
@@ -7242,7 +7518,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
         if isinstance(state, dict):
             binding_counters(state.setdefault("block_counters", {}), binding)
         _log("frame_binding", {k: binding.get(k) for k in ("mode", "charge_set", "kept", "excluded", "empty",
-                                                          "materia")})
+                                                          "materia", "frame_charge", "charge_in_corpus", "rescued")})
     if fit:                     # v79.13.0: the kept-named contests (thesis_candidates), the removed (out of scope)
         ctx["fit_contests"] = fit_contests
         ctx["fit_removed"] = [str(x.get("article")) for x in state.get("fit_removed") or [] if x.get("article")]

@@ -266,6 +266,13 @@ the verified frame binds the charge set (lawyer_method.frame_binding): frame_bin
 (the articles kept from the charge, a list: a penal frame's civil articles, a civil frame's c.p. ones) and
 frame_binding_empty (the binding emptied the charge set: §1's corpus line, no fallback to the excluded).
 
+v79.14.3 (items 1-4; block_counters, in the counters table): item 1 -- elements_contestato (elements only another
+party's allegation supports: «contestato», never «integrato») and theses_from_contestato (the plan's candidates on one);
+item 2 -- the fit's «fatto_citato» verifies a «no» or a «dipende» (fit_no_verified, fit_no_unverified_quote, fit_removed
+unchanged); item 3 -- frame_binding_rescued (the emptied charge set rebuilt on the frame's verified charge article),
+corpus_line_code stays a must-be-0 counter (never the corpus line on a code article); item 4 -- excluded_dropped (the
+articles the binding excluded or a verified «no» removed, kept out of §4, §5, §7 and «Fatti mancanti»).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json

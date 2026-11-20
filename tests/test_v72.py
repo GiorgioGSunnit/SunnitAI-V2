@@ -275,4 +275,4 @@ def test_the_replay_checks_a_reply_against_the_logged_candidates(tmp_path, monke
     M.method_plan(ctx, call=lambda messages: {"valutazioni": {}})
     log = json.loads((tmp_path / "thesis_t72.json").read_text(encoding="utf-8"))
     checked = thesis_replay.check({"valutazioni": {"T9": {"realismo": "alto"}}}, log)
-    assert checked["main"].startswith("Ammettere la condotta") and checked["dropped"] == ["T9"]
+    assert checked["main"] == M.CONTAINMENT_LINE and checked["dropped"] == ["T9"]     # v79.14.3 (item 3)

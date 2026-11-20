@@ -67,8 +67,15 @@ CONTRATTO = {"article": "1439 c.c.", "rubrica": "Dolo", "text": ART_1439}
 TRUFFA = {"article": "640 c.p.", "rubrica": "Truffa", "text": ART_640}
 
 
-def _item(article, fit, perche, ambito="fattispecie", condizione=""):
-    return {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
+def _item(article, fit, perche, ambito="fattispecie", condizione="", fatto=None):
+    """v79.14.3 (item 2): a «no» or a «dipende» carries its fact quote in «fatto_citato» (fatto; None: no such key)."""
+    out = {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
+    if fatto is not None:
+        out["fatto_citato"] = fatto
+    return out
+
+
+PM = "Il pubblico ministero procede per truffa"
 
 
 def _judge(norm, item, case_text=CASE_TEXT):
@@ -80,30 +87,35 @@ def _judge(norm, item, case_text=CASE_TEXT):
 # --- A. the verification by verdict type ------------------------------------------------------------------------------
 
 def test_a_verified_no_quotes_the_fact_it_rests_on_no_article_quote_needed():
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3)."))
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", fatto=PM))
     assert rec["verified"] and rec["fit"] == "no" and rec["passage"] == ""
     assert rec["fact_quotes"] == ["Il pubblico ministero procede per truffa"]
     c = res["counters"]
     assert c["fit_no"] == 1 and c["fit_no_verified"] == 1 and c["fit_no_unverified_quote"] == 0
     # the case's own spelling: «’» for «'», case, the spaces, the closing stop -- the same normalisation as the frame
-    rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«bruno gelso ha venduto a carla tasso un orologio "
-                                                     "dichiarandolo d’oro.» (S1)"))[1]
+    rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«bruno gelso ha venduto a carla tasso un orologio dichiarandolo "
+                                                     "d’oro.» (S1)",
+                                  fatto="«bruno gelso ha venduto a carla tasso un orologio dichiarandolo d’oro.»"))[1]
     assert rec["verified"] and rec["facts"] == ["S1"]
     # a quote of the article beside the fact: verified on the article's text, kept as the passage
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro con un bonifico» (S2), non "
-                                                     "«annullamento del contratto»."))[1]
+                                                     "«annullamento del contratto».",
+                                  fatto="Carla Tasso ha pagato 4.000 euro con un bonifico"))[1]
     assert rec["verified"] and rec["passage"] == "annullamento del contratto" and rec["facts"] == ["S2"]
 
 
-@pytest.mark.parametrize("perche,why", [
-    ("Il contratto non è stato annullato (S1).", "nessuna frase dei fatti citata"),             # no quote at all
-    ("La norma riguarda il «contratto» (S1).", "nessuna frase dei fatti citata"),                # the article's only
-    ("«Bruno Gelso ha regalato a Carla Tasso un orologio» (S1).", "citazione non nei fatti"),    # not in the text
-    ("«Carla Tasso ha pagato 5.000 euro» (S2).", "citazione non nei fatti"),                     # a number changed
-    ("«orologio dichiarato d'oro» (S1).", "citazione non nei fatti"),                            # stem, not exact
+@pytest.mark.parametrize("perche,fatto,why", [
+    # v79.14.3 (item 2): the quote is «fatto_citato»'s -- the perché is no longer read for it
+    ("Il contratto non è stato annullato (S1).", None, "fatto_citato mancante"),                 # no field at all
+    ("La norma riguarda il «contratto» (S1).", "", "fatto_citato mancante"),                     # empty
+    ("«Il pubblico ministero procede per truffa» (S3).", None, "fatto_citato mancante"),         # quoted in perché only
+    ("Il fatto (S1) non riguarda la norma.", "Bruno Gelso ha regalato a Carla Tasso un orologio",
+     "fatto_citato non nei fatti"),                                                              # not in the text
+    ("Il fatto (S2) non riguarda la norma.", "Carla Tasso ha pagato 5.000 euro", "fatto_citato non nei fatti"),  # number
+    ("Il fatto (S1) non riguarda la norma.", "orologio dichiarato d'oro", "fatto_citato non nei fatti"),  # stem
 ])
-def test_an_unverified_no_keeps_the_norm_and_is_counted_as_a_quote_failure(perche, why):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche))
+def test_an_unverified_no_keeps_the_norm_and_is_counted_as_a_quote_failure(perche, fatto, why):
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, fatto=fatto))
     assert not rec["verified"] and rec["quote_failed"] and rec["reason"].startswith(why), rec["reason"]
     c = res["counters"]
     assert c["fit_no"] == 0 and c["fit_no_verified"] == 0 and c["fit_no_unverified_quote"] == 1
@@ -112,7 +124,7 @@ def test_an_unverified_no_keeps_the_norm_and_is_counted_as_a_quote_failure(perch
 
 def test_a_no_quoting_a_fact_but_adding_a_rule_is_still_discarded():
     res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3): la norma "
-                                                          "vale solo per i contratti scritti."))
+                                                          "vale solo per i contratti scritti.", fatto=PM))
     assert not rec["verified"] and rec["added_content"] and not rec["quote_failed"]
     assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_no_unverified_quote"] == 0
 
@@ -134,24 +146,25 @@ def test_a_si_without_a_quote_of_the_article_stays_unverified():
     "«Il pubblico ministero procede per truffa», non un contratto (S3).",
 ])
 def test_a_no_whose_unquoted_words_are_the_articles_not_the_facts_is_discarded(perche):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche))
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, fatto=PM))
     assert not rec["verified"] and rec["added_content"] and not rec["quote_failed"], rec["reason"]
     assert res["counters"]["fit_no_verified"] == 0 and ap.effects(res, [])["removed"] == []
     # the article's words quoted are verified on its text and may carry the «no»; the rubrica's word may be said
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non "
-                                                     "«annullamento del contratto»."))[1]
+                                                     "«annullamento del contratto».", fatto=PM))[1]
     assert rec["verified"] and rec["passage"] == "annullamento del contratto"
-    rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non dolo."))[1]
+    rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non dolo.",
+                                  fatto=PM))[1]
     assert rec["verified"], rec["reason"]
 
 
-@pytest.mark.parametrize("perche", [
-    "«truffa» (S3).",                                                   # a word, not a fact
-    "«per truffa» (S3).",
-    "«con un bonifico. Il pubblico ministero procede» (S2, S3).",       # across a sentence break
+@pytest.mark.parametrize("fatto", [
+    "truffa",                                                           # a word, not a fact
+    "per truffa",
+    "con un bonifico. Il pubblico ministero procede",                   # across a sentence break
 ])
-def test_a_fact_quote_is_a_clause_of_one_sentence_never_a_word_nor_two_sentences(perche):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche))
+def test_a_fact_quote_is_a_clause_of_one_sentence_never_a_word_nor_two_sentences(fatto):
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", f"«{fatto}» (S2, S3).", fatto=fatto))
     assert not rec["verified"] and rec["quote_failed"], rec["reason"]
     assert res["counters"]["fit_no_unverified_quote"] == 1
 
@@ -173,10 +186,11 @@ def test_the_fact_source_is_the_users_words_never_the_pipelines_labels(monkeypat
     assert "PRECISAZIONI DEL CLIENTE" in flow.case_text(state)            # the writer's case text keeps its label
     source = flow.fact_source(state)
     assert source == "Il pubblico ministero procede per truffa.\nHo pagato a Carla il prezzo intero."
-    rec = ap.verify(_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso».", ambito="rimedio"),
-                    CONTRATTO, FACTS, source)
+    rec = ap.verify(_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso».", ambito="rimedio",
+                          fatto="PRECISAZIONI DEL CLIENTE fornite dopo il caso"), CONTRATTO, FACTS, source)
     assert not rec["verified"] and rec["quote_failed"]
-    rec = ap.verify(_item("1439 c.c.", "no", "«Ho pagato a Carla il prezzo intero» (S1).", ambito="rimedio"), CONTRATTO,
+    rec = ap.verify(_item("1439 c.c.", "no", "«Ho pagato a Carla il prezzo intero» (S1).", ambito="rimedio",
+                          fatto="Ho pagato a Carla il prezzo intero"), CONTRATTO,
                     [{"id": "S1", "text": "Ho pagato a Carla il prezzo intero.", "certainty": "accertato"}], source)
     assert rec["verified"], rec["reason"]
     upload = {"text": "Il pubblico ministero procede per truffa.", "request": "Valuta il caso", "additions": []}
@@ -188,7 +202,8 @@ def test_the_fact_source_is_the_users_words_never_the_pipelines_labels(monkeypat
         _req(2, "i raggiri usati da uno dei contraenti", "da provare")]}}
     st = _flow_state(CASE_TEXT, sents, records)
     st["additions"] = ["Ho pagato a Carla il prezzo intero."]
-    reply = {"giudizi": [_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso» (S3).")]}
+    reply = {"giudizi": [_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso» (S3).",
+                               fatto="PRECISAZIONI DEL CLIENTE fornite dopo il caso")]}
     monkeypatch.setattr(ap, "_default_call", lambda m, k: json.dumps(reply, ensure_ascii=False))
     assert flow.applicability_fit(st, IMPUTATO, [_row("1439", "c.c.", ART_1439, "Dolo")], set(), []) == set()
     assert "1439 c.c." in st["records"] and st["block_counters"]["fit_no_unverified_quote"] == 1
@@ -207,20 +222,23 @@ def test_the_fact_quote_is_an_exact_substring_never_cut_after_a_negation():
 def test_the_case_text_decides_not_an_assumed_line():
     facts = FACTS + [{"id": "S4", "text": "Parte assistita assunta: Bruno Gelso", "certainty": "assunto"}]
     res = ap.judge([CONTRATTO], facts, "imputato", case_text=CASE_TEXT, call=lambda m, k: json.dumps(
-        {"giudizi": [_item("1439 c.c.", "no", "«Parte assistita assunta: Bruno Gelso» (S4).")]}))
+        {"giudizi": [_item("1439 c.c.", "no", "«Parte assistita assunta: Bruno Gelso» (S4).",
+                           fatto="Parte assistita assunta: Bruno Gelso")]}))
     assert res["counters"]["fit_no_unverified_quote"] == 1
     # with no case text given, the facts' own text is read
     res = ap.judge([CONTRATTO], FACTS, "imputato", call=lambda m, k: json.dumps(
-        {"giudizi": [_item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro» (S2).")]}))
+        {"giudizi": [_item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro» (S2).",
+                           fatto="Carla Tasso ha pagato 4.000 euro")]}))
     assert res["counters"]["fit_no_verified"] == 1
 
 
 def test_the_prompt_gains_exactly_one_line_on_the_no():
+    # v79.14.3 (item 2): 79.14.2's prose line removed -- the fact quote is the schema's «fatto_citato» field instead
     lines = ap.config()["prompt_system"]
-    added = [x for x in lines if x.startswith('- con "no"')]
-    assert added == ['- con "no": il "perche" si giustifica citando tra « » le parole esatte della frase dei fatti su '
-                     'cui il "no" si fonda, nient\'altro;']
-    assert lines[lines.index(added[0]) - 1].startswith('- "perche": UNA sola frase.')
+    assert [x for x in lines if x.startswith('- con "no"')] == []
+    field = [x for x in lines if x.startswith('- "fatto_citato"')]
+    assert len(field) == 1 and lines[lines.index(field[0]) - 1].startswith('- "perche": UNA sola frase.')
+    assert '"fatto_citato": "..."' in lines[-1]
     assert len(lines) == 18
 
 
@@ -257,7 +275,7 @@ def test_a_verified_no_removes_the_norm_logs_the_removal_and_counts_it(monkeypat
     rows = [_row("640", "c.p.", ART_640, "Truffa"), _row("1439", "c.c.", ART_1439, "Dolo")]
     reply = {"giudizi": [_item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi o "
                                                  "raggiri»."),
-                         _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).")]}
+                         _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", fatto=PM)]}
     monkeypatch.setattr(ap, "_default_call", lambda m, k: json.dumps(reply, ensure_ascii=False))
     removed = flow.applicability_fit(state, IMPUTATO, rows, set(), [])
     assert removed == {"1439 c.c."} and "1439 c.c." not in state["records"] and "640 c.p." in state["records"]
@@ -397,9 +415,11 @@ def test_penal_frame_with_an_indagato_excludes_a_civil_code_candidate_from_the_c
     assert b["applied"] and b["excluded"] == ["2043 c.c."] and b["kept"] == ["640 c.p."] and not b["empty"]
     assert "2043 c.c." not in _arts(ctx) and "640 c.p." in _arts(ctx)
     assert ctx["assessment"]["article"] == "640 c.p."
-    assert "2043 c.c." in ctx["records"]                                  # context: still in the schede
+    assert "2043 c.c." in ctx["records"]                                  # marked, never printed
     schede = M.records_block(ctx["records"])
-    assert "- art. 2043 c.c. — Risarcimento per fatto illecito\n" in schede + "\n"
+    # v79.14.3 (item 4): excluded means excluded -- no scheda, no §4 table, no «Fatti mancanti» row
+    assert "2043 c.c." not in schede and "2043" not in _section(answer, "norme")
+    assert "2043" not in _section(answer, "fatti")
     assert "art. 640 c.p. — Truffa [addebito o domanda contro il cliente]" in schede
     esito = next(x for x in answer.splitlines() if "**Esito probabile**" in x)
     assert "640 c.p." in esito and "2043" not in esito
@@ -475,21 +495,21 @@ def test_a_charge_set_the_binding_empties_takes_the_corpus_line_never_the_exclud
     ctx, answer = got["ctx"], got["answer"]
     b = ctx["frame_binding"]
     assert b["empty"] and b["excluded"] == ["2043 c.c."] and b["kept"] == [] and b["materia"] == "truffa"
-    assert ctx["assessment"]["article"] == "" and ctx["assessment"]["frame_binding_empty"]
-    assert ctx["assessment"]["why"] == "il corpus non contiene ancora informazioni sufficienti su truffa"
+    assert ctx["assessment"]["article"] == ""
     assert [c["kind"] for c in ctx["candidates"]] == ["contenimento"]        # no line on the excluded article
+    assert not ctx["candidates"][0]["tesi"].startswith("Ammettere")          # v79.14.3 (item 3): never under a frame
     summary = _section(answer, "sintesi")
-    assert "Il corpus non contiene ancora informazioni sufficienti su truffa: il parere si limita alle norme dei " \
-           "codici." in summary
     esito = next(x for x in answer.splitlines() if "**Esito probabile**" in x)
-    assert "2043" not in esito and "corpus non contiene" in esito
+    assert "2043" not in esito
     c = got["state"]["block_counters"]
     assert c["frame_binding_empty"] == 1 and c["frame_binding_excluded"] == ["2043 c.c."]
-    # (review) the honesty line on «truffa» -- a code institution (640 c.p.) -- counted like any other, never masked:
-    # the brief's corpus path and 79.14.1's must-be-0 code rule meet here, visibly
-    assert ctx["corpus_line_code"] == 1 == len(M.corpus_line_on_code(summary, ctx))
-    M.refresh_after_elements(ctx)                       # an element added after prepare: the why stays the corpus's
-    assert ctx["assessment"]["why"] == "il corpus non contiene ancora informazioni sufficienti su truffa"
+    # v79.14.3 (item 3): «truffa» is a code institution (640 c.p.) -- the corpus line never prints on it (79.14.2
+    # printed it and counted corpus_line_code 1); nor is it the forecast's why
+    assert b["charge_in_corpus"] and "corpus non contiene" not in summary and "corpus non contiene" not in esito
+    assert ctx["corpus_line_code"] == 0 == len(M.corpus_line_on_code(summary, ctx))
+    assert "corpus" not in str(ctx["assessment"].get("why") or "")
+    M.refresh_after_elements(ctx)
+    assert "corpus" not in str(ctx["assessment"].get("why") or "")
     # the frame names no charge: the data's words
     reply = _penal_reply(addebito_o_domanda=None)
     assert M.binding_materia({"case_frame": cf.verify(reply, PENAL_TEXT)}, "penale") == "questo addebito"

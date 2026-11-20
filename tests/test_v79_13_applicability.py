@@ -62,8 +62,18 @@ FACTS_ACCONTO = [{"id": "S1", "text": "Il cliente ha versato a Beta 3.000 euro c
                   "certainty": "allegato"}]
 
 
-def _item(article, fit, perche, ambito="fattispecie", condizione=""):
-    return {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
+def _item(article, fit, perche, ambito="fattispecie", condizione="", fatto=None):
+    """v79.14.3 (item 2): a «no» or a «dipende» carries its fact quote in «fatto_citato» (fatto; None: no such key)."""
+    out = {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
+    if fatto is not None:
+        out["fatto_citato"] = fatto
+    return out
+
+
+LOAN_FACT = "da restituire in un'unica soluzione"         # FACTS_MUTUO's S1, as a «no» cites it
+ACCONTO_FACT = "sul prezzo dei lavori"                     # FACTS_ACCONTO's S1
+FERITA_FACT = "di aver riportato una ferita"               # FACTS_RISSA's S2
+COLPITI_FACT = "si sono colpiti a vicenda davanti a un bar"     # FACTS_RISSA's S1
 
 
 def _reply(*items):
@@ -102,7 +112,8 @@ def test_rissa_si_on_the_quoted_text_passes():
 def test_rissa_three_persons_rule_not_in_the_text_is_rejected_and_counted():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "no", "La rissa richiede almeno tre persone, mentre i fatti descrivono «Tizio e Caio, due "
-                          "persone» (S1)."))     # v79.14.2 (A): a «no» quotes the facts -- an invented count still out
+                          "persone» (S1).", fatto="Tizio e Caio, due persone"))     # v79.14.3: an invented count
+                                                                                      # still out
     assert not rec["verified"] and rec["added_content"]
     assert "tre" in rec["reason"] and "almeno" in rec["reason"]
     c = res["counters"]
@@ -111,9 +122,10 @@ def test_rissa_three_persons_rule_not_in_the_text_is_rejected_and_counted():
 
 def test_rissa_no_quoting_a_passage_the_text_does_not_have_is_rejected():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
-        "588 c.p.", "no", "Tizio e Caio sono due persone (S1), non una «rissa tra almeno tre persone»."))
-    # v79.14.2 (A): a «no»'s quote in neither the facts nor the article -- unverified, counted as a quote failure
-    assert not rec["verified"] and "citazione non nei fatti né nel testo dell'articolo" in rec["reason"]
+        "588 c.p.", "no", "Tizio e Caio sono due persone (S1), non una «rissa tra almeno tre persone».",
+        fatto="rissa tra almeno tre persone"))
+    # v79.14.3 (item 2): a «no»'s cited fact not in the case text -- unverified, counted as a quote failure
+    assert not rec["verified"] and rec["reason"].startswith("fatto_citato non nei fatti")
     assert res["counters"]["fit_unverified"] == 1 and res["counters"]["fit_added_content"] == 0
     assert res["counters"]["fit_no_unverified_quote"] == 1
 
@@ -121,8 +133,9 @@ def test_rissa_no_quoting_a_passage_the_text_does_not_have_is_rejected():
 def test_rissa_dipende_with_a_grounded_question_passes_and_touches_its_element():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Caio sostiene di aver riportato una ferita (S2): dipende se taluno «riporta lesione "
-                               "personale».", condizione="Caio ha riportato una lesione personale?"))[1]
-    assert rec["verified"] and rec["fit"] == "dipende"
+                               "personale».", condizione="Caio ha riportato una lesione personale?",
+        fatto=FERITA_FACT))[1]
+    assert rec["verified"] and rec["fit"] == "dipende" and rec["fact_quotes"] == [FERITA_FACT]
     assert rec["condizione"] == "Caio ha riportato una lesione personale?"
     assert rec["touches"]["elements"] == ["E2"] and rec["touches"]["commi"] == ["2"]
 
@@ -130,14 +143,15 @@ def test_rissa_dipende_with_a_grounded_question_passes_and_touches_its_element()
 def test_rissa_dipende_reasoning_adding_the_penalty_rule_is_rejected():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Caio sostiene di aver riportato una ferita (S2), e la pena cambia se taluno «riporta "
-                               "lesione personale».", condizione="Caio ha riportato una lesione personale?"))[1]
+                               "lesione personale».", condizione="Caio ha riportato una lesione personale?",
+        fatto=FERITA_FACT))[1]
     assert not rec["verified"] and rec["added_content"] and "pena" in rec["reason"] and "cambia" in rec["reason"]
 
 
 def test_rissa_invented_condition_is_rejected_and_counted():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Tizio e Caio si sono colpiti a vicenda (S1): «Chiunque partecipa a una rissa».",
-        condizione="Alla rissa hanno partecipato almeno tre persone?"))
+        condizione="Alla rissa hanno partecipato almeno tre persone?", fatto=COLPITI_FACT))
     assert not rec["verified"] and rec["added_content"] and "condizione" in rec["reason"]
     assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_dipende"] == 0
 
@@ -145,18 +159,19 @@ def test_rissa_invented_condition_is_rejected_and_counted():
 def test_dipende_condition_must_be_a_question():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Tizio e Caio si sono colpiti a vicenda (S1): «Chiunque partecipa a una rissa».",
-        condizione="Bisogna sapere chi ha colpito per primo."))[1]
+        condizione="Bisogna sapere chi ha colpito per primo.", fatto=COLPITI_FACT))[1]
     assert not rec["verified"] and rec["reason"] == "condizione non è una domanda"
 
 
 def test_loan_without_instalments_1819_no_quoting_rateale_passes():
     res, rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-        ambito="rimedio"), role="attore")
+        ambito="rimedio", fatto=LOAN_FACT), role="attore")
     assert rec["verified"] and rec["fit"] == "no" and rec["passage"] == "rateale" and rec["ambito"] == "rimedio"
     assert rec["fact_quotes"] == ["da restituire in un'unica soluzione"] and rec["facts"] == ["S1"]
     assert res["counters"]["fit_no"] == 1 and res["counters"]["fit_no_verified"] == 1
-    # v79.14.2 (A): the 79.13 form -- the article quoted, no fact -- is no longer a verified «no»
+    # v79.14.2 (A): the 79.13 form -- the article quoted, no fact -- is no longer a verified «no» (v79.14.3: no
+    # «fatto_citato»)
     old = _one(MUTUO, FACTS_MUTUO, _item("1819 c.c.", "no", "Il prestito (S1) è da restituire in un'unica soluzione, "
                                                             "non «rateale».", ambito="rimedio"))[0]
     assert old["counters"]["fit_no"] == 0 and old["counters"]["fit_no_unverified_quote"] == 1
@@ -165,36 +180,42 @@ def test_loan_without_instalments_1819_no_quoting_rateale_passes():
 def test_1819_naming_the_article_itself_is_no_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "L'art. 1819 c.c. non si applica: il prestito è «da restituire in un'unica soluzione» "
-                           "(S1), non «rateale».", ambito="rimedio"))[1]
+                           "(S1), non «rateale».", ambito="rimedio", fatto=LOAN_FACT))[1]
     assert rec["verified"], rec["reason"]
 
 
 def test_another_norms_number_is_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale», come art. 1820.",
-        ambito="rimedio"))[1]
+        ambito="rimedio", fatto=LOAN_FACT))[1]
     assert not rec["verified"] and rec["added_content"] and "1820" in rec["reason"]
 
 
 def test_advance_payment_646_judged_on_altrui_with_the_reasoning_verified():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «il denaro o la cosa mobile "
-                          "altrui»: è di Beta."))
+                          "altrui»: è di Beta.", fatto=ACCONTO_FACT))
     assert rec["verified"] and rec["fit"] == "no" and "altrui" in rec["passage"] and rec["comma"] == "1"
     assert res["counters"]["fit_no"] == 1
 
 
 def test_646_misquoted_passage_fails():
     for quote in ("il denaro altrui", "cosa mobile propria"):
+        # v79.14.3 (item 2): a «no»'s perché is no longer read for quotes -- a misquote of the article is never kept as
+        # its passage (nothing prints it); the «si» keeps the article-passage check and still fails on it
         rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-            "646 c.p.", "no", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «{quote}»."))[1]
-        assert not rec["verified"] and "citazione non nei fatti né nel testo" in rec["reason"], quote
+            "646 c.p.", "no", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «{quote}».",
+            fatto=ACCONTO_FACT))[1]
+        assert rec["passage"] == "" and quote not in rec["passage"], quote
+        rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
+            "646 c.p.", "si", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) è «{quote}»."))[1]
+        assert not rec["verified"] and rec["reason"].startswith("passo non nel testo"), quote
 
 
 def test_646_reasoning_adding_a_rule_fails():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
-                          "passa a chi lo riceve."))
+                          "passa a chi lo riceve.", fatto=ACCONTO_FACT))
     assert not rec["verified"] and rec["added_content"] and "proprieta" in rec["reason"]
     assert res["counters"]["fit_added_content"] == 1
 
@@ -203,7 +224,7 @@ def test_reviewed_note_grounds_the_reasoning():
     norm = dict(APPROPRIAZIONE, note="Nell'acconto la proprietà del denaro passa a chi lo riceve.")
     rec = _one(norm, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
-                          "passa a chi lo riceve."))[1]
+                          "passa a chi lo riceve.", fatto=ACCONTO_FACT))[1]
     assert rec["verified"], rec["reason"]
 
 
@@ -249,7 +270,8 @@ def test_out_of_schema_values_are_discarded():
     for item, why in ((_item("588 c.p.", "forse", ok), "fit fuori schema"),
                       (_item("588 c.p.", "si", ok, ambito="altro"), "ambito fuori schema"),
                       (_item("588 c.p.", "si", ""), "perché mancante"),
-                      (_item("588 c.p.", "dipende", ok), "dipende senza condizione")):
+                      (_item("588 c.p.", "dipende", ok, fatto=COLPITI_FACT), "dipende senza condizione"),
+                      (_item("588 c.p.", "dipende", ok), "fatto_citato mancante")):       # v79.14.3 (item 2)
         rec = _one(RISSA, FACTS_RISSA, item)[1]
         assert not rec["verified"] and rec["reason"].startswith(why), (item, rec["reason"])
     assert _one(RISSA, FACTS_RISSA, _item("588 c.p.", "Sì", ok))[1]["verified"]
@@ -261,7 +283,7 @@ def test_two_sentences_are_discarded():
     assert not rec["verified"] and rec["reason"] == "perché di più frasi"
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Secondo l'art. 1819 c.c. Il prestito è «da restituire in un'unica soluzione» (S1), non "
-                           "«rateale».", ambito="rimedio"))[1]
+                           "«rateale».", ambito="rimedio", fatto=LOAN_FACT))[1]
     assert rec["verified"], rec["reason"]
 
 
@@ -396,7 +418,8 @@ def test_schema_context_only_with_schemas_on(monkeypatch):
 
 def test_counters_add_up_and_the_flag_defaults_off(monkeypatch):
     items = [_item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa»."),
-             _item("1819 c.c.", "no", "«Tizio e Caio, due persone» (S1): non «rateale» con tre persone.")]
+             _item("1819 c.c.", "no", "«Tizio e Caio, due persone» (S1): non «rateale» con tre persone.",
+                   fatto="Tizio e Caio, due persone")]
     res = ap.judge([RISSA, MUTUO], FACTS_RISSA, "imputato", call=lambda m, k: _reply(*items))
     c = res["counters"]
     assert c["fit_judged"] == c["fit_si"] + c["fit_no"] + c["fit_dipende"] + c["fit_unverified"] == 2

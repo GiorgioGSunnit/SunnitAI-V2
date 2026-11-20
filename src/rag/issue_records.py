@@ -677,10 +677,60 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
         rule, source = element_rule(req)
         req["grading_rule"] = {"rule": rule, "source": source, "before": before, "after": req["status"]}
         _log_rule(req, rule, source, before)
+    contested_mark(req, by_id, base_sup)    # v79.14.3 (item 1): an element only another party's allegation supports
     from . import applicability                 # v79.13.0: a «dipende» the applicability judgment marked -- «da
     if req.get("fit_open") and applicability.enabled():         # provare» until the user answers the question,
         from .applicability import FIT_OPEN_WHY                 # whatever the link says (review: the flag on only)
         req["status"], req["why"] = DA_PROVARE, FIT_OPEN_WHY.format(question=req["fit_open"])
+
+
+# v79.14.3 (item 1): allegations never integrate an element. An element whose supporting sentences (the link's, before
+# v60t moved a named counterparty's to the contradiction path, and the ones settle added) are ALL allegations of a party
+# other than the client (§2's «allegazione» with its speaker: interactive_flow.alleging_party, «alleged_by») is
+# «contestato»: its status «da provare» (never «provato»: it counts as no proven element anywhere -- §1/§9's «x elementi
+# su y», the thesis scoring -- and is contestable as every «da provare» one), req["contested_by"] the party,
+# req["contested_ids"] the allegations. A certain fact bearing on it among them (mixed support), a contradiction that
+# excludes it («non risulta»), an allegation of the client's own (his statement, even against himself) or one with no
+# speaker: unchanged.
+CONTESTATO = "contestato"
+CONTESTED_WHY = "lo afferma solo un'allegazione {parte} ({ids}): contestato"     # my draft
+
+
+def contested(req: Optional[Dict[str, Any]]) -> bool:
+    """v79.14.3 (item 1): the element is «contestato» -- «da provare», resting only on another party's allegation."""
+    from .interactive_flow import DA_PROVARE
+    return isinstance(req, dict) and bool(req.get("contested_by")) and (req.get("status") or DA_PROVARE) == DA_PROVARE
+
+
+def of_party(party: str) -> str:
+    """«di <parte>» with its articled preposition («della società», «di Carla Tasso»)."""
+    from . import party_names
+    who = " ".join(str(party or "").split())
+    if _ART_LEAD_RE.match(who):
+        who = who[:1].lower() + who[1:]
+    return party_names.contract(f"di {who}").strip()
+
+
+_ART_LEAD_RE = re.compile(r"^(?:Il|Lo|La|I|Gli|Le|L['’])(?:\s|(?<=['’]))")
+
+
+def contested_mark(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], base_sup: Sequence[str] = ()) -> None:
+    """v79.14.3 (item 1), in place at the end of settle: the «contestato» mark (see CONTESTATO) set or cleared."""
+    from .interactive_flow import DA_PROVARE, NON_RISULTA
+    req.pop("contested_by", None)
+    req.pop("contested_ids", None)
+    if req.get("kind", "requisito") != "requisito" or req.get("status") == NON_RISULTA:
+        return
+    ids = list(dict.fromkeys([str(i) for i in base_sup or []] + [str(i) for i in req.get("supporting") or []]))
+    sup = [by_id[i] for i in ids if i in by_id]
+    if not sup or any(certain_fact(s, req.get("text") or "") for s in sup):
+        return
+    if not all(s.get("alleged_by") for s in sup):
+        return
+    req["status"] = DA_PROVARE
+    req["contested_by"] = str(sup[0]["alleged_by"])
+    req["contested_ids"] = [s["id"] for s in sup]
+    req["why"] = CONTESTED_WHY.format(parte=of_party(req["contested_by"]), ids=", ".join(req["contested_ids"]))
 
 
 def condition_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], status: str, why: str) -> Tuple[str, str]:

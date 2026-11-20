@@ -90,8 +90,9 @@ def _fit_reply(messages, kwargs):
                                                      "artifizi o raggiri»."),
              "646 c.p.": _fit_item("646 c.p.", "si", f"Bruno Gelso ha venduto a Carla Tasso un orologio ({sale}): "
                                                      "«si appropria il denaro o la cosa mobile altrui»."),
-             "1439 c.c.": _fit_item("1439 c.c.", "no", f"«Il pubblico ministero procede per truffa» ({pm}).",
-                                    ambito="rimedio"),
+             "1439 c.c.": dict(_fit_item("1439 c.c.", "no", f"«Il pubblico ministero procede per truffa» ({pm}).",
+                                         ambito="rimedio"),       # v79.14.3 (item 2): the fact in «fatto_citato»
+                               fatto_citato="Il pubblico ministero procede per truffa"),
              "2043 c.c.": _fit_item("2043 c.c.", "si", f"Carla Tasso chiede a Bruno Gelso il risarcimento del danno "
                                                        f"({harm}): "
                                                        "«obbliga colui che ha commesso il fatto a risarcire il danno».",
@@ -251,7 +252,8 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     binding = by["lawyer_method_frame_binding"][0][0]
     assert binding["mode"] == "penale" and binding["charge_set"] == ["640 c.p.", "2043 c.c."]
     assert binding["kept"] == ["640 c.p."] and binding["excluded"] == ["2043 c.c."] and not binding["empty"]
-    assert state["records"]["2043 c.c."]["side"] == "threat" and "**Art. 2043 c.c." in answer      # context
+    # v79.14.3 (item 4): excluded means excluded -- marked in the records, never printed (no §4 block, no table)
+    assert state["records"]["2043 c.c."]["side"] == "threat" and "**Art. 2043 c.c." not in answer
     plan_log = by["lawyer_method_plan"][0][0]
     offered = [x for x in plan_log["candidate_articles"] if x]
     assert offered and all(x.endswith("c.p.") for x in offered), offered

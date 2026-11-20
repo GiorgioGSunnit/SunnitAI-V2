@@ -94,7 +94,12 @@ def test_every_thesis_barred_falls_back_to_the_posture_tables_line():
     plan = M.clean_method({"soluzioni": [{"tesi": "Assoluzione", "contesta": ["R1"]},
                                          {"tesi": "Nesso interrotto", "contesta": ["R2"]}]})
     sols, main = M.coherent_solutions(plan, recs, a, ["Giudizio abbreviato: x"], None, IMPUTATO)
-    assert sols[main]["tesi"] == "Ammettere la condotta, contestare l'inquadramento / contenere la pena"
+    # v79.14.3 (item 3): «Ammettere la condotta» only on a verified admission -- else the containment line
+    assert sols[main]["tesi"] == M.CONTAINMENT_LINE
+    admits = {**IMPUTATO, M.ADMISSION_VERIFIED: True}
+    sols_v, main_v = M.coherent_solutions(plan, recs, M.assessment(recs, admits), ["Giudizio abbreviato: x"], None,
+                                          admits)
+    assert sols_v[main_v]["tesi"] == "Ammettere la condotta, contestare l'inquadramento / contenere la pena"
     assert sols[main]["fallback"] and ENTRY["fallback_main"] == "ammettere la condotta, contestare l'inquadramento / " \
                                                                 "contenere la pena"
 
@@ -154,7 +159,7 @@ def test_the_lawyers_case_containment_leads_and_his_minority_thesis_stays_labell
          "minoritaria": True},
         {"tesi": "Assenza di nesso causale", "contesta": ["R2"], "realismo": "medio"}], "tesi_principale": 1})
     sols, main = M.coherent_solutions(plan, recs, a, ["Giudizio abbreviato: x"], None, IMPUTATO)
-    assert sols[main]["tesi"].startswith("Ammettere la condotta") and main == 0
+    assert sols[main]["tesi"] == M.CONTAINMENT_LINE and main == 0        # v79.14.3 (item 3): never «Ammettere…»
     assert sols[1]["contests_integrated"] == ["R1"] and sols[2]["barred"] == ["R2"]
     assert M.settle_objective(a, sols, recs)["obiettivo"] == M.CONTENIMENTO     # a minority thesis is no objective
     import rubric_score as R
@@ -286,7 +291,7 @@ def test_a_subordinate_line_equal_to_the_main_one_is_omitted():
     text = M.solutions_section(fallback, 0, {"subordinata": ""}, ["Giudizio abbreviato: riduzione"], "x")
     # v79.12.7 (item 7): the table prints the main line, the strategy names it (once per section)
     assert f"- {M.STRATEGY_MAIN_IN_TABLE}." in text and "  - Giudizio abbreviato" in text
-    assert text.count("Ammettere la condotta") == 1
+    assert text.count(M.CONTAINMENT_LINE) == 1 and "Ammettere la condotta" not in text     # v79.14.3 (item 3)
     assert "Linea subordinata" not in text
 
 
@@ -364,6 +369,6 @@ def test_the_thesis_call_is_logged_and_replays_to_the_same_check(tmp_path, monke
     assert log["elements"]["R2"]["status"] == "provato" and log["parsed"] == reply
     checked = thesis_replay.check(log["parsed"], log)
     # v72: the log carries the code's candidates -- the reply's own theses are dropped, the charge fully integrato
-    assert checked["main"].startswith("Ammettere la condotta") and checked["dropped"] == ["soluzioni"]
+    assert checked["main"] == M.CONTAINMENT_LINE and checked["dropped"] == ["soluzioni"]     # v79.14.3 (item 3)
     assert M.case_id({"case": "x"}).startswith("h") and M.case_id({"case_id": "a b/c"}) == "a_b_c"
     assert "case_id" in inspect.signature(flow.single_shot).parameters

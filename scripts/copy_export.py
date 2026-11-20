@@ -242,6 +242,14 @@ EXTRA = (
     ("lawyer_method", "BINDING_MATERIA", "Metodo, «Sintesi» ed «Esito probabile»: l'oggetto della riga sul corpus "
                                          "quando il quadro del caso esclude ogni addebito o domanda candidato e non ne "
                                          "descrive uno (v79.14.2, voce B)"),
+    # v79.14.3 (item 1): an element only another party's allegation supports -- «contestato», never «integrato»
+    ("lawyer_method", "CONTESTED_ESITO", "Metodo, «Analisi per elementi»: l'esito di un elemento che solo "
+                                         "un'allegazione di un'altra parte sostiene (v79.14.3, voce 1)"),
+    ("lawyer_method", "CONTESTED_FACT", "Metodo, «Analisi per elementi»: il fatto di un elemento contestato (v79.14.3, "
+                                        "voce 1)"),
+    ("lawyer_method", "CONTESTED_WHO", "Metodo, «Soluzioni a confronto»: chi deve provare l'elemento contestato, nella "
+                                       "tesi «… deve provare «…»» (v79.14.3, voce 1)"),
+    ("issue_records", "CONTESTED_WHY", "Registro: perché l'elemento è contestato (v79.14.3, voce 1)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference

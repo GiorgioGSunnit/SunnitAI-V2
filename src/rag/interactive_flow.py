@@ -3243,7 +3243,9 @@ def attributed_to(sentence: str, names: Sequence[str]) -> str:
 
 def mark_sides(sents: Sequence[Dict[str, Any]], state: Dict[str, Any]) -> None:
     """In place: each attributed sentence's speaker ("by") and side ("side": the counterparty's when the speaker is a
-    party other than the client -- client_of: settled, else the extraction's; unknown client: no side)."""
+    party other than the client -- client_of: settled, else the extraction's; unknown client: no side). v79.14.3 (item
+    1): each allegation's other party ("alleged_by": alleging_party), what makes an element it alone supports
+    «contestato» (issue_records.settle)."""
     from . import issue_records
     names, client = party_names_of(state), _low(client_of(state))
     for s in sents:
@@ -3251,6 +3253,121 @@ def mark_sides(sents: Sequence[Dict[str, Any]], state: Dict[str, Any]) -> None:
         s["by"] = by
         mine = bool(client) and (_low(by) == client or _low(by) in client or client in _low(by))
         s["side"] = issue_records.COUNTERPARTY if by and client and not mine else ("cliente" if by and mine else "")
+        s["alleged_by"] = alleging_party(s, state, names, client)
+
+
+# v79.14.3 (item 1): an allegation's speaker when attributed_to names none -- the words right before §2's own alleging
+# verb (_SAYS_RE: «La società sostiene che…»), or after «secondo» / «a detta di» («Secondo la società, …»); at most
+# SPEAKER_WORDS words, from the last article or determiner on. A speaker naming the client (a word of the client's
+# name) or the client's own side (CLIENT_SIDE_STEMS: the client, the assisted party, the defence) is the client's own
+# statement -- never an allegation of another party. (review) So is a speaker named by the client's own procedural role
+# (client_roles: the verified frame's «ruolo» under CASE_FRAME, else intake's, the posture's and the parties' role for
+# the client -- «L'indagato dichiara…» when the client is the indagato). The subject is read past an elided article
+# («L'azienda»: the article split off), past an inciso between commas («La società, con una lettera…, sostiene»: the
+# words before it), and without a verb coordinated with the alleging one or a trailing auxiliary (SPEAKER_TRAIL:
+# «L'imputato ammette e dichiara» -> «L'imputato»)
+SPEAKER_WORDS = 4
+CLIENT_SIDE_STEMS = ("client", "assistit", "difes")
+SPEAKER_TRAIL = ("ha", "hanno", "aveva", "avevano", "avrebbe", "avrebbero", "abbia", "abbiano", "non", "anche",
+                 "inoltre", "invece", "poi", "sempre")
+_SECONDO_RE = re.compile(r"\b(?:secondo|a\s+detta\s+d\w*|stando\s+a)\s+([^,;:.]{2,60})", re.IGNORECASE)
+_DETERMINER_RE = re.compile(r"^(?:il|lo|la|i|gli|le|l['’]|un|uno|una|un['’])$", re.IGNORECASE)
+_ELIDED_RE = re.compile(r"\b(l|un|dell|dall|nell|all|sull|quest|quell)(['’])(?=[^\W\d_])", re.IGNORECASE)
+
+
+def speaker_phrase(sentence: str, names: Sequence[str] = ()) -> str:
+    """v79.14.3 (item 1): who an attributed sentence says it -- a party attributed_to names, else the subject words
+    before the first alleging verb (_SAYS_RE) or after «secondo» / «a detta di»; "" when none is written."""
+    text = str(sentence or "")
+    by = attributed_to(text, names)
+    if by:
+        return by
+    m = _SECONDO_RE.search(text)
+    if m:
+        words = _ELIDED_RE.sub(r"\1\2 ", m.group(1)).split()[:SPEAKER_WORDS]
+    else:
+        v = re.search(rf"\b{_SAYS_RE}", text, re.IGNORECASE)
+        if not v:
+            return ""
+        parts = re.split(r"[,;:()«»\"“”]", text[:v.start()])
+        head = parts[-1]
+        if not head.strip() and len(parts) >= 3:        # «X, <inciso>, sostiene»: the subject is before the inciso
+            head = parts[-3]
+        words = _ELIDED_RE.sub(r"\1\2 ", head).split()
+        if len(words) >= 2 and words[-1].lower() in ("e", "ed"):    # «ammette e dichiara»: a verb coordinated with it
+            words = words[:-2]
+        while words and words[-1].lower() in SPEAKER_TRAIL:
+            words = words[:-1]
+        words = words[-SPEAKER_WORDS:]
+    cut = max((i for i, w in enumerate(words) if _DETERMINER_RE.match(w)), default=0)
+    words = words[cut:]
+    if not any(re.search(r"[^\W\d_]{3,}", w) and not _DETERMINER_RE.match(w) for w in words):
+        return ""
+    return re.sub(r"(['’]) ", r"\1", " ".join(words)).strip(" .")
+
+
+def client_roles(state: Dict[str, Any]) -> List[str]:
+    """(review, item 1) The client's procedural role words: the verified frame's «ruolo» when it holds one (CASE_FRAME),
+    else intake's role, the posture's and the parties' role for the client (posture.client_role_words); an unknown
+    role is none."""
+    from . import case_frame, posture as posture_mod
+    st = state or {}
+    framed = case_frame.bound(st, "ruolo") if case_frame.held(st) is not None else None
+    if framed:
+        roles = [str(framed)]
+    else:
+        roles = [str((st.get("intake") or {}).get("role") or ""), str((st.get("posture") or {}).get("role") or "")]
+        try:
+            roles += posture_mod.client_role_words(st)
+        except Exception:               # noqa: BLE001 -- no role read: the client's name and side words only
+            pass
+    cfg = case_frame.config()
+    ruoli, sinonimi = cfg.get("ruoli") or {}, cfg.get("ruoli_sinonimi") or {}
+    unknown = {"", str(cfg.get("unknown") or "sconosciuto"), "ignoto", "unknown"}
+    canon = lambda r: ruoli.get(r) or ruoli.get(sinonimi.get(r) or "") or r     # noqa: E731 -- the pipeline's value
+    out: List[str] = []
+    for r in (_low(x) for x in roles):
+        if r in unknown:
+            continue
+        value = canon(r)        # every way the frame's own vocabulary (data/case_frame.json) writes that role
+        same = [r] + [k for k in ruoli if ruoli[k] == value] + [k for k in sinonimi if canon(k) == value]
+        out += [w.replace("_", " ").strip() for k in same for w in k.split("/")]
+    return list(dict.fromkeys(w for w in out if w and w not in unknown))
+
+
+def _speaks_as_role(who: str, roles: Sequence[str]) -> bool:
+    """(review, item 1) The speaker phrase names one of the client's roles: every content word of the role, by its stem
+    (gender and number: «indagato» / «indagata» / «indagati»), as a word of the phrase («coindagato» is not)."""
+    words = re.findall(r"[^\W\d_]+", _low(who))
+    for role in roles or ():
+        stems = [w[:-1] if len(w) >= 5 else w for w in re.findall(r"[^\W\d_]{3,}", role)]
+        if stems and all(any(x.startswith(st) and len(x) - len(st) <= 2 for x in words) for st in stems):
+            return True
+    return False
+
+
+def alleging_party(sentence: Dict[str, Any], state: Dict[str, Any], names: Sequence[str] = (),
+                   client: str = "") -> str:
+    """v79.14.3 (item 1): the party other than the client an allegation (§2's «allegazione»: certainty allegato) is
+    attributed to -- its speaker (speaker_phrase: the parties the extraction or the verified frame lists, else the
+    sentence's own subject words); "" for a fact narrated as certain, an unattributed allegation, one the client makes
+    (his own statement, even against himself) or any while the client is not known (client_of: the verified frame's
+    under CASE_FRAME, else the settled one)."""
+    from . import case_frame, issue_records
+    if sentence.get("certainty") != issue_records.ALLEGATO or sentence.get("source") == "sistema" or not client:
+        return ""
+    held = case_frame.held(state)
+    listed = list(names) + [str(p.get("nome")) for p in (case_frame._frame(held).get("parti") or [] if held else [])
+                            if isinstance(p, dict) and p.get("nome")]
+    who = speaker_phrase(str(sentence.get("text") or ""), listed)
+    if not who:
+        return ""
+    low = _low(who)
+    own = {w for w in re.findall(r"[^\W\d_]{3,}", client)}
+    if any(w in re.findall(r"[^\W\d_]{3,}", low) for w in own) or low in client or \
+            any(re.search(rf"\b{stem}", low) for stem in CLIENT_SIDE_STEMS) or _speaks_as_role(who, client_roles(state)):
+        return ""
+    return who
 
 
 def build_records(state: Dict[str, Any], rows: Sequence[Dict[str, Any]]) -> None:
@@ -7007,6 +7124,10 @@ def role_corpus_counted(state: Dict[str, Any], draft: str, method_ctxs: Sequence
     view = {"institutions": ctx0.get("institutions") if ctx0 else read_institutions(state.get("read") or {}),
             "records": ctx0.get("records") or state.get("records") or {}}
     counters["corpus_line_code"] = len(lawyer_method.corpus_line_on_code(draft, view))
+    for c in method_ctxs or []:         # v79.14.3 (item 4): what compose dropped too (§4's blocks, §5, §7)
+        if isinstance(c, dict) and c.get("excluded_dropped"):
+            counters["excluded_dropped"] = list(dict.fromkeys(list(counters.get("excluded_dropped") or [])
+                                                              + list(c["excluded_dropped"])))
     counters["corpus_line"] = max(int(counters.get("corpus_line") or 0),
                                   len(lawyer_method._CORPUS_LINE_RE.findall(draft or "")))
     if got["role_flip"] or counters["corpus_line_code"]:
@@ -7302,6 +7423,7 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
     if (ctx.get("frame_binding") or {}).get("applied"):     # v79.14.2 (B): the candidates the binding refused too
         lawyer_method.binding_counters(state.setdefault("block_counters", {}), ctx["frame_binding"])
+    lawyer_method.method_counters(state.setdefault("block_counters", {}), ctx)     # v79.14.3: items 1, 3, 4
     state["thesis_counts"] = ctx.get("selection_counts") or {}
     if isinstance(ctx.get("schema_shadow"), dict):     # v79.11 (6): ELEMENT_SCHEMAS only -- the shadow admission whole
         state["schema_shadow"] = shadow_state(ctx["schema_shadow"])  # (the nightly's reasons; the counts keep numbers)
