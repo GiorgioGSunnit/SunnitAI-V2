@@ -26,6 +26,10 @@ Build B (item 4 -- the prose replaced, not deleted -- and the fixtures):
 6. a CLAIMANT civil case (APPALTO, 1667 c.c., the client the committente; the lawyer's reviewed schema gives the
    elements' kinds): the first line on the acceptance («negazione») refused, re-asked with the constitutive E-id; the
    line on the garanzia, contested by the company's allegation -> §7's objection; the exceptions raised -> objections
+v79.15.2 (hotfix): every faked analysis reply gives «articolo» in the id form the prompt sends (H.id_form: a line's
+«1385cc» / «646cp» / «62biscp», an element verdict's «A1385cc») -- the server's model's form, which 79.15.1 rejected
+(«articolo non tra le norme applicabili: 640cp»); the logged articolo is the display label; every run records
+analysis_fallback_skipped_reason.
 With FIXTURE_79_15_1_OUT set, the reports are written there.
 """
 
@@ -120,7 +124,7 @@ NOARTICLE = types.SimpleNamespace(
                "Codice Penale 2026")),
     DOCUMENTS=({"id": "LEGAL_DOC::cp", "name": "Codice Penale 2026"},),
     TITLE="Ammanchi dal conto dell'associazione", ANCHOR="646 c.p.", RUBRICA="Appropriazione indebita.",
-    fit_reply=_na_fit, link=_na_link, analysis_reply=_na_analysis, writer_line=PENAL.writer_line)
+    fit_reply=_na_fit, link=_na_link, analysis_reply=H.id_form(_na_analysis), writer_line=PENAL.writer_line)
 
 
 # --- v79.15.1 build B (item 4): the CIVIL fixture with the Q&A, §4 and §7 prose to review -----------------------------
@@ -170,6 +174,7 @@ CIVIL_QA = types.SimpleNamespace(**{k: getattr(CIVIL, k) for k in dir(CIVIL) if 
 CIVIL_QA.CASE_ID = "v79151_civil_qa"
 CIVIL_QA.ARTICLES = CIVIL.ARTICLES + (("1439", "c.c.", F.ART_1439, "Dolo", "LEGAL_DOC::cc", "Codice Civile 2026"),)
 CIVIL_QA.fit_reply = _civil_qa_fit
+CIVIL_QA.analysis_reply = H.id_form(CIVIL.analysis_reply)         # v79.15.2: «1453cc», «1385cc», «A1385cc»
 CIVIL_QA.writer_question = _civil_qa_question
 CIVIL_QA.writer_line = _civil_qa_writer
 CIVIL_QA.objections = [{"obiezione": OBJ_RULE, "risposta": "Va provato che Ettore Bassi abbia ricevuto la caparra."}]
@@ -232,7 +237,7 @@ TRUFFA = types.SimpleNamespace(
     ARTICLES=F.ARTICLES, DOCUMENTS=({"id": "LEGAL_DOC::cp", "name": "Codice Penale 2026"},
                                     {"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026"}),
     TITLE="Truffa nella vendita dell'orologio", ANCHOR="640 c.p.", RUBRICA="Truffa.",
-    fit_reply=F._fit_reply, link=_tr_link, analysis_reply=_tr_analysis, writer_line=_tr_writer,
+    fit_reply=F._fit_reply, link=_tr_link, analysis_reply=H.id_form(_tr_analysis), writer_line=_tr_writer,
     writer_question=_tr_question)
 
 
@@ -361,11 +366,16 @@ APPALTO = types.SimpleNamespace(
                "Codice Civile 2026")),
     DOCUMENTS=({"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026"},),
     TITLE="Vizi del bagno rifatto", ANCHOR="1667 c.c.", RUBRICA="Difformità e vizi dell'opera.",
-    fit_reply=_ap_fit, link=_ap_link, analysis_reply=_ap_analysis, writer_line=_ap_writer,
+    fit_reply=_ap_fit, link=_ap_link, analysis_reply=H.id_form(_ap_analysis), writer_line=_ap_writer,
     ENV={"ELEMENT_SCHEMAS": "true"})
 APPALTO.REVIEWED_SCHEMAS = [{"label": "1667 c.c.", "reviewed": True, "reviewer": "test", "schema_version": 1,
                              "source_hash": __import__("src.rag.element_schemas", fromlist=["x"]).text_hash(ART_1667),
                              "schema": AP_SCHEMA}]
+
+
+# v79.15.2: the 79.15.0 penal fixture with its reply in the id form («646cp», «A646cp»)
+PENAL_ID = types.SimpleNamespace(**{k: getattr(PENAL, k) for k in dir(PENAL) if not k.startswith("__")})
+PENAL_ID.analysis_reply = H.id_form(PENAL.analysis_reply)
 
 
 # --- the tests --------------------------------------------------------------------------------------------------------
@@ -390,6 +400,11 @@ def test_the_civil_fixture_by_ids_with_the_allegation_as_its_objection(monkeypat
     step = run["by"]["analysis_step"][0][0]
     assert step["lines"][0]["eid"].startswith("A1385cc:E") and step["claimant"] is True
     assert c["analysis_bad_eid"] == 0 and c["analysis_line_exception"] == 0 and c["analysis_line_fallback_rubrica"] == 0
+    # v79.15.2: the id form read -- «1453cc» rejected as a remedy (logged «1453 c.c.»), «1385cc» verified
+    assert [r["articolo"] for r in step["rejected"]] == ["1453 c.c."]
+    assert step["rejected"][0]["why"].startswith("art. 1453 c.c.: rimedio o parte generale")
+    assert step["lines"][0]["articolo"] == "1385 c.c." and c["analysis_line_rejected"] == 1
+    assert c["analysis_fallback_skipped_reason"] == "line_verified" == step["fallback_skipped_reason"]
     obiezioni = H.section(answer, "obiezioni")
     assert obiezioni.startswith("**Obiezione 1.** Allegazione di Ettore Bassi: «" + CIVIL.BASSI + "»")
     assert "elementi contestati: «inadempiente è invece la parte che l'ha ricevuta» (art. 1385 c.c.)" in obiezioni
@@ -400,8 +415,9 @@ def test_the_civil_fixture_by_ids_with_the_allegation_as_its_objection(monkeypat
 
 
 def test_the_penal_fixture_one_objection_per_allegation(monkeypatch, tmp_path):
-    run = H.run(monkeypatch, tmp_path, PENAL)
-    _report(run, "v79.15.1 synthetic PENAL fixture (the 79.15.0 case: tests/test_v79_15_0_fixture_penal.py)", "a")
+    run = H.run(monkeypatch, tmp_path, PENAL_ID)
+    _report(run, "v79.15.1 synthetic PENAL fixture (the 79.15.0 case: tests/test_v79_15_0_fixture_penal.py; v79.15.2: "
+                 "the reply in the id form)", "a")
     _no_failed_steps(run)
     c, answer = run["state"]["block_counters"], run["answer"]
     obiezioni = H.section(answer, "obiezioni")
@@ -411,6 +427,9 @@ def test_the_penal_fixture_one_objection_per_allegation(monkeypatch, tmp_path):
     assert NO_OBJECTIONS not in answer
     assert c["objections_from_allegations"] == 2 and c["objections_from_exceptions"] == 0
     assert c["analysis_bad_eid"] == 0 and run["by"]["analysis_step"][0][0]["claimant"] is False
+    step = run["by"]["analysis_step"][0][0]         # v79.15.2: «646cp» verified on the first reply, logged «646 c.p.»
+    assert c["analysis_calls"] == 1 and step["rejected"] == [] and step["lines"][0]["articolo"] == "646 c.p."
+    assert c["analysis_fallback_skipped_reason"] == "line_verified"
 
 
 def test_a_penal_charge_with_no_article_number_finds_its_line_by_rubrica(monkeypatch, tmp_path):
@@ -427,6 +446,10 @@ def test_a_penal_charge_with_no_article_number_finds_its_line_by_rubrica(monkeyp
     assert c["analysis_calls"] == 2 and c["analysis_line_rejected"] == 2 and c["analysis_bad_eid"] == 1
     assert c["analysis_frame_charge_missing"] == 0
     assert c["analysis_line_fallback_rubrica"] == 1 and c["analysis_line_undetermined"] == 0
+    step = run["by"]["analysis_step"][0][0]         # v79.15.2: «646cp», then «62biscp» -- the remedy by its id form
+    assert [r["articolo"] for r in step["rejected"]] == ["646 c.p.", "62-bis c.p."]
+    assert "rimedio o parte generale" in step["rejected"][1]["why"]
+    assert c["analysis_fallback_skipped_reason"] == "" == step["fallback_skipped_reason"]
     sintesi = H.section(answer, "sintesi")
     assert sintesi == "Linea principale: art. 646 c.p. — Appropriazione indebita: elementi da provare dall'accusa."
     assert "da determinare" not in answer
@@ -500,7 +523,7 @@ def test_the_truffa_case_both_replies_rejected_finds_its_line_by_the_older_frame
     assert not frame["addebito_o_domanda"]["articolo"] and not frame["addebito_o_domanda"]["descrizione"]
     assert c["analysis_calls"] == 2 and c["analysis_line_rejected"] == 2 and c["analysis_bad_eid"] == 2
     assert c["analysis_frame_charge_missing"] == 0 and c["analysis_line_undetermined"] == 0
-    assert c["analysis_line_fallback_rubrica"] == 1
+    assert c["analysis_line_fallback_rubrica"] == 1 and c["analysis_fallback_skipped_reason"] == ""
     line = state["analysis_step"]["analysis"]["linea_principale"]
     assert line["stato"] == A.FALLBACK_LINE and line["nome"] == "Truffa" and line["articolo"] == "640 c.p."
     assert H.section(answer, "sintesi") == "Linea principale: art. 640 c.p. — Truffa: elementi da provare dall'accusa."
@@ -534,7 +557,9 @@ def test_a_claimants_line_is_constitutive_and_the_allegation_is_the_objection(mo
     reask = run["model"].calls[1]["last"]
     assert "- A1667cc (art. 1667 c.c.): A1667cc:E1\n" in reask and "Il cliente agisce come attore" in reask
     assert {(x["eid"], x["fonte"]) for x in step["exceptions"]} == {("A1667cc:E2", "schema"), ("A1667cc:E3", "schema")}
-    assert step["lines"][0]["eid"] == "A1667cc:E1"
+    assert step["lines"][0]["eid"] == "A1667cc:E1" and step["lines"][0]["articolo"] == "1667 c.c."
+    assert [r["articolo"] for r in step["rejected"]] == ["1667 c.c."]          # v79.15.2: «1667cc» read
+    assert c["analysis_fallback_skipped_reason"] == "line_verified"
     sintesi = H.section(answer, "sintesi")
     assert sintesi.startswith("Linea principale: art. 1667 c.c. — La Edilnova S.r.l. deve la garanzia")
     assert "elemento in gioco: «L'appaltatore è tenuto alla garanzia per le difformità e i vizi dell'opera»" in sintesi

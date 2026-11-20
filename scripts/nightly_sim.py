@@ -306,6 +306,10 @@ statement for its article, dropped); qa_sentences_dropped / norms_sentences_drop
 verified statement on its article (one with such a statement is replaced).
 v79.15.1 (review; in ANALYSIS_STEP_KEYS): analysis_line_kept_first (a line kind verified on the first reply kept
 because the re-ask's line of that kind was rejected).
+v79.15.2 (hotfix; in ANALYSIS_STEP_KEYS): analysis_fallback_skipped_reason -- a STRING, not a number: why the rubrica
+fallback did not run (line_verified, frame_charge_used, no_named_charge, no_rubrica_match, step_failed, no_input; ""
+when it ran). Tolerated as such: analysis_lines prints it as written («—» when empty), counter_lines' «before → now»
+compares it as a value, nothing sums it or reads it with int() (zero_counters_check reads only ZERO_COUNTERS).
 
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
@@ -752,7 +756,18 @@ ANALYSIS_STEP_KEYS = ("analysis_calls", "analysis_reasked", "analysis_failed", "
                       "analysis_line_kept_first",
                       # v79.15.1 (build B, item 4): the prose replaced, not deleted
                       "qa_sentences_replaced", "qa_sentences_dropped_dependent", "prose_excluded_article_dropped",
-                      "prose_unfitted_article_dropped", "objections_sentences_dropped")
+                      "prose_unfitted_article_dropped", "objections_sentences_dropped",
+                      # v79.15.2 (hotfix): a string -- why the rubrica fallback did not run ("" when it ran)
+                      "analysis_fallback_skipped_reason")
+STRING_KEYS = ("analysis_fallback_skipped_reason",)      # v79.15.2: printed as written, never summed
+
+
+def _cell_value(k: Dict[str, Any], key: str) -> str:
+    """v79.15.2: a counter's table cell -- a string counter as written («—» when empty or missing), a number as is."""
+    v = k.get(key, "—")
+    if key in STRING_KEYS:
+        return str(v) if v not in (None, "") else "—"
+    return str(v)
 
 
 def analysis_lines(results: List[Dict[str, Any]]) -> List[str]:
@@ -767,7 +782,7 @@ def analysis_lines(results: List[Dict[str, Any]]) -> List[str]:
     for c in rows:
         k = c.get("counters") or {}
         step = c.get("analysis_step") or {}
-        lines.append(f"| {c['id']} | " + " | ".join(str(k.get(x, "—")) for x in ANALYSIS_STEP_KEYS)
+        lines.append(f"| {c['id']} | " + " | ".join(_cell_value(k, x) for x in ANALYSIS_STEP_KEYS)
                      + f" | {step.get('status') or '—'} | {step.get('prompt_hash') or '—'} |")
     return lines
 

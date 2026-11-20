@@ -91,6 +91,24 @@ class AnalysisModel:
         return json.dumps(self.reply(parsed, len(self.calls)), ensure_ascii=False)
 
 
+def id_form(reply: Callable[[Dict[str, Any], int], Dict[str, Any]]) -> Callable[[Dict[str, Any], int], Dict[str, Any]]:
+    """v79.15.2: a faked analysis reply with every «articolo» in the id form the prompt sends, as the server's model
+    returned it -- a line's as the bare token («1385cc», «646cp», «62biscp»), an element verdict's with its «A»
+    («A1385cc»); the E-ids as given."""
+    def convert(parsed: Dict[str, Any], attempt: int) -> Dict[str, Any]:
+        got = reply(parsed, attempt)
+        for kind in ("linea_principale", "linea_subordinata"):
+            x = got.get(kind)
+            if isinstance(x, dict) and x.get("articolo"):
+                x["articolo"] = ap.article_token(x["articolo"])
+        for it in got.get("elementi") or []:
+            if isinstance(it, dict) and it.get("articolo"):
+                it["articolo"] = "A" + ap.article_token(it["articolo"])
+        return got
+    convert.__name__ = f"id_form_{getattr(reply, '__name__', 'reply')}"
+    return convert
+
+
 def eid(parsed: Dict[str, Any], article: str, text: str) -> str:
     """v79.15.1: the E-id the prompt gave the element of that text."""
     norm = parsed["norms"][article]

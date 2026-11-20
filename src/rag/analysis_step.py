@@ -132,6 +132,15 @@ a norm provides with no verified counterpart -> the first verified affermazione_
 (qa_sentences_replaced), else dropped (qa_sentences_dropped / norms_sentences_dropped / objections_sentences_dropped);
 after any drop -- the review's or the checks' (orphans) -- the next sentence opening with an anaphoric connective
 (data «prose_review.anaphoric_openers») goes too (qa_sentences_dropped_dependent).
+
+v79.15.2 (hotfix): one canonical article key (art_parts / art_key: number with its suffix + code, lower-case, no space or
+punctuation -- «A640cp», «640cp», «640 c.p.», «art. 640 c.p.», «Art. 640 cp» -> «640cp»; «640 c.p.p.» -> «640cpp») for
+every article comparison here: same_article, resolve (the exact id token, then the key, then a bare number), the E-id
+prefix (parse_eid, element_of), the remedy set (is_remedy), the contractual frame, the frame's charge, the prose
+review's fitted / named / excluded sets, the bare-number citations and the Q&A counterpart. The logged and printed
+articolo stays the fitted norm's label. analysis_fallback_skipped_reason (a string counter, SKIP_*: line_verified,
+frame_charge_used, no_named_charge, no_rubrica_match, step_failed, no_input; "" when the rubrica fallback ran) in the
+counters, the analysis («fallback_skipped_reason») and the «analysis_step» line.
 """
 
 import contextvars
@@ -161,7 +170,9 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "law_statements_off_article", "law_statements_ungrounded", "analysis_seconds",
             # v79.15.1
             "analysis_line_exception", "analysis_line_fallback_rubrica", "objections_from_allegations",
-            "objections_from_exceptions", "analysis_line_kept_first")
+            "objections_from_exceptions", "analysis_line_kept_first",
+            # v79.15.2 (item 2): a string, the reason code (SKIP_*), "" when the fallback ran
+            "analysis_fallback_skipped_reason")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 LINE_KINDS = ("linea_principale", "linea_subordinata")
@@ -173,6 +184,16 @@ LINE_UNVERIFIED_LABEL = "linea non verificata"
 # v79.15.1 (item 2, the brief's wording): the rubrica fallback's tesi -- penal / every other rito
 FALLBACK_TESI = {"penale": "{rubrica}: elementi da provare dall'accusa", "civile": "{rubrica}: elementi da provare"}
 SCHEMA, KEYWORDS = "schema", "parole_chiave"        # which source flagged an element as an exception or a limit
+# v79.15.2 (item 2): why the rubrica fallback did not run -- a string counter (block_counters, the analysis_step line):
+# "" when it ran (analysis_line_fallback_rubrica = 1)
+SKIPPED_REASON = "analysis_fallback_skipped_reason"
+SKIP_LINE_VERIFIED = "line_verified"            # a verified leading line (the re-ask's, or the first reply's kept)
+SKIP_FRAME_CHARGE = "frame_charge_used"         # the frame's verified charge article missing from the lines: it leads
+SKIP_NO_NAMED_CHARGE = "no_named_charge"        # no verified leading line, and the frame names no charge or claim
+SKIP_NO_RUBRICA_MATCH = "no_rubrica_match"      # a named charge / claim, but no fitted rubrica equal to it
+SKIP_STEP_FAILED = "step_failed"                # the first call failed, timed out or answered no JSON; the input unread
+SKIP_NO_INPUT = "no_input"                      # no fitted norm or no sentence: nothing called
+STRING_COUNTERS = (SKIPPED_REASON,)
 
 
 def enabled() -> bool:
@@ -227,32 +248,121 @@ def _flat(value: Any) -> str:
 
 
 def empty_counters() -> Dict[str, Any]:
-    return {k: 0 for k in COUNTERS}
+    return {k: ("" if k in STRING_COUNTERS else 0) for k in COUNTERS}
 
 
-# --- articles: labels, the remedy set, the contractual frame ----------------------------------------------------------
+# --- articles: one canonical key, the remedy set, the contractual frame ----------------------------------------------
+# v79.15.2 (hotfix, item 1): every article comparison of this module goes through ONE key (art_key) -- the reply's
+# «articolo», an E-id's prefix, the remedy set, the fitted set, the frame's charge, the user-named articles, the re-ask's
+# allowed list, the rubrica fallback, the objections and the law statements. 79.15.1 compared the reply's «articolo»
+# with the display label («640 c.p.») by element_schemas.norm_label / applicability.article_key, which read the A-id
+# form the prompt itself sends («A640cp», «640cp») as the number «640cp» with no code: the line was rejected
+# («articolo non tra le norme applicabili: 640cp»). The displayed and logged «articolo» stays the label after resolve.
+
+def _suffix_alt() -> str:
+    from .comma_material import SUFFIXES
+    return "|".join(sorted(SUFFIXES, key=len, reverse=True))
+
+
+@lru_cache(maxsize=1)
+def _code_names() -> Dict[str, str]:
+    """data «article_key.codes»: a code's compact spelling -> its key («codicepenale» -> «cp»)."""
+    return {str(k): str(v) for k, v in ((config().get("article_key") or {}).get("codes") or {}).items()}
+
+
+@lru_cache(maxsize=1)
+def _law_prefixes() -> List[Tuple[str, str]]:
+    """data «article_key.law_prefixes»: a law's spelled-out kind before its number -> its sigla («legge» -> «l»),
+    longest first."""
+    items = ((config().get("article_key") or {}).get("law_prefixes") or {}).items()
+    return sorted(((str(k), str(v)) for k, v in items), key=lambda kv: -len(kv[0]))
+
+
+def art_parts(raw: Any) -> Tuple[str, str]:
+    """v79.15.2: (number, code) of an article however written -- the number with its suffix, no space or dash
+    («62bis»), the code compact, lower-case, no space or punctuation («cp», «cpp», «cc», «cpc», «l2411990»; a code's
+    document name by its sigla: «Codice Penale 2026» -> «cp»). Accepted: «640 c.p.», «art. 640 c.p.», «Art. 640 cp»,
+    «articolo 640 c.p. (Truffa)», «640cp», «A640cp» (the A-id's article), «A640cp:E1» (an E-id's article), «62-bis
+    c.p.», «62 bis c.p.», «A62biscp»; a comma's or a numero's label read as its article («52 c.p. co. 2», «A52cpco2»,
+    «62 n. 2 c.p.»). Review: a period id («A640cp.1») read as its article; a preposition before the code («640 del
+    codice penale») skipped; a law's own number kept («1 L. n. 241/1990» -> «l2411990», never «l1990»: only a numero
+    of the article -- «n. 2» not followed by «/» or a digit -- is dropped; the «n» of «L. n. 241» dropped in both
+    the label and its id token, «ln2411990» -> «l2411990»). ("", "") when it names no article number; a bare number
+    -> (number, "")."""
+    s = _id_strip(raw)
+    m = re.match(rf"^(\d+)\s*(?:-\s*)?((?:{_suffix_alt()}))?(.*)$", s)
+    if not m:
+        return "", ""
+    number = m.group(1) + (m.group(2) or "")
+    rest = re.sub(r"(?:^|\s)(?:co\.?|comma)\s*\d+\w*", " ", m.group(3) or "")
+    rest = re.sub(r"(?:^|\s)n\.\s*\d+(?![\d/])", " ", rest)     # a numero («62 n. 2 c.p.»), not «L. n. 241/1990»
+    rest = re.sub(r"^\s*(?:del|dello|della|dei|di)\s+", "", rest)  # «640 del codice penale»
+    try:
+        named = _es()._code(" ".join(rest.split())) if rest.strip() else ""
+    except Exception:           # noqa: BLE001 -- the spelling as written
+        named = rest
+    code = re.sub(r"[^a-z0-9]", "", fold(named))
+    code = re.sub(r"^n\d+(?=[a-z])", "", code)                  # «62n2cp»: a numero's token
+    code = re.sub(r"(?<=[a-z])co\d+[a-z]*$", "", code)          # «52cpco2»: a comma's token
+    code = re.sub(r"(?<=[a-z])n(?=\d)", "", code)               # «ln2411990» -> «l2411990» (a law's «n.»)
+    for long, short in _law_prefixes():                         # «legge2411990» -> «l2411990»
+        if code.startswith(long) and code[len(long):len(long) + 1].isdigit():
+            code = short + code[len(long):]
+            break
+    return number, _code_names().get(code, code)
+
+
+def _id_strip(raw: Any) -> str:
+    """The article's writing without its wrapping: folded, a rubrica in brackets, «art.»/«articolo», an E-id's «:E<n>»,
+    the ids' leading «A», and (review) a period id's «.<n>» («A640cp.1» -> «640cp») removed."""
+    s = fold(raw)
+    s = re.sub(r"\([^)]*\)", " ", s).strip(" \t[]«»\"'.,;:")
+    s = re.sub(r"^art(?:icol[oi]|t)?\.?\s*", "", s)
+    s = re.sub(r"\s*:\s*e\d+$", "", s)                         # an E-id: its article
+    s = re.sub(r"^a(?=\d)", "", s)                              # the ids' «A» before the article
+    if re.fullmatch(r"\d+[a-z0-9]*\.\d+", s):                   # a period id: its article
+        s = s.rsplit(".", 1)[0]
+    return s
+
+
+def art_key(raw: Any) -> str:
+    """v79.15.2: the one canonical key of an article: number (with its suffix) + code, no space or punctuation,
+    lower-case -- «640 c.p.», «art. 640 c.p.», «Art. 640 cp», «640cp», «A640cp» -> «640cp»; «62-bis c.p.» -> «62biscp»;
+    «1667 c.c.» -> «1667cc»; «640 c.p.p.» -> «640cpp» (never «640cp»). "" when it names no article number."""
+    num, code = art_parts(raw)
+    return f"{num}{code}" if num else ""
+
+
+def _id_token(raw: Any) -> str:
+    """The raw article as its ids spell it (applicability.article_token of the label: «640 c.p.» -> «640cp»; «A640cp»
+    -> «640cp»; «art. 52 c.p. co. 2» -> «52cpco2») -- resolve's exact step, before the key."""
+    return _ap().article_token(_id_strip(raw))
+
 
 def same_article(a: Any, b: Any) -> bool:
-    """Two labels of one article: the schema's label (element_schemas.norm_label), else (number, code) as
-    applicability.article_key reads them («Art. 640 c.p.», «640 cp»)."""
-    if not str(a or "").strip() or not str(b or "").strip():
-        return False
-    es, ap = _es(), _ap()
-    if es.norm_label(a) == es.norm_label(b):
-        return True
-    ka, kb = ap.article_key(a), ap.article_key(b)
-    return bool(ka[0]) and ka == kb
+    """Two writings of one article: the same art_key (v79.15.2: «A640cp», «640cp», «640 c.p.», «art. 640 c.p.» are one
+    article; «640 c.p.p.» another)."""
+    ka = art_key(a)
+    return bool(ka) and ka == art_key(b)
 
 
 def resolve(raw: Any, labels: Sequence[str]) -> Optional[str]:
-    """The fitted norm's label an «articolo» of the reply names (same_article; a bare number when one norm has it);
-    None when it names none."""
+    """The fitted norm's label an «articolo» of the reply names, in this order: the label whose id token is the raw's
+    exactly (a comma's own label, «52 c.p. co. 2», before its article's), the label with the same art_key, a bare number
+    when one norm has it; None when it names none. The label -- the display form -- is what is kept and logged."""
+    key = art_key(raw)
+    if not key:
+        return None
+    token = _id_token(raw)
     for label in labels:
-        if same_article(raw, label):
+        if token and _ap().article_token(label) == token:
             return label
-    num, code = _ap().article_key(raw)
-    if num and not code:
-        hits = [x for x in labels if _ap().article_key(x)[0] == num]
+    for label in labels:
+        if art_key(label) == key:
+            return label
+    num, code = art_parts(raw)
+    if not code:
+        hits = [x for x in labels if art_parts(x)[0] == num]
         if len(hits) == 1:
             return hits[0]
     return None
@@ -298,7 +408,7 @@ def is_contractual(frame: Optional[Dict[str, Any]]) -> bool:
     cfg = remedy_config().get("contractual") or {}
     charge = f.get("addebito_o_domanda") or {}
     if charge.get("articolo"):
-        num, code = _ap().article_key(charge["articolo"])
+        num, code = art_parts(charge["articolo"])            # v79.15.2: the one key
         if code == "cc" and _in_list(num, cfg.get("cc_ranges") or []):
             return True
     words = " ".join(_flat(x) for x in (charge.get("descrizione"), charge.get("frase"),
@@ -308,8 +418,8 @@ def is_contractual(frame: Optional[Dict[str, Any]]) -> bool:
 
 def is_remedy(label: Any, contractual: bool = False) -> bool:
     """The article is in the remedy / general-part set (data/remedy_articles.json «articles»; «when_contractual» only
-    when the frame is contractual)."""
-    num, code = _ap().article_key(label)
+    when the frame is contractual). v79.15.2: the article read by art_parts -- «A41cp», «1453cc» are in it too."""
+    num, code = art_parts(label)
     cfg = remedy_config()
     if _in_list(num, (cfg.get("articles") or {}).get(code) or []):
         return True
@@ -348,19 +458,30 @@ def element_id(label: Any, n: int) -> str:
     return f"A{_ap().article_token(label)}:E{n}"
 
 
-_EID_RE = re.compile(r"^(?:A([a-z0-9]+)\s*:\s*)?E(\d+)$", re.IGNORECASE)
+_EID_RE = re.compile(r"^(?:(.+?)\s*:\s*)?E(\d+)$", re.IGNORECASE)
 
 
-def parse_eid(value: Any) -> Optional[Tuple[str, int]]:
-    """(the article token or "" for a bare «E<n>», n) of an E-id as a reply writes it (quotes, brackets and spaces
-    around it out); None when it is not one."""
+def _eid_split(value: Any) -> Optional[Tuple[str, int]]:
+    """(the article prefix as written, "" for a bare «E<n>»; n) of an E-id as a reply writes it (quotes, brackets and
+    spaces around it out); None when it is not one -- v79.15.2: the prefix any writing of an article (art_parts:
+    «A640cp», «640cp», «640 c.p.», «art. 640 c.p.»), never a text."""
     if not isinstance(value, (str, int)):
         return None
     s = str(value).strip().strip("[]()«»\"'.,;")
     m = _EID_RE.match(s)
     if not m:
         return None
-    return (m.group(1) or "").lower(), int(m.group(2))
+    prefix = (m.group(1) or "").strip()
+    if prefix and not art_key(prefix):
+        return None
+    return prefix, int(m.group(2))
+
+
+def parse_eid(value: Any) -> Optional[Tuple[str, int]]:
+    """(the article's art_key or "" for a bare «E<n>», n) of an E-id as a reply writes it; None when it is not one.
+    «A640cp:E2», «640cp:E2», «640 c.p.:E2» -> ("640cp", 2)."""
+    got = _eid_split(value)
+    return None if got is None else (art_key(got[0]) if got[0] else "", got[1])
 
 
 @lru_cache(maxsize=1)
@@ -904,27 +1025,33 @@ def _maps(inp: Dict[str, Any]) -> Dict[str, Any]:
     norms = {n["article"]: n for n in inp.get("norms") or []}
     return {"norms": norms, "labels": list(norms), "sents": {s["id"]: s for s in inp.get("sentences") or []},
             "periods": {label: {p["id"]: p for p in n.get("periods") or []} for label, n in norms.items()},
-            "all_periods": {p["id"]: label for label, n in norms.items() for p in n.get("periods") or []},
-            "tokens": {_ap().article_token(label): label for label in norms}}
+            "all_periods": {p["id"]: label for label, n in norms.items() for p in n.get("periods") or []}}
 
 
-def element_of(norm: Dict[str, Any], value: Any) -> Optional[Dict[str, Any]]:
-    """v79.15.1 (item 1): the norm's schema element an E-id names -- «A<token>:E<n>» with this norm's token, or a bare
-    «E<n>» -- by existence only; None otherwise (a text, another article's id, a number past the last element)."""
-    got = parse_eid(value)
+def element_of(norm: Dict[str, Any], value: Any, labels: Optional[Sequence[str]] = None
+               ) -> Optional[Dict[str, Any]]:
+    """v79.15.1 (item 1): the norm's schema element an E-id names -- «A<token>:E<n>» naming this norm, or a bare
+    «E<n>» -- by existence only; None otherwise (a text, another article's id, a number past the last element).
+    v79.15.2: the prefix read by the one key -- with `labels` (the fitted norms) it must resolve to this norm (resolve:
+    a comma's own label first), else same_article."""
+    got = _eid_split(value)
     if got is None:
         return None
-    token, n = got
-    if token and token != _ap().article_token(norm.get("article")):
-        return None
+    prefix, n = got
+    article = norm.get("article")
+    if prefix:
+        mine = resolve(prefix, labels) == article if labels else (
+            _id_token(prefix) == _ap().article_token(article) or same_article(prefix, article))
+        if not mine:
+            return None
     els = norm.get("elements") or []
     return els[n - 1] if 1 <= n <= len(els) else None
 
 
 def _eid_article(value: Any, m: Dict[str, Any]) -> Optional[str]:
-    """The fitted norm an E-id's token names; None for a bare or unknown one."""
-    got = parse_eid(value)
-    return m["tokens"].get(got[0]) if got and got[0] else None
+    """The fitted norm an E-id's prefix names (resolve, the one key); None for a bare or unknown one."""
+    got = _eid_split(value)
+    return resolve(got[0], m["labels"]) if got and got[0] else None
 
 
 def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dict[str, Any]
@@ -938,7 +1065,7 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
     norm = m["norms"][label]
     if norm.get("remedy"):
         return None, f"art. {label}: rimedio o parte generale, mai una linea"
-    element = element_of(norm, raw.get("elemento_in_gioco"))
+    element = element_of(norm, raw.get("elemento_in_gioco"), m["labels"])
     if element is None:
         counters["analysis_bad_eid"] += 1
         said = _flat(raw.get("elemento_in_gioco"))[:40] or "(vuoto)"
@@ -985,17 +1112,19 @@ def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             if kind == "linea_principale":
                 reasons.append("linea_principale mancante")
             continue
-        if inp.get("claimant") and isinstance(raw, dict):
-            label = resolve(raw.get("articolo"), m["labels"])
-            el = element_of(m["norms"][label], raw.get("elemento_in_gioco")) if label else None
+        label = resolve(raw.get("articolo"), m["labels"]) if isinstance(raw, dict) else None
+        if inp.get("claimant") and label:
+            el = element_of(m["norms"][label], raw.get("elemento_in_gioco"), m["labels"])
             if el and el.get("eccezione"):
                 raised.append({"articolo": label, "eid": el["eid"], "id": el["id"]})
         line, why = _verify_line(raw, inp, m, counters)
         lines[kind] = line
         if why:
             counters["analysis_line_rejected"] += 1
-            rejected.append({"kind": kind, "articolo": _flat((raw or {}).get("articolo") if isinstance(raw, dict)
-                                                             else ""), "why": why})
+            # v79.15.2: the display label once resolved («640 c.p.» for «640cp»), the reply's text only when it names
+            # no fitted norm
+            rejected.append({"kind": kind, "articolo": label or _flat((raw or {}).get("articolo")
+                                                                      if isinstance(raw, dict) else ""), "why": why})
             reasons.append(f"{kind}: {why}")
     charge = inp.get("charge") or ""
     missing = bool(charge) and not any(x and same_article(x["articolo"], charge) for x in lines.values())
@@ -1027,7 +1156,7 @@ def _item_target(art: Any, it: Dict[str, Any], m: Dict[str, Any]) -> Tuple[Optio
     label = _eid_article(it.get("elemento"), m) or (resolve(art, m["labels"]) if art else None)
     if label is None:
         return None, None
-    return label, element_of(m["norms"][label], it.get("elemento"))
+    return label, element_of(m["norms"][label], it.get("elemento"), m["labels"])
 
 
 def _canon_esito(value: Any) -> Optional[str]:
@@ -1098,7 +1227,7 @@ def _elements_for(label: str, inp: Dict[str, Any], m: Dict[str, Any], items: Lis
         for art, it in items:
             target, element = _item_target(art, it, m)
             if target is None and not art and bare_ok and parse_eid(it.get("elemento")):
-                target, element = label, element_of(norm, it.get("elemento"))
+                target, element = label, element_of(norm, it.get("elemento"), m["labels"])
             if target != label or element is None or element["eid"] in got:
                 continue
             got[element["eid"]] = {**_verify_element(it, element, inp, m, counters), "eid": element["eid"],
@@ -1128,7 +1257,7 @@ def _bad_eids(items: List[Tuple[Any, Dict[str, Any]]], m: Dict[str, Any], line_l
         if target is None and art:
             continue                # an article that is no fitted norm: not read
         if target is None:          # a bare id: read only on the one line article
-            if len(labels) != 1 or element_of(m["norms"][labels[0]], it.get("elemento")) is None:
+            if len(labels) != 1 or element_of(m["norms"][labels[0]], it.get("elemento"), m["labels"]) is None:
                 n += 1
         elif element is None:
             n += 1
@@ -1198,6 +1327,13 @@ def rubrica_fallback(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def fallback_miss(inp: Dict[str, Any]) -> str:
+    """v79.15.2 (item 2): why rubrica_fallback found no line -- SKIP_NO_NAMED_CHARGE (the frame names no charge or
+    claim: no verified descrizione, no istituto, no older-frame name grounded in the case) or SKIP_NO_RUBRICA_MATCH (a
+    name, but none equal, word for word after fold, to the rubrica of a fitted norm outside the remedy set)."""
+    return SKIP_NO_RUBRICA_MATCH if any(rubrica_key(x) for x in inp.get("issues") or []) else SKIP_NO_NAMED_CHARGE
+
+
 def objections_of(lines: Sequence[Optional[Dict[str, Any]]], elements: Dict[str, List[Dict[str, Any]]],
                   raised: Sequence[Dict[str, Any]], inp: Dict[str, Any], m: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.15.1 (item 3): the objections the verified analysis carries, in order --
@@ -1257,7 +1393,7 @@ def objections_of(lines: Sequence[Optional[Dict[str, Any]]], elements: Dict[str,
             continue
         done.add((label, eid))
         norm = m["norms"].get(label) or {}
-        base = element_of(norm, eid) or {}
+        base = element_of(norm, eid, m["labels"]) or {}
         e = next((x for x in elements.get(label) or [] if x.get("eid") == eid), None) or \
             (_base_element(base, "eccezione") if base else None)
         if e is None:
@@ -1283,6 +1419,7 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
     frame_label = ""
     if checked.get("charge_missing") and charge:
         counters["analysis_frame_charge_missing"] = 1
+        counters[SKIPPED_REASON] = SKIP_FRAME_CHARGE        # v79.15.2: the frame's article leads, no rubrica read
         frame_label = resolve(charge, m["labels"]) or charge
         subordinata = principale or subordinata
         principale = {"articolo": frame_label, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
@@ -1291,10 +1428,15 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
         principale = rubrica_fallback(inp)
         if principale is not None:
             counters["analysis_line_fallback_rubrica"] = 1
+            counters[SKIPPED_REASON] = ""
         else:
             counters["analysis_line_undetermined"] = 1
+            counters[SKIPPED_REASON] = fallback_miss(inp)  # v79.15.2: no named charge / no exact rubrica
             principale = undetermined_line()
-    if subordinata is not None and principale.get("articolo") and subordinata["articolo"] == principale["articolo"] \
+    else:
+        counters[SKIPPED_REASON] = SKIP_LINE_VERIFIED       # v79.15.2: a verified leading line, nothing to fall back on
+    if subordinata is not None and principale.get("articolo") and same_article(subordinata["articolo"],
+                                                                               principale["articolo"]) \
             and subordinata.get("elemento_in_gioco") == principale.get("elemento_in_gioco"):
         subordinata = None          # the same line twice: once
     items = checked["items"] if "items" in checked else _reply_elements(checked.get("reply") or {})
@@ -1320,7 +1462,7 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             "claimant": bool(inp.get("claimant")), "obiezioni": objections,
             "eccezioni": [{"articolo": label, "eid": e.get("eid"), "fonte": e.get("eccezione_fonte")}
                           for label, els in elements.items() for e in els if e.get("eccezione")],
-            "rejected": checked.get("rejected") or []}
+            "rejected": checked.get("rejected") or [], "fallback_skipped_reason": counters.get(SKIPPED_REASON) or ""}
 
 
 def merge_replies(first: Dict[str, Any], again: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
@@ -1400,18 +1542,23 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
             analysis = finish(checked, inp)
             analysis["rejected"] = rejected
             for k, v in checked["counters"].items():
-                counters[k] = counters.get(k, 0) + v
+                counters[k] = v if k in STRING_COUNTERS else counters.get(k, 0) + v     # v79.15.2: a string kept
         else:
             counters["analysis_failed"] = 1
             counters["analysis_timeouts"] = int(first["status"] == TIMEOUT)
+            counters[SKIPPED_REASON] = SKIP_STEP_FAILED
             logger.warning("analysis_step: %s: %s (nothing from the step)", first["status"], first["error"])
+    if status == NO_INPUT:
+        counters[SKIPPED_REASON] = SKIP_NO_INPUT
     counters["analysis_calls"] = len(calls)
     seconds = round(time.time() - t0, 3)
     counters["analysis_seconds"] = seconds
     result = {"status": status, "error": error, "analysis": analysis if status == OK else None, "counters": counters,
               "prompt_hash": prompt_hash(), "seconds": seconds, "calls": calls, "reasons": reasons,
               "rejected": rejected}
-    _log("analysis_step", {"prompt_hash": result["prompt_hash"], "status": status, "error": error,
+    _log("analysis_step", {"prompt_hash": result["prompt_hash"], "status": status,
+                           "fallback_skipped_reason": counters.get(SKIPPED_REASON) or "",     # v79.15.2 (item 2)
+                           "error": error,
                            "seconds": seconds, "calls": calls, "counters": counters,
                            "lines": _line_log(result["analysis"]), "rejected": rejected,
                            "claimant": bool(inp.get("claimant")),                        # v79.15.1 (item 3)
@@ -1437,11 +1584,13 @@ def run(state: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, Any
             logger.warning("analysis_step: input not read: %s", exc)
             counters = empty_counters()
             counters["analysis_failed"] = 1
+            counters[SKIPPED_REASON] = SKIP_STEP_FAILED
             result = {"status": FAILED, "error": f"input: {type(exc).__name__}: {exc}"[:300], "analysis": None,
                       "counters": counters, "prompt_hash": prompt_hash(), "seconds": round(time.time() - t0, 3),
                       "calls": [], "reasons": [], "rejected": []}
-            _log("analysis_step", {k: result[k] for k in ("prompt_hash", "status", "error", "seconds", "calls",
-                                                          "counters")} | {"lines": [], "rejected": []})
+            _log("analysis_step", {k: result[k] for k in ("prompt_hash", "status")}
+                 | {"fallback_skipped_reason": SKIP_STEP_FAILED}
+                 | {k: result[k] for k in ("error", "seconds", "calls", "counters")} | {"lines": [], "rejected": []})
             return result
     return analyse(inp, call=call, started=t0)
 
@@ -1715,7 +1864,16 @@ def overlap(sentence: Any, statement: Any) -> float:
 
 
 def _numbers(refs: Sequence[Tuple[str, str]]) -> set:
-    return {str(n).lower().replace(" ", "") for n, _ in refs or [] if n}
+    """v79.15.2: the cited articles as art_parts reads them, (number, code) -- («62bis», «cp»); a citation with no
+    code («l'art. 1439») -> (number, "")."""
+    return {art_parts(f"{n} {c}".strip()) for n, c in refs or [] if n} - {("", "")}
+
+
+def _cites_same(mine: set, theirs: set) -> bool:
+    """v79.15.2 (review): one article cited by both -- the same number and the same code (art_key: «640 c.p.p.» and
+    «640 c.c.» are never «640 c.p.»); a citation by number alone («art. 640», no code) matches that number in any
+    code."""
+    return any(n == tn and (not c or not tc or c == tc) for n, c in mine for tn, tc in theirs)
 
 
 @lru_cache(maxsize=1)
@@ -1742,13 +1900,15 @@ def counterpart(sentence: str, v: Dict[str, Any], labels: Sequence[str] = ()) ->
     """The verified affermazione_di_diritto the sentence matches: overlap() at least the data's «overlap» (0.6) and,
     when the sentence cites articles, one of the statement's articles' numbers among them (a sentence naming «la
     norma» without a number: any verified statement); None. v79.15.1 (review): `labels` the articles the sentence
-    cites by number alone (bare_cited), read as its articles when citations.article_refs finds none."""
+    cites by number alone (bare_cited), read as its articles when citations.article_refs finds none. v79.15.2
+    (review): the articles compared by number AND code (_cites_same) -- a sentence on «640 c.p.p.» never matches a
+    statement on «640 c.p.»; only a citation with no code matches by number."""
     refs = norm_statement(sentence)
-    nums = _numbers(refs or []) or {_ap().article_key(x)[0].replace(" ", "") for x in labels or []} - {""}
+    mine = _numbers(refs or []) or {art_parts(x) for x in labels or []} - {("", "")}
     need = float((config().get("qa_statements") or {}).get("overlap") or 0.6)
     for s in v.get("statements") or []:
-        theirs = {_ap().article_key(a)[0].replace(" ", "") for a in s.get("articoli") or []}
-        if (not nums or nums & theirs) and overlap(sentence, s.get("testo")) >= need:
+        theirs = {art_parts(a) for a in s.get("articoli") or []} - {("", "")}
+        if (not mine or _cites_same(mine, theirs)) and overlap(sentence, s.get("testo")) >= need:
             return s
     return None
 
@@ -1845,7 +2005,7 @@ def bare_cited(text: Any, cited: Sequence[str], scope: Dict[str, Any]) -> List[s
     with that number, else the excluded one, else «art. <n>» (an article outside the fitted set)."""
     cfg = _bare_cfg()
     text = str(text or "")
-    have = {_ap().article_key(c)[0] for c in cited or []}
+    have = {art_parts(c)[0] for c in cited or []}
     known = [str(x) for x in list(scope.get("fitted") or []) + list(scope.get("named") or [])
              + list(scope.get("excluded") or [])]
     out: List[str] = []
@@ -1855,9 +2015,9 @@ def bare_cited(text: Any, cited: Sequence[str], scope: Dict[str, Any]) -> List[s
             continue
         for raw in [m.group(1)] + [x.group(0) for x in cfg["num"].finditer(m.group(2) or "")]:
             n = _bare_number(raw)
-            if not n or n in have:
+            if not n or art_parts(n)[0] in have:
                 continue
-            hits = [x for x in known if _ap().article_key(x)[0] == n]
+            hits = [x for x in known if art_parts(x)[0] == art_parts(n)[0]]
             mine = [x for x in hits if _among(x, scope.get("fitted") or []) or _among(x, scope.get("named") or [])]
             out.append((mine or hits or [f"art. {n}"])[0])
     return list(dict.fromkeys(out))
@@ -1899,7 +2059,7 @@ def outside(cited: Sequence[str], scope: Dict[str, Any]) -> Tuple[str, List[str]
     if fitted is None:
         return "", []
     loose = [c for c in cited if not _among(c, fitted) and not _among(c, scope.get("named") or [])
-             and _ap().article_key(c)[1] not in (scope.get("exempt_codes") or [])]
+             and art_parts(c)[1] not in (scope.get("exempt_codes") or [])]
     return (ARTICLE_UNFITTED, loose) if loose else ("", [])
 
 
