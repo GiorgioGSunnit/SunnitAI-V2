@@ -101,7 +101,8 @@ def test_rissa_si_on_the_quoted_text_passes():
 
 def test_rissa_three_persons_rule_not_in_the_text_is_rejected_and_counted():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
-        "588 c.p.", "no", "La «rissa» richiede almeno tre persone, mentre i fatti descrivono due persone (S1)."))
+        "588 c.p.", "no", "La rissa richiede almeno tre persone, mentre i fatti descrivono «Tizio e Caio, due "
+                          "persone» (S1)."))     # v79.14.2 (A): a «no» quotes the facts -- an invented count still out
     assert not rec["verified"] and rec["added_content"]
     assert "tre" in rec["reason"] and "almeno" in rec["reason"]
     c = res["counters"]
@@ -111,8 +112,10 @@ def test_rissa_three_persons_rule_not_in_the_text_is_rejected_and_counted():
 def test_rissa_no_quoting_a_passage_the_text_does_not_have_is_rejected():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "no", "Tizio e Caio sono due persone (S1), non una «rissa tra almeno tre persone»."))
-    assert not rec["verified"] and "passo non nel testo" in rec["reason"]
+    # v79.14.2 (A): a «no»'s quote in neither the facts nor the article -- unverified, counted as a quote failure
+    assert not rec["verified"] and "citazione non nei fatti né nel testo dell'articolo" in rec["reason"]
     assert res["counters"]["fit_unverified"] == 1 and res["counters"]["fit_added_content"] == 0
+    assert res["counters"]["fit_no_unverified_quote"] == 1
 
 
 def test_rissa_dipende_with_a_grounded_question_passes_and_touches_its_element():
@@ -148,29 +151,34 @@ def test_dipende_condition_must_be_a_question():
 
 def test_loan_without_instalments_1819_no_quoting_rateale_passes():
     res, rec = _one(MUTUO, FACTS_MUTUO, _item(
-        "1819 c.c.", "no", "Il prestito (S1) è da restituire in un'unica soluzione, non «rateale».", ambito="rimedio"),
-        role="attore")
+        "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
+        ambito="rimedio"), role="attore")
     assert rec["verified"] and rec["fit"] == "no" and rec["passage"] == "rateale" and rec["ambito"] == "rimedio"
-    assert res["counters"]["fit_no"] == 1
+    assert rec["fact_quotes"] == ["da restituire in un'unica soluzione"] and rec["facts"] == ["S1"]
+    assert res["counters"]["fit_no"] == 1 and res["counters"]["fit_no_verified"] == 1
+    # v79.14.2 (A): the 79.13 form -- the article quoted, no fact -- is no longer a verified «no»
+    old = _one(MUTUO, FACTS_MUTUO, _item("1819 c.c.", "no", "Il prestito (S1) è da restituire in un'unica soluzione, "
+                                                            "non «rateale».", ambito="rimedio"))[0]
+    assert old["counters"]["fit_no"] == 0 and old["counters"]["fit_no_unverified_quote"] == 1
 
 
 def test_1819_naming_the_article_itself_is_no_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
-        "1819 c.c.", "no", "L'art. 1819 c.c. non si applica: il prestito (S1) è da restituire in un'unica soluzione, "
-                           "non «rateale».", ambito="rimedio"))[1]
+        "1819 c.c.", "no", "L'art. 1819 c.c. non si applica: il prestito è «da restituire in un'unica soluzione» "
+                           "(S1), non «rateale».", ambito="rimedio"))[1]
     assert rec["verified"], rec["reason"]
 
 
 def test_another_norms_number_is_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
-        "1819 c.c.", "no", "Il prestito (S1) è da restituire in un'unica soluzione, non «rateale», come art. 1820.",
+        "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale», come art. 1820.",
         ambito="rimedio"))[1]
     assert not rec["verified"] and rec["added_content"] and "1820" in rec["reason"]
 
 
 def test_advance_payment_646_judged_on_altrui_with_the_reasoning_verified():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-        "646 c.p.", "no", "L'acconto versato a Beta sul prezzo dei lavori (S1) non è «il denaro o la cosa mobile "
+        "646 c.p.", "no", "L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «il denaro o la cosa mobile "
                           "altrui»: è di Beta."))
     assert rec["verified"] and rec["fit"] == "no" and "altrui" in rec["passage"] and rec["comma"] == "1"
     assert res["counters"]["fit_no"] == 1
@@ -179,13 +187,14 @@ def test_advance_payment_646_judged_on_altrui_with_the_reasoning_verified():
 def test_646_misquoted_passage_fails():
     for quote in ("il denaro altrui", "cosa mobile propria"):
         rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-            "646 c.p.", "no", f"L'acconto versato a Beta (S1) non è «{quote}»."))[1]
-        assert not rec["verified"] and "passo non nel testo" in rec["reason"], quote
+            "646 c.p.", "no", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «{quote}»."))[1]
+        assert not rec["verified"] and "citazione non nei fatti né nel testo" in rec["reason"], quote
 
 
 def test_646_reasoning_adding_a_rule_fails():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-        "646 c.p.", "no", "L'acconto (S1) non è «altrui» perché la proprietà del denaro passa a chi lo riceve."))
+        "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
+                          "passa a chi lo riceve."))
     assert not rec["verified"] and rec["added_content"] and "proprieta" in rec["reason"]
     assert res["counters"]["fit_added_content"] == 1
 
@@ -193,7 +202,8 @@ def test_646_reasoning_adding_a_rule_fails():
 def test_reviewed_note_grounds_the_reasoning():
     norm = dict(APPROPRIAZIONE, note="Nell'acconto la proprietà del denaro passa a chi lo riceve.")
     rec = _one(norm, FACTS_ACCONTO, _item(
-        "646 c.p.", "no", "L'acconto (S1) non è «altrui» perché la proprietà del denaro passa a chi lo riceve."))[1]
+        "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
+                          "passa a chi lo riceve."))[1]
     assert rec["verified"], rec["reason"]
 
 
@@ -250,7 +260,7 @@ def test_two_sentences_are_discarded():
                                                            "Caio sostiene (S2)."))[1]
     assert not rec["verified"] and rec["reason"] == "perché di più frasi"
     rec = _one(MUTUO, FACTS_MUTUO, _item(
-        "1819 c.c.", "no", "Secondo l'art. 1819 c.c. Il prestito (S1) è da restituire in un'unica soluzione, non "
+        "1819 c.c.", "no", "Secondo l'art. 1819 c.c. Il prestito è «da restituire in un'unica soluzione» (S1), non "
                            "«rateale».", ambito="rimedio"))[1]
     assert rec["verified"], rec["reason"]
 
@@ -386,7 +396,7 @@ def test_schema_context_only_with_schemas_on(monkeypatch):
 
 def test_counters_add_up_and_the_flag_defaults_off(monkeypatch):
     items = [_item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa»."),
-             _item("1819 c.c.", "no", "Tizio e Caio (S1) non «rateale» con tre persone.")]
+             _item("1819 c.c.", "no", "«Tizio e Caio, due persone» (S1): non «rateale» con tre persone.")]
     res = ap.judge([RISSA, MUTUO], FACTS_RISSA, "imputato", call=lambda m, k: _reply(*items))
     c = res["counters"]
     assert c["fit_judged"] == c["fit_si"] + c["fit_no"] + c["fit_dipende"] + c["fit_unverified"] == 2

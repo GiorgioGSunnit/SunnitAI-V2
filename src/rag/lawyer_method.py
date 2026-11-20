@@ -580,10 +580,181 @@ AGGRAVANTI_CHECKED = "Aggravanti verificate per il reato contestato: {items}."
 CIRC_PREFIX = "C"
 
 
+# --- v79.14.2 (B): the verified frame binds the charge / claim set ----------------------------------------------------
+# With CASE_FRAME on and the frame verified on the rito (or a penal stage) and the role (case_frame.held / bound: the
+# verified fields only), the records the method may offer as the charge or the claim come from the frame's side of the
+# law: a penal rito (penale, penale_gdp; or, with no rito verified, the stage «indagini») with the client imputato /
+# indagato -- penal sources only (penal_source: the c.p., the c.p.p., a penal provision as case_frame.is_penal reads it --
+# 2621-2642 c.c., a penal law's penal articles --, a law data/institution_laws.json flags «penal» that case_frame's
+# penal_provisions does not list); a civil rito (CIVIL_BINDING_RITI) with a verified role -- never a c.p. article. Every
+# other record stays in the records as context (§2's schede, §4, «Altri profili») marked FRAME_EXCLUDED: never the
+# charge (_charged, main_threat, the assessment), never a thesis candidate (thesis_candidates), so never «Linea
+# principale» nor «Esito probabile»; the thesis call's SCHEDE never label it «addebito o domanda». The frame not
+# verified on the rito or the role: no binding (the 79.14.1 path). The charge set emptied by the binding: no fallback to
+# the excluded -- the charge takes the corpus line's path (BINDING_EMPTY_LINE in §1, the assessment's why).
+# Counters frame_binding_applied, frame_binding_excluded (the articles), frame_binding_empty; log «frame_binding».
+FRAME_EXCLUDED = "frame_excluded"
+FRAME_BINDING_COUNTERS = ("frame_binding_applied", "frame_binding_excluded", "frame_binding_empty")
+CIVIL_BINDING_RITI = ("civile", "lavoro", "famiglia")
+PENAL_SOURCE_CODES = ("cp", "cpp")
+# my drafts (v79.14.2): the corpus line's subject when the frame names no charge or claim
+BINDING_MATERIA = ("questo addebito", "questa domanda")     # a penal binding's, a civil binding's
+
+
+def binding_mode(holder: Optional[Dict[str, Any]]) -> str:
+    """v79.14.2 (B): «penale», «civile» or "" (no binding) from the held frame's verified fields only."""
+    from . import case_frame
+    if not isinstance(holder, dict) or case_frame.held(holder) is None or case_frame.role_unknown_held(holder):
+        return ""
+    role = case_frame.bound(holder, "ruolo")
+    if not role:
+        return ""
+    rito, stage = case_frame.bound(holder, "rito"), case_frame.bound(holder, "stadio")
+    if role == "imputato" and (rito in case_frame.PENAL_RITI or (rito is None and stage == "indagini")):
+        return "penale"
+    if rito in CIVIL_BINDING_RITI and role != "imputato":
+        return "civile"
+    return ""
+
+
+def _law_key(text: Any) -> str:
+    return re.sub(r"[\s.]", "", str(text or "")).lower()
+
+
+def penal_flagged_laws() -> List[str]:
+    """v79.14.2 (B): data/institution_laws.json's laws flagged «penal» that are not codes (their key, compacted)."""
+    return [_law_key(e["law"]) for e in institution_laws() if e.get("penal") and not code_law(str(e["law"]))]
+
+
+def penal_source(label: str) -> bool:
+    """v79.14.2 (B): an article a penal binding may offer as the charge -- the c.p.'s, the c.p.p.'s, a penal provision
+    (case_frame.is_penal: 2621-2642 c.c., a penal law's penal articles), or an article of a law
+    data/institution_laws.json flags «penal» when case_frame's penal_provisions does not list that law (it decides
+    otherwise, by its ranges)."""
+    from . import case_frame
+    a = case_frame.parse_article(label)
+    if not a.get("number"):
+        return False
+    lead = case_frame.lead_code(a.get("rest"))
+    if lead in PENAL_SOURCE_CODES:
+        return True
+    if case_frame.is_penal(a):
+        return True
+    if lead or any(e["_rx"].search(a.get("rest") or "") for e in case_frame._penal_laws()):
+        return False
+    key = _law_key(a.get("rest"))
+    return any(law and law in key for law in penal_flagged_laws())
+
+
+def civil_excluded(label: str) -> bool:
+    """v79.14.2 (B): a civil binding's excluded article -- the c.p.'s."""
+    from . import case_frame
+    return case_frame.lead_code(case_frame.parse_article(label).get("rest")) == "cp"
+
+
+def binding_allows(mode: str, label: str) -> bool:
+    if mode == "penale":
+        return penal_source(label)
+    if mode == "civile":
+        return not civil_excluded(label)
+    return True
+
+
+def frame_excluded(rec: Any) -> bool:
+    return isinstance(rec, dict) and bool(rec.get(FRAME_EXCLUDED))
+
+
+def frame_binding(state: Optional[Dict[str, Any]], records: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.14.2 (B): the binding on the method's records (prepare's, before the assessment), in place: every earlier
+    mark cleared, then each record the mode does not allow marked FRAME_EXCLUDED. {mode, applied, charge_set (the
+    records the charge or the claim against the client was: side «threat» or charged), kept, excluded (the charge set's
+    excluded -- thesis_candidates and prepare add the candidates and the held charge they refuse), empty (a charge set
+    the binding emptied)}."""
+    for rec in (records or {}).values():
+        if isinstance(rec, dict):
+            rec.pop(FRAME_EXCLUDED, None)
+    mode = binding_mode(state)
+    out: Dict[str, Any] = {"mode": mode, "applied": bool(mode), "charge_set": [], "kept": [], "excluded": [],
+                           "empty": False}
+    if not mode:
+        return out
+    for label, rec in (records or {}).items():
+        if isinstance(rec, dict) and not binding_allows(mode, label):
+            rec[FRAME_EXCLUDED] = mode
+    charge_set = [x for x, r in (records or {}).items() if isinstance(r, dict)
+                  and (r.get("side") == "threat" or r.get("charged"))]
+    out["charge_set"] = charge_set
+    out["kept"] = [x for x in charge_set if not frame_excluded(records[x])]
+    out["excluded"] = [x for x in charge_set if frame_excluded(records[x])]
+    out["empty"] = bool(charge_set) and not out["kept"]
+    return out
+
+
+def candidate_subjects(records: Dict[str, Dict[str, Any]]) -> Callable[[Dict[str, Any]], List[str]]:
+    """v79.14.2 (B): a candidate's articles -- its own, a remedy's list, else the records of the elements it contests
+    or rests on (schema_shadow's reading)."""
+    owner = {str(r.get("id")): x for x, rec in (records or {}).items() for r in (rec or {}).get("requisites") or []
+             if isinstance(r, dict) and r.get("id")}
+
+    def subject(c: Dict[str, Any]) -> List[str]:
+        arts = [c["article"]] if c.get("article") else list(c.get("articles") or [])
+        return arts or list(dict.fromkeys(owner[str(i)] for i in list(c.get("contesta") or [])
+                                          + list(c.get("poggia_su") or []) if str(i) in owner))
+    return subject
+
+
+def binding_excluded(ctx: Dict[str, Any], labels: Sequence[str]) -> None:
+    """v79.14.2 (B): more articles the binding kept from the charge (a candidate, the held charge), into the list."""
+    b = ctx.get("frame_binding")
+    if isinstance(b, dict):
+        b["excluded"] = list(dict.fromkeys(list(b.get("excluded") or []) + [str(x) for x in labels if x]))
+
+
+def binding_materia(state: Optional[Dict[str, Any]], mode: str) -> str:
+    """v79.14.2 (B): what the corpus line names for an emptied charge -- the verified frame's charge or claim
+    description, else its institution, else BINDING_MATERIA's words."""
+    from . import case_frame
+    got = case_frame.held(state) if isinstance(state, dict) else None
+    view = case_frame.intake_view(got) if got is not None else {}
+    charge = view.get("charge") or {}
+    return _plain(charge.get("descrizione")) or _plain(view.get("institution")) or \
+        BINDING_MATERIA[1 if mode == "civile" else 0]
+
+
+def bound_assessment(a: Dict[str, Any], b: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.14.2 (B): the assessment of a charge set the binding emptied -- no article, its why the corpus line's
+    («il corpus non contiene ancora informazioni sufficienti su …»); any other assessment as it is."""
+    if not (b or {}).get("empty") or a.get("article"):
+        return a
+    materia = b.get("materia") or BINDING_MATERIA[1 if b.get("mode") == "civile" else 0]
+    return {**a, "frame_binding_empty": True,
+            "why": CORPUS_LINE.split(":")[0].format(materia=materia).replace("Il corpus", "il corpus", 1)}
+
+
+def binding_empty_line(ctx: Dict[str, Any]) -> str:
+    """v79.14.2 (B): §1's corpus line for a charge set the binding emptied (CORPUS_LINE, with its stop); "" else."""
+    b = ctx.get("frame_binding") or {}
+    if not b.get("empty"):
+        return ""
+    return CORPUS_LINE.format(materia=b.get("materia") or BINDING_MATERIA[1 if b.get("mode") == "civile" else 0]) + "."
+
+
+def binding_counters(counters: Dict[str, Any], b: Optional[Dict[str, Any]]) -> None:
+    """v79.14.2 (B): the binding's counters into block_counters (several clients: any applied or emptied, the excluded
+    unioned)."""
+    if not isinstance(b, dict):
+        return
+    counters["frame_binding_applied"] = max(int(counters.get("frame_binding_applied") or 0), int(bool(b.get("applied"))))
+    counters["frame_binding_empty"] = max(int(counters.get("frame_binding_empty") or 0), int(bool(b.get("empty"))))
+    counters["frame_binding_excluded"] = list(dict.fromkeys(list(counters.get("frame_binding_excluded") or [])
+                                                           + list(b.get("excluded") or [])))
+
+
 def _charged(records: Dict[str, Dict[str, Any]]) -> List[str]:
-    """The charged records, in their order -- v79.12.1: never a defence record (a scriminante is no charge)."""
+    """The charged records, in their order -- v79.12.1: never a defence record (a scriminante is no charge); v79.14.2
+    (B): never one the frame's binding excludes."""
     out = sorted(((rec.get("charged"), label) for label, rec in (records or {}).items() if rec.get("charged")
-                  and not defence_record(label, rec)), key=lambda x: x[0])
+                  and not defence_record(label, rec) and not frame_excluded(rec)), key=lambda x: x[0])
     return [label for _, label in out]
 
 
@@ -816,7 +987,7 @@ def main_threat(records: Dict[str, Dict[str, Any]]) -> str:
                and issue_records.counted(x, str(records[x].get("rubrica") or ""))]      # v74: a fattispecie only
     if charged:     # v79.12.4 (item 3): the charged article with the highest maximum pena (posture.mark_sides' mark)
         return next((x for x in charged if records[x].get("exposure")), charged[0])
-    return next((x for x, r in records.items() if r.get("side") == "threat" and _live(r)
+    return next((x for x, r in records.items() if r.get("side") == "threat" and _live(r) and not frame_excluded(r)
                  and issue_records.counted(x, str(r.get("rubrica") or ""))), "")
 
 
@@ -852,7 +1023,8 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
     role = str((posture or {}).get("role") or "")
     records = records or {}
     if role in ACCUSED:
-        label = article if article in records else main_threat(records)       # v79 (E1): the main line's article
+        label = article if article in records and not frame_excluded(records[article]) else \
+            main_threat(records)        # v79 (E1): the main line's article; v79.14.2 (B): never a frame-excluded one
         if not label:                   # v71: no charge on the record -- never «esito pieno»
             return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                     "why": NO_CHARGE_WHY["civile" if (posture or {}).get("family") == "civile" else "penale"]}
@@ -880,11 +1052,11 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
     victim = role in VICTIM_ROLES
     penal_ok = (lambda x: posture_mod.penal_article(x)) if victim else (lambda x: True)
     victim_charge = next((x for x in _charged(records) if _live(records[x]) and penal_ok(x)), "") if victim else ""
-    if article in records and not victim:                       # v79 (E1): the main line's article
-        victim_charge = article
-    label = victim_charge or (main if main in records and penal_ok(main) else next(
+    if article in records and not victim and not frame_excluded(records[article]):     # v79 (E1): the main line's
+        victim_charge = article                                                         # article (v79.14.2 B: bound)
+    label = victim_charge or (main if main in records and penal_ok(main) and not frame_excluded(records[main]) else next(
         (x for x, r in records.items() if r.get("side") != "threat" and _live(r) and penal_ok(x)
-         and not issue_records.defence_article(x)), ""))
+         and not issue_records.defence_article(x) and not frame_excluded(r)), ""))
     if not label:
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                 "why": f"i fatti narrati non indicano la norma su cui {who} fonda la pretesa"}
@@ -938,8 +1110,8 @@ def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Opt
             log["forecast"] = {"was": a.get("article"), "now": b["article"], "esito": b.get("esito"), "defence": True}
         return b
     art = main_article(t, records, elements_by_id(records, ctx.get("circumstances")))
-    if not art or art == a.get("article"):
-        return a
+    if not art or art == a.get("article") or frame_excluded(records.get(art)):     # v79.14.2 (B): never «Esito
+        return a                                                                    # probabile» on an excluded one
     b = assessment(records, posture, client=ctx.get("client") or "", article=art,
                    event=event_of(certain_text(ctx)))           # v79.10.3 (C2, review): the event's alternative only
     if log is not None:
@@ -2215,8 +2387,8 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
     art = c.get("article") or ""
     texts = CODE_ARGUMENTS.get(c["kind"]) or {}
     if c["kind"] == "contest_fit":              # v79.13.0: the applicability judgment's «no» on a kept norm
-        from .applicability import FIT_CONTEST_ARGUMENT, clause
-        return {"pro": _sentence_join([FIT_CONTEST_ARGUMENT["pro"].format(passage=f"«{c.get('passage') or ''}»")]),
+        from .applicability import FIT_CONTEST_ARGUMENT, clause, contest_pro
+        return {"pro": _sentence_join([contest_pro(c)]),                    # v79.14.2 (A): the facts it quotes
                 "contro": _sentence_join([FIT_CONTEST_ARGUMENT["contro"].format(who=who)]),
                 "argomento": _sentence_join([FIT_CONTEST_ARGUMENT["argomento"].format(
                     perche=clause(c.get("perche")))]),
@@ -2360,8 +2532,10 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     victim, civil_role = role in VICTIM_ROLES, role in CIVIL_ROLES
     known_role = role in KNOWN_ROLES                # v79.6 (item 5): an unknown role gets neither side's wording
     offender = known_role and not victim and not civil_role        # v75: the imputato's set
-    threats = [charge] if (records.get(charge) or {}).get("side") == "threat" and fatt(charge) else []
-    threats += [x for x, r in records.items() if r.get("side") == "threat" and x not in threats and fatt(x)]
+    threats = [charge] if (records.get(charge) or {}).get("side") == "threat" and fatt(charge) \
+        and not frame_excluded(records.get(charge)) else []
+    threats += [x for x, r in records.items() if r.get("side") == "threat" and x not in threats and fatt(x)
+                and not frame_excluded(r)]                  # v79.14.2 (B): the frame's side of the law only
     trace: Dict[str, Any] = {"role": role, "charge": charge, "threats": list(threats), "threats_from": "side"}
     if not threats and role in ACCUSED:     # v79.7 (item 2): no record marked «threat» -- the charged ones, else the
         threats = [x for x in _charged(records) if fatt(x) and _live(records[x])]            # assessment's article
@@ -2604,7 +2778,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {})})
     for e in ctx.get("fit_contests") or []:     # v79.13.0: a charged or named norm the judgment says does not govern
         add("contest_fit", fit_contest_tesi(e), article=e["article"], passage=e.get("passage") or "",   # the facts
-            perche=e.get("perche_printed") or "", fit_facts=list(e.get("facts") or []))
+            perche=e.get("perche_printed") or "", fit_facts=list(e.get("facts") or []),
+            fact_quotes=list(e.get("fact_quotes") or []))                  # v79.14.2 (A)
     if not offender:
         for label, r in contests["integrated"]:
             contest(label, r)
@@ -2627,6 +2802,15 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                                   "family": family_of_label(c["article"])} for c in gated]
         out[:] = [c for c in out if c not in gated]
         _log("candidates_out_of_family", ctx["family_dropped"])
+    if (ctx.get("frame_binding") or {}).get("applied"):     # v79.14.2 (B): no candidate on an excluded article
+        subject = candidate_subjects(records)
+        barred = [c for c in out if not c.get("fallback") and any(frame_excluded(records.get(x)) or (
+            x not in records and not binding_allows(ctx["frame_binding"]["mode"], x)) for x in subject(c))]
+        if barred:
+            binding_excluded(ctx, [x for c in barred for x in subject(c)])
+            out[:] = [c for c in out if c not in barred]
+            _log("frame_binding_candidates", {"mode": ctx["frame_binding"]["mode"],
+                                              "dropped": [{"kind": c["kind"], "articles": subject(c)} for c in barred]})
     keep = [c for c in out if c.get("fallback")]
     rest = [c for c in out if not c.get("fallback")]
     if offender:                # v79.7: past the cap, the minority contests go first, the containment line never
@@ -2692,10 +2876,10 @@ def fit_kept_lines(state: Dict[str, Any], posture: Dict[str, Any], records: Dict
         if kind == "contest":
             out.append(fit_contest_tesi(item).rstrip(".") + ".")
         else:
-            q, ans = applicability.FIT_OBJECTION
+            q, _ = applicability.FIT_OBJECTION
             out.append(q.format(who=_other_side(posture or {}), art=item["article"],
                                 perche=applicability.clause(item["perche_printed"])).rstrip(".") + ". "
-                       + ans.format(passage=f"«{item.get('passage') or ''}»").rstrip(".") + ".")
+                       + applicability.objection_answer(item).rstrip(".") + ".")      # v79.14.2 (A)
     return out
 
 
@@ -3624,6 +3808,8 @@ def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, D
             continue
         side = {"threat": "addebito o domanda contro il cliente", "weapon": "norma del cliente"}.get(
             str(rec.get("side") or ""), "circostanza" if rec.get("circumstance") else "")
+        if frame_excluded(rec) and rec.get("side") == "threat":     # v79.14.2 (B): context, never the charge
+            side = ""
         lines.append(f"- art. {label}" + (f" — {_plain(rec.get('rubrica'))}" if rec.get("rubrica") else "")
                      + (f" [{side}]" if side else ""))
         lines += [f"  · [{r.get('id')}] {_short(r.get('text'), 140)}: {ESITO.get(r.get('status'), r.get('status'))}"
@@ -4095,7 +4281,12 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
     ctx["selection_counts"] = selection_counts(ctx, plan, raw)
     ctx["thesis_log"] = thesis_log(ctx, messages, scored[best]["raw_reply"] if best is not None else "", raw, plan,
                                    seconds, error, scored, best)
-    _log("plan", {"candidates": len(ctx["candidates"]), "samples": [x["score"] for x in scored], "best": best,
+    _log("plan", {"candidates": len(ctx["candidates"]),
+                  "candidate_articles": [", ".join(candidate_subjects(ctx.get("records") or {})(c))     # v79.14.2
+                                         for c in ctx["candidates"]],                                    # (B)
+                  "frame_binding": {k: (ctx.get("frame_binding") or {}).get(k) for k in
+                                    ("mode", "applied", "excluded", "empty")},
+                  "samples": [x["score"] for x in scored], "best": best,
                   "choice": ctx["thesis_choice"], "counts": ctx["selection_counts"],
                   "dropped": clean_log.get("dropped"),
                   "orientamenti": len(plan["orientamenti"]), "seconds": seconds, "log": ctx["thesis_log"]},
@@ -4144,8 +4335,9 @@ def refresh_after_elements(ctx: Dict[str, Any]) -> None:
     inputs = ctx.get("refresh_inputs") or {}
     records = printed_records(ctx.get("records") or {})
     by_id = {s["id"]: s for s in ctx.get("sentences") or [] if isinstance(s, dict) and s.get("id")}
-    ctx["assessment"] = assessment(records, ctx.get("posture") or {}, inputs.get("main") or "",
-                                   ctx.get("client") or "", event=event_of(ctx.get("certain_text") or ""))
+    ctx["assessment"] = bound_assessment(assessment(records, ctx.get("posture") or {}, inputs.get("main") or "",
+                                                    ctx.get("client") or "", event=event_of(ctx.get("certain_text") or "")),
+                                         ctx.get("frame_binding"))         # v79.14.2 (B): an emptied charge set
     ctx["subsumption"] = subsumption_section(records, inputs.get("order") or [], by_id, ctx.get("circumstances"),
                                              inputs.get("aggravante_note") or "")
 
@@ -6596,6 +6788,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # v79.12.5 (item 2): the corpus line in §1 -- with no admitted claim (no_claim_summary), else wherever the first
     # read's institution has no module and nothing graded in its family (corpus_line)
     general = "" if kind or missing_laws_line(ctx) else corpus_line(ctx)
+    bound_line = binding_empty_line(ctx)                # v79.14.2 (B): the charge set the frame's binding emptied
+    general = bound_line or general
     summary = no_claim_summary(ctx, kind) if kind else _with_line(
         summary_section({}, sols, main, a, client, (ctx.get("charge") or {}).get("article") or "", records, log),
         general)
@@ -6603,7 +6797,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     ctx["corpus_line"] = log["corpus_line"]
     # v79.14.1 (item 2): each institution's governing law as the line read it; the line on a code institution (must be 0)
     log["corpus_gap"] = dict(ctx.get("corpus_gap_log") or {})
+    # v79.14.2 (B, review): the binding's corpus line counted too -- on a code charge (640 c.p. missing from the
+    # records) it is the honesty line on a code institution, as interactive_flow.role_corpus_counted reads the answer
     ctx["corpus_line_code"] = len(corpus_line_on_code(summary, ctx))
+    log["frame_binding_line"] = bool(bound_line) and bound_line in summary          # v79.14.2 (B)
     summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
                                        missing_laws_line(ctx)) if x)                             # v79.9 (B2)
     keyed = [
@@ -6926,6 +7123,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
     # assesses (the record below: §2, §4, the assessment, the objections' fallback)
     records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
+    binding = frame_binding(state, every)       # v79.14.2 (B): the verified frame binds the charge set (marks every)
     # v79.12.7 (item 2): the attenuanti the facts trigger (data/penal_lines.json «circumstance_triggers»: a diverbio, a
     # concrete step of the riparazione, a favourable element) -- candidates, held «da provare» by the fact
     triggers: Dict[str, Dict[str, Any]] = {}
@@ -6946,7 +7144,13 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     circ_notes, circ_sources = attach_notes({}, circ, rows)
     notes, note_sources = {**notes, **circ_notes}, {**note_sources, **circ_sources}
     certain = " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x))
+    if binding["applied"] and main in records and frame_excluded(records[main]):    # v79.14.2 (B): never the main
+        binding["excluded"] = list(dict.fromkeys(binding["excluded"] + [main]))     # line's anchor
+        main = ""
     a = assessment(records, posture or {}, main, client, event=event_of(certain))      # v79.10.3 (C2, review)
+    if binding["empty"]:        # v79.14.2 (B): no fallback to the excluded -- the corpus line's path for the charge
+        binding["materia"] = binding_materia(state, binding["mode"])
+        a = bound_assessment(a, binding)
     # v79.10.3 (C1): the riti the charge's pena from the procedural store admits (charge_rites); a precluded one is §8's.
     # (review) the gate on what is written (ctx["rites"]: compose's rites_out) is the imputato's before the sentence
     # alone -- the persona offesa's, an appeal's or the execution's answer may describe any rito
@@ -6987,10 +7191,10 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
             if kind == "contest":
                 fit_contests.append(item)
             else:
-                q, ans = applicability_.FIT_OBJECTION
+                q, _ = applicability_.FIT_OBJECTION
                 fit_objections.append({"obiezione": q.format(who=_other_side(posture or {}), art=item["article"],
                                                             perche=applicability_.clause(item["perche_printed"])),
-                                       "risposta": ans.format(passage=f"«{item.get('passage') or ''}»")})
+                                       "risposta": applicability_.objection_answer(item)})     # v79.14.2 (A)
     ctx = {"case": case, "case_id": case_id_, "client": client, "rito": (posture or {}).get("rito") or "",
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
            "notes": notes,
@@ -7029,6 +7233,16 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "attenuanti_log": att_log,
            "refresh_inputs": {"main": main, "order": list(order), "aggravante_note": note,
                               "id_floor": max_element_id(all_records, every)}}
+    ctx["frame_binding"] = binding                  # v79.14.2 (B)
+    held_charge = str((ctx["charge"] or {}).get("article") or "")
+    if binding["applied"] and held_charge and not binding_allows(binding["mode"], held_charge):
+        binding_excluded(ctx, [held_charge])        # the held charge on the other side of the law: no charge printed
+        ctx["charge"] = {}
+    if binding["applied"]:
+        if isinstance(state, dict):
+            binding_counters(state.setdefault("block_counters", {}), binding)
+        _log("frame_binding", {k: binding.get(k) for k in ("mode", "charge_set", "kept", "excluded", "empty",
+                                                          "materia")})
     if fit:                     # v79.13.0: the kept-named contests (thesis_candidates), the removed (out of scope)
         ctx["fit_contests"] = fit_contests
         ctx["fit_removed"] = [str(x.get("article")) for x in state.get("fit_removed") or [] if x.get("article")]

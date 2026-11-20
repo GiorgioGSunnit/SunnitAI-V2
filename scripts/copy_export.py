@@ -233,6 +233,15 @@ EXTRA = (
                                    "(v79.13.0)"),
     ("applicability", "FIT_PROSE_TITLE", "Risposta in prosa (senza il metodo): il blocco con la norma nominata o "
                                          "contestata che il giudizio dice non governare i fatti (v79.13.0, revisione)"),
+    # v79.14.2 (A): a «no» resting on the facts it quotes, with no passage of the article quoted
+    ("applicability", "FIT_CONTEST_PRO_FACTS", "Metodo, «Soluzioni a confronto»: il pro della linea quando il «no» "
+                                               "cita solo i fatti (v79.14.2, voce A)"),
+    ("applicability", "FIT_OBJECTION_ANSWER_FACTS", "Metodo, «Obiezioni e risposte»: la risposta quando il «no» cita "
+                                                    "solo i fatti (v79.14.2, voce A)"),
+    # v79.14.2 (B): the charge set the verified frame's binding emptied -- CORPUS_LINE's subject when the frame names none
+    ("lawyer_method", "BINDING_MATERIA", "Metodo, «Sintesi» ed «Esito probabile»: l'oggetto della riga sul corpus "
+                                         "quando il quadro del caso esclude ogni addebito o domanda candidato e non ne "
+                                         "descrive uno (v79.14.2, voce B)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference

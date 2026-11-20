@@ -4014,6 +4014,14 @@ def case_text(state: Dict[str, Any]) -> str:
     return case
 
 
+def fact_source(state: Dict[str, Any]) -> str:
+    """v79.14.2 (A, review): the text a «no»'s fact quotes are verified against -- the user's own words only: the
+    message, the request, each precisazione, one per line; never the pipeline's labels (case_text's «PRECISAZIONI DEL
+    CLIENTE …», «RICHIESTA DELL'UTENTE: …»)."""
+    parts = [state.get("text"), state.get("request")] + list(state.get("additions") or [])
+    return "\n".join(str(x).strip() for x in parts if str(x or "").strip())
+
+
 def _works(facts: Dict[str, Any]) -> List[Dict[str, Any]]:
     from . import fact_signals
     return [w for w in facts.get("works_or_signs") or [] if not re.search(fact_signals._CLOSURE_USE_RE, _low(w.get("what")))]
@@ -7292,6 +7300,8 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
         ctx["rulings_record"], ctx["rulings"] = record, rulings_mod.citable(record)
         state["rulings_record"] = record
     mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
+    if (ctx.get("frame_binding") or {}).get("applied"):     # v79.14.2 (B): the candidates the binding refused too
+        lawyer_method.binding_counters(state.setdefault("block_counters", {}), ctx["frame_binding"])
     state["thesis_counts"] = ctx.get("selection_counts") or {}
     if isinstance(ctx.get("schema_shadow"), dict):     # v79.11 (6): ELEMENT_SCHEMAS only -- the shadow admission whole
         state["schema_shadow"] = shadow_state(ctx["schema_shadow"])  # (the nightly's reasons; the counts keep numbers)
@@ -7605,7 +7615,10 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     role = str((posture or {}).get("role") or "")
     from . import case_frame                    # v79.14.0 (CASE_FRAME): the verified frame as the judgment's context
     context = case_frame.fit_context(state.get("case_frame")) if case_frame.enabled() else ""
-    result = applicability.judge(norms, facts, role, started=started, frame_context=context)
+    # v79.14.2 (A): a «no»'s fact quotes verified against the user's own words (fact_source: the message, the request,
+    # the client's precisazioni -- never a pipeline label)
+    result = applicability.judge(norms, facts, role, started=started, frame_context=context,
+                                 case_text=fact_source(state))
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
     known = [f["id"] for f in facts]
@@ -7618,6 +7631,9 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         key = _key(_parse_label(label))
         removed.add(label)
         dead.add(key)
+        # v79.14.2 (A): the removal's log line -- the discard line's event, its reason the removal's
+        applicability._log("applicability_fit_discard", {"article": label, "reason": applicability.REMOVED_REASON,
+                                                         "fit": e.get("fit"), "perche": str(e.get("perche") or "")[:300]})
         # (review) what the removal took, to put back when the user names it or the facts change (fit_readmit)
         entries[key] = {"article": label, "passage": e.get("passage") or "", "perche": e.get("perche") or "",
                         "facts": list(e.get("facts") or []), "ambito": e.get("ambito"), "facts_sig": sig,
@@ -7650,6 +7666,7 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     counters = state.setdefault("block_counters", {})
     counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})
     counters["norms_removed_by_fit"] = len(removed)
+    counters["fit_removed"] = len(removed)          # v79.14.2 (A): the brief's name for it
     counters["fit_kept_named"] = len(done["kept_named"])
     # a judgment rejected for unquoted content never has an effect (must be 0: verify never passes one)
     counters["fit_added_content_in_effects"] = sum(1 for part in done.values() for e in part if e.get("added_content"))

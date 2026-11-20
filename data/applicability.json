@@ -325,6 +325,7 @@
     "- \"articolo\": l'articolo esattamente come ti è dato;",
     "- \"fit\": \"si\" (la disposizione governa i fatti), \"no\" (non li governa) o \"dipende\" (un solo punto, che i fatti non dicono, decide);",
     "- \"perche\": UNA sola frase. Deve citare tra « » le parole esatte dell'articolo su cui il giudizio si fonda e nominare tra parentesi gli id dei fatti (es. S1, S3). Usa solo le parole del passo citato e dei fatti, come sono scritte: non aggiungere requisiti, numeri, soglie, condizioni o regole che il passo citato non dice; non citare altre norme né la giurisprudenza;",
+    "- con \"no\": il \"perche\" si giustifica citando tra « » le parole esatte della frase dei fatti su cui il \"no\" si fonda, nient'altro;",
     "- \"condizione\": solo con \"dipende\": il solo punto che deciderebbe, come una domanda all'utente che finisce con «?», scritta con parole dell'articolo e dei fatti; altrimenti \"\";",
     "- \"ambito\": uno tra fattispecie, scriminante, circostanza, rimedio, procedura, definizione.",
     "",

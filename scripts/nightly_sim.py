@@ -258,6 +258,14 @@ element's «da provare» template printed again in a §7, or any template in the
 (a ruling whose quoted passage never names the record's institution: data/ruling_relevance.json). Check zero_counters
 also fails a cell with objection_template_repeated or count_sentences_left above 0.
 
+v79.14.2 (A, B; block_counters, in the counters table): A -- the fit verified by verdict type (a «no» quotes the fact
+it rests on, an exact substring of the case text): fit_no_verified (the verified «no»), fit_no_unverified_quote (a «no»
+whose fact quote is missing or not in the case text: the norm kept), fit_removed (the norms a verified «no» removed,
+each logged applicability_fit_discard «removed: fit no (verified)»), also in the «Applicability judgment» table; B --
+the verified frame binds the charge set (lawyer_method.frame_binding): frame_binding_applied, frame_binding_excluded
+(the articles kept from the charge, a list: a penal frame's civil articles, a civil frame's c.p. ones) and
+frame_binding_empty (the binding emptied the charge set: §1's corpus line, no fallback to the excluded).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -691,7 +699,8 @@ def fit_lines(results: List[Dict[str, Any]]) -> List[str]:
     if not rows:
         return []
     keys = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
-            "fit_added_content_in_effects", "norms_removed_by_fit", "fit_kept_named", "fit_seconds")
+            "fit_added_content_in_effects", "norms_removed_by_fit", "fit_kept_named", "fit_seconds",
+            "fit_no_verified", "fit_no_unverified_quote", "fit_removed")         # v79.14.2 (A)
     lines = ["", "## Applicability judgment (APPLICABILITY_FIT)", "",
              "| cell | " + " | ".join(keys) + " | prompt |", "|---" * (len(keys) + 2) + "|"]
     for c in rows:

@@ -923,6 +923,10 @@ nothing: every word of its judgment is checked by code before it has any effect.
   `fit_timeouts`, `fit_seconds` (the whole step), `fit_removed_stripped` (what the last pass found: a path to fix when
   not 0) and `fit_removed_left` (must be 0). Flag off: none of them is set. Logged: `applicability_effects` (the
   candidates, each removed norm with its passage and perché, the kept-named, the dipende with their questions).
+  v79.14.2 (section 11.15): `fit_no_verified` (the verified «no», = `fit_no`), `fit_no_unverified_quote` (a «no»
+  whose fact quote is missing or not in the case text), `fit_removed` (the norms a verified «no» removed, =
+  `norms_removed_by_fit`; each removal logged `applicability_fit_discard` with the reason «removed: fit no
+  (verified)»).
 - **The nightly** (`scripts/nightly_sim.py`) sets `APPLICABILITY_FIT=true` for its cells (`--no-applicability-fit`
   skips it); the counters table carries the counters; the section «Applicability judgment (APPLICABILITY_FIT)» lists
   per cell every removed norm with its quoted passage and perché, every kept-named «no», every dipende with its
@@ -1052,7 +1056,9 @@ verification; the verified frame is bound across the whole pipeline (below, «Th
   not the method's -- the posture's --, or the client served is a party the frame lists as controparte: must be 0);
   `charge_rito_mismatch` (a penal rito whose held charge is no penal provision: must be 0). `role_flip` reads every
   reader of the client: the settled one, `client_of`, the plan's and the analysis' (a counterparty in any of them
-  counts).
+  counts). v79.14.2 (section 11.15): `frame_binding_applied` (the verified frame bound the charge set),
+  `frame_binding_excluded` (the articles kept from the charge: a list), `frame_binding_empty` (the binding emptied the
+  charge set: the corpus line in §1).
 - **The nightly** (`scripts/nightly_sim.py`) sets `CASE_FRAME=true` for its cells (`--no-case-frame` skips it); the
   counters go to the counters table; the section «Case frame (CASE_FRAME)» prints per cell the counters and the frame
   field by field -- its quote, a dropped field with why, the fallback value the rules filled it with -- and every step
@@ -1256,6 +1262,75 @@ act in the text (`administrative_act`).
   `count_left`, `structure_checks`; `rulings.relevance_table`, `relevance_stem`, `relevance_stems`, `institution_stems`, `passage_names_institution`,
   `build`; `scripts/nightly_sim.py:ZERO_COUNTERS`.
 
+### 11.15 79.14.2 (the two verified model steps wired into the pipeline: the fit by verdict type, the frame binding the charge set)
+
+No new flag: A runs under `APPLICABILITY_FIT`, B under `CASE_FRAME`. No change to retrieval, the rulings, the schemas
+or any prompt but one line of the fit's.
+
+- **A. The fit verification by verdict type** (`applicability.verify`, `verify_no`). A «si» or a «dipende»: unchanged
+  -- it quotes a passage of the article, verified on the article's text (no quote: «nessun passo dell'articolo
+  citato»). A «no» quotes the fact sentence(s) it rests on, «nei fatti»: every quote an exact substring of the case
+  text (`interactive_flow.fact_source`: the user's own words -- the message, the request, each precisazione, one per
+  line --, never the pipeline's labels such as case_text's «PRECISAZIONI DEL CLIENTE …»; with none given, the facts'
+  text) --
+  `fact_quote_at`: case_frame's quote normalisation (`case_frame.found_at`'s strip of the marks and edge punctuation,
+  then `_full_tokens`: NFC, lowercased, «’» as «'», accent-folded with the accent kept as a mark), matched as a
+  contiguous run of words with no stem, no omitted or added word, never just after a negation of the text; review: a
+  clause, not a word -- at least `FACT_QUOTE_MIN_WORDS` (2) content words, inside one sentence of the case text (never
+  across a stop before a capital or a line break) -- or, beside one, a passage of the article verified as a «si»'s; no
+  article quote is required. A «no» with no quote of the case
+  text, or with a quote in neither the facts nor the article: unverified, `fit_no_unverified_quote`, the norm kept. Its
+  other words keep 79.13's (c) on what it may say: grounded on its quotes, the named and quoted facts, the article's
+  rubrica and the reviewed note -- review: never the article's unquoted text, so a claim in the article's words the case
+  never states («i raggiri non sono stati usati da uno dei contraenti») is discarded, an article word the «no» rests on
+  is quoted; a count or a restriction outside the quotes only as a quoted passage's of the article (an
+  invented rule -- «la rissa richiede almeno tre persone» -- is still discarded, `fit_added_content`); a named fact id
+  existing; one sentence; never contradicting a fact. A verified «no» removes the norm as 79.13.0 did -- from the
+  records, the topics and «others» (so «Altri profili» never gains it), the candidates offered to `lawyer_method_plan`
+  and §4 «Norme», the last pass dropping a sentence still citing it -- except, as in 79.13.0, a norm the user names or
+  the text charges: kept, the judgment the defence's contest or the other side's objection, its «pro» and its answer
+  on the facts it quotes when it quotes no passage (`FIT_CONTEST_PRO_FACTS`, `FIT_OBJECTION_ANSWER_FACTS`, my drafts);
+  review: under a penal or civil binding (B) a kept norm on the other side of the law stays in the records but its
+  contest is not offered to the plan (the brief: never «Linea principale»).
+  Each removal is logged `applicability_fit_discard` with the reason «removed: fit no (verified)»
+  (`REMOVED_REASON`). The prompt (`data/applicability.json`) gains one line after the perché's: «con "no": il "perche"
+  si giustifica citando tra « » le parole esatte della frase dei fatti su cui il "no" si fonda, nient'altro»
+  (`prompt_hash` changes). Counters `fit_no_verified`, `fit_no_unverified_quote`, `fit_removed`.
+
+  — `applicability.fact_quote_at`, `_crosses_sentence`, `verify`, `verify_no`, `judge` (`case_text`), `effects`,
+  `contest_pro`, `objection_answer`; `interactive_flow.fact_source`, `applicability_fit`;
+  `lawyer_method.code_argument`, `fit_kept_lines`, `prepare`. The synthetic penal fixture
+  (`tests/test_v79_14_2_fixture.py`) runs through `interactive_flow.single_shot` -> `write_answer`, round 1, the
+  models, the graph and the writers faked.
+- **B. The frame binds the charge set** (`lawyer_method.frame_binding`, in `prepare` before the assessment). Read from
+  the held frame's verified fields only (`case_frame.held` / `bound`): a penal rito (penale, penale_gdp -- or, with no
+  rito verified, the stage «indagini») with the client imputato / indagato binds to penal sources: the c.p., the
+  c.p.p., a penal provision as `case_frame.is_penal` reads it (2621-2642 c.c., a penal law's penal articles by
+  `penal_provisions`' ranges), and a law `data/institution_laws.json` flags `"penal": true` that `penal_provisions`
+  does not list (`penal_source`; flagged: the c.p. and c.p.p. entries, d.P.R. 309/1990, d.lgs. 231/2001 -- both
+  listed in `penal_provisions`, which decides by its ranges). A civil rito (civile, lavoro, famiglia) with a verified
+  role binds against the c.p. (`civil_excluded`). Every other record stays in the records as context (§2's schede, §4,
+  «Altri profili») marked `frame_excluded`: never the charge (`_charged`, `main_threat`, `_assessment`, the held
+  charge `ctx["charge"]`), never a thesis candidate (`thesis_candidates`: no threat on it, no candidate whose article or
+  contested elements are its), so never «Linea principale» nor «Esito probabile» (`forecast`); the thesis call's
+  SCHEDE never label it «addebito o domanda». The frame not verified on the rito (or a penal stage) or the role, a
+  «sconosciuto» role, `CASE_FRAME` off: no binding (79.14.1's path). The binding emptying the charge set: no fallback
+  to the excluded -- the assessment's why and §1 take the corpus line (`CORPUS_LINE`, «Il corpus non contiene ancora
+  informazioni sufficienti su <the frame's charge description, else its institution, else «questo addebito» / «questa
+  domanda»: `BINDING_MATERIA`, my drafts>»; review: `corpus_line_code` counts it like any other honesty line, so a
+  frame charge that is a code article missing from the records -- «truffa», 640 c.p. -- raises that must-be-0 counter:
+  the brief's corpus path and 79.14.1's code rule meet there, left visible, not masked), the containment line the only
+  candidate of an imputato. Counters `frame_binding_applied`, `frame_binding_excluded` (the articles), and
+  `frame_binding_empty`; logged `lawyer_method_frame_binding` (mode, the charge set, kept, excluded, empty) and
+  `lawyer_method_frame_binding_candidates` (the candidates refused), the plan's log (`lawyer_method_plan`) carrying the
+  binding and each candidate's articles.
+
+  — `lawyer_method.binding_mode`, `penal_source`, `civil_excluded`, `binding_allows`, `frame_binding`,
+  `candidate_subjects`, `binding_excluded`, `binding_materia`, `bound_assessment`, `binding_empty_line`,
+  `binding_counters`, `refresh_after_elements`, `_charged`,
+  `main_threat`, `_assessment`, `forecast`, `thesis_candidates`, `records_block`, `prepare`, `method_plan`, `compose`;
+  `interactive_flow.method_inputs`; `data/institution_laws.json`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -1331,4 +1406,5 @@ act in the text (`administrative_act`).
 | v79.13.0 (applicability judgment, `APPLICABILITY_FIT`) | For every admitted candidate the model judges whether the provision governs the facts (si / no / dipende, a one-sentence perché quoting the article and naming fact ids, a condizione as a question, an ambito), in batches of at most 8, thinking off, temperature 0; the code verifies the quoted passage in the text, the fact ids, every content word against the passage, the named facts and the reviewed note, and the condizione against the text and the facts; an unverified judgment has no effect (`fit_unverified`), one adding content is counted (`fit_added_content`). The step runs once per answer after the family gate and the cap, before the decomposition (`interactive_flow.applicability_fit`, `decompose_records`' hook), within 20 s from its start: a verified «no» removes the norm from the records, the candidates and §4 (`state["fit_removed"]`; the last pass drops a sentence still citing it; put back and judged again when the user later names it or the facts change, all undone when the flag is turned off), except a norm the user names or the text charges -- kept, the judgment printed as the defence's contest (`contest_fit`) or the other side's objection; a «dipende» forces the touched elements «da provare» (`issue_records.settle` reads `fit_open`) and asks its condizione in §10. Counters norms_removed_by_fit, fit_kept_named, fit_added_content_in_effects (0), fit_seconds, fit_removed_stripped, fit_removed_left (0); the nightly turns it on and lists every removed norm with its passage (check applicability_fit, also failing when the last pass had to strip a removed norm; the follow-up checked too). Review: a «no» or «dipende» must rest on the quoted passage (no count or restriction it does not set, a requirement the facts lack, a negation), the quote is matched with numbers and short words exact and never cut after a negation, a perché never contradicts its fact, the reply's article matched however spelt, conflicting duplicates unjudged, a queued batch cancelled at the deadline, a special law's charge protected under its store alias, a kept named norm printed with no method record and on the prose path. See 11.12. |
 | v79.14.0 (case frame, `CASE_FRAME`) | One model call at the top of the pipeline (`intake.request_intake`, before intake's rules; once per request, a follow-up reusing it) reads the case frame from the request's full text (parti with their lato, cliente, ruolo, rito, stadio -- each with a quoted perché --, addebito_o_domanda, istituto, quesiti), thinking off, temperature 0, within 15 s; the code verifies every field against the text with the 79.13 fit checker's quote match (`applicability.passage_at`) before it counts: a field that fails is dropped (`frame_unverified.<field>`) and the rules fill it (`frame_fallback.<field>`); a cliente or a ruolo with no quote never accepted, a party listed as controparte never the client, a name quoted only «a carico di» never the client, a penal rito's charge article a penal provision (c.p., 2621-2642 c.c., a penal law's penal articles) or dropped (`charge_rito_dropped`), names matched exactly, a client's quote showing it and never contradicting «assisto X», the quesiti whole questions of the text; a failed, malformed or late call leaves every field to the rules (`frame_failed`). The verified frame is the single source of client, role, rito, stage, charge, institution and questions for the whole pipeline -- intake (confidence `frame`), resolve, the posture, the charge rule, the stated, settled and multiple clients, the first read's client and institution (module activation), the method's header and thesis call, the plan's client and position, «Risposte ai quesiti» --: a later step that disagrees is logged `frame_conflict` with its name and loses; with no client under the frame no reader serves a party; a «sconosciuto» role prints the honesty line (`ROLE_UNKNOWN_CLIENT` new) with neither side's wording. On the delivered answer: `frame_conflict`, `role_flip`, `charge_rito_mismatch` (each must be 0; the nightly's check `case_frame` fails a cell on any), `frame_conflict_attempts`. The verified frame goes to the fit judgment as context (`frame_context`). The nightly turns it on and prints the frame per cell with each fallback's value; `scripts/frame_timing.py` times the call. See 11.13. |
 | v79.14.1 (the 79.12.8 items 1-3, 6, 8: role flip, honesty line, administrative act, objections, count sentence, §5 relevance) | (1) The method's role is the intake's resolved role unless the request states the client's own (logged `role_decision`): the resisting reading moved from `posture.of` into `intake.resolve`; several clients take the intake's role or the request's statement, never the first read's word; the assumed party and the settled client are on the intake's side, never the counterparty (`data/party_sides.json`, the party_threat subject); the intake's rule-read client over the extraction's, the facts' client over the plan's model-written party; counters `role_flip` (must be 0), `role_request_wins`, `role_client_moved`. (2) «Il corpus non contiene ancora informazioni sufficienti su …» only when the institution's governing law is outside the codes and missing from the archive (`data/institution_laws.json`); never for a code institution (legittima difesa); a no-claim answer keeps its ten sections with `NO_CLAIM_SUMMARY`; counters `corpus_line`, `corpus_line_code` (must be 0). (3) The amministrativo module, family and regime, and the c.p.a. articles (the family gate, the scope check, a last pass) only with an administrative act against the client (`data/administrative_act.json`); counters `amministrativo_refused_no_act`, `amministrativo_without_act` (must be 0), `act_last_pass_stripped`. (6) With every element of the main record «da provare», §7 is one model-written objection on the strongest element (the only one the main line turns on, else the most supported by the facts, else the distinctive one, else the first), grounded as every rule statement, or the line saying none is -- never the per-element template repeated (once at most in any answer); written for the client's role (the imputato's defence objects to a victim client) and, with `CASE_FRAME` on, for the frame's client and role; counters `objection_grounded`, `objection_none`, `objection_template_repeated` (must be 0). (8) Under the method the «requisiti provati N su M» count is never in prose -- the step-aside path's status sentence is the verdict alone, a last pass removes any left; counters `count_sentences_removed`, `count_sentences_left` (must be 0); §5 drops a ruling whose quoted passage never names the record's institution (`data/ruling_relevance.json`), counter `rulings_passage_irrelevant_dropped`. The nightly's `zero_counters` check fails a cell with any must-be-0 counter above 0. Shipped after 79.14.0: with `CASE_FRAME` on, item 1's rules are the fallback for a frame field left empty or unverified (a disagreement logs `frame_conflict` and loses); ONE `role_flip` (`role_flip_reasons` unioned in `case_frame.audit`, each distinct flip once; the nightly fails it once: `case_frame` when it ran, `zero_counters` otherwise); the frame's institution feeds `governing_law`; a frame «amministrativo» rito is never the act. Review: the debtor's other wordings read as resisting (writ «contro» the client, «gli ha notificato», another party's demand of no one named); each multi-client role checked against its own reference (`method_role`), a posture flip or a served counterparty counted once; special-law patterns never take a code institution («fallimento delle trattative», «vita privata»), a module's leading action decides its law; the act read sentence by sentence in the case's words only, a private party's diniego / revoca / delibera only with a public authority, never an act that grants or one negated after it; a mixed record keeps one objection per open element; the count in its other wordings; §5's roots without inflection and suffix, generic roots naming nothing, «612 bis» (section 11.14) |
+| v79.14.2 (the two verified model steps wired in) | (A) The fit verified by verdict type: a «si» or «dipende» quotes the article as before; a «no» quotes the fact sentence(s) it rests on, verified by exact substring of the user's own text after case_frame's normalisation (`applicability.fact_quote_at`, `interactive_flow.fact_source`; a clause of one sentence, two content words at least), no article quote required, its other words grounded on the quotes, the facts, the rubrica and the note (an invented count, rule or claim discarded); an unverified «no» keeps the norm (`fit_no_unverified_quote`), a verified one removes it as 79.13.0 did (the candidates offered to the plan, §4; a named or charged norm kept as the defence's contest), each removal logged `applicability_fit_discard` «removed: fit no (verified)»; one prompt line added; counters `fit_no_verified`, `fit_no_unverified_quote`, `fit_removed`. (B) The verified frame binds the charge set (`lawyer_method.frame_binding`): penal rito (or the stage «indagini») with the client imputato / indagato -- the charge from penal sources only (c.p., c.p.p., `case_frame.is_penal`, the laws `data/institution_laws.json` flags «penal»); civil rito -- never a c.p. article; the excluded stay as context, never the charge, a candidate, «Linea principale» or «Esito probabile»; not verified on the rito or the role: no binding; emptied: the corpus line in §1, no fallback; counters `frame_binding_applied`, `frame_binding_excluded`, `frame_binding_empty` (section 11.15) |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

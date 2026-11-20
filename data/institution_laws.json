@@ -1,5 +1,5 @@
 {
-  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. Code's draft list, for the lawyer's review; edit here.",
+  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. v79.14.2 (B): «penal»: true flags a penal source -- the c.p. and the c.p.p. entries, and the penal laws (d.P.R. 309/1990, d.lgs. 231/2001) -- what a verified penal frame with the client imputato or indagato may offer as the charge (lawyer_method.penal_source: the codes c.p. and c.p.p., case_frame.is_penal for a law case_frame.json's penal_provisions lists -- its penal articles by range --, and a flagged law it does not list, whole). Code's draft list, for the lawyer's review; edit here.",
   "institutions": [
     {
       "name": "contratto di viaggio",
@@ -79,6 +79,7 @@
     {
       "name": "responsabilità degli enti",
       "law": "d.lgs. 231/2001",
+      "penal": true,
       "patterns": [
         "\\bresponsabilit\\w*\\s+amministrativ\\w*\\s+(?:degli|delle)\\s+(?:enti|persone\\s+giuridiche|societ)",
         "\\bmodell\\w*\\s+(?:di\\s+)?organizzazione(?:,|\\s+e)\\s+(?:di\\s+)?gestione",
@@ -122,6 +123,7 @@
     {
       "name": "stupefacenti",
       "law": "d.P.R. 309/1990",
+      "penal": true,
       "patterns": [
         "\\bstupefacent",
         "\\bspaccio\\b"
@@ -137,6 +139,7 @@
     {
       "name": "legittima difesa",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\blegittima\\s+difesa\\b",
         "\\bdifesa\\s+legittima\\b",
@@ -146,6 +149,7 @@
     {
       "name": "stato di necessità",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\bstato\\s+di\\s+necessit"
       ]
@@ -153,6 +157,7 @@
     {
       "name": "scriminanti",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\bscriminant",
         "\\bcause\\s+di\\s+giustificazione\\b",
@@ -164,6 +169,7 @@
     {
       "name": "delitti contro la persona",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\bomicidi",
         "\\blesion\\w*\\s+personal",
@@ -184,6 +190,7 @@
     {
       "name": "delitti contro il patrimonio",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\bfurt",
         "\\brapin",
@@ -201,6 +208,7 @@
     {
       "name": "delitti contro la pubblica amministrazione",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\bpeculato",
         "\\bconcussion",
@@ -215,6 +223,7 @@
     {
       "name": "parte generale del reato",
       "law": "c.p.",
+      "penal": true,
       "patterns": [
         "\\btentativ",
         "\\bconcorso\\s+(?:di\\s+persone|nel\\s+reato|formale|materiale)",
@@ -231,6 +240,7 @@
     {
       "name": "procedura penale",
       "law": "c.p.p.",
+      "penal": true,
       "patterns": [
         "\\bquerel",
         "\\bmisur\\w*\\s+cautelar",
