@@ -6,7 +6,8 @@ invented names only; the article texts are statutory (640, 641, 62-bis c.p.; 138
 1. the input: the verified frame's fields, the fitted norms' schema elements and numbered periods (A<art>.<n>, the
    fit's own splitter), the sentences S1..Sn as the flow numbers them (the system's assumptions never sent), the
    questions; the prompt from data, thinking off, temperature 0
-2. the verifier: a bad S-id, a bad A-id, a non-verbatim element, «provato» on another party's or an authority's
+2. the verifier: a bad S-id, a bad A-id, an element that is no E-id (v79.15.1; was: a non-verbatim element),
+   «provato» on another party's or an authority's
    assertion -> «contestato», the client's own statement never downgraded, «escluso» with no S-id, a remedy article as
    the line -> rejected, one re-ask, then «da determinare», the frame's charge missing -> one re-ask, then the frame's
    article with every element «da_provare», a law statement with no verifying A-id dropped; at most two calls
@@ -166,14 +167,26 @@ def _civil(frame=CIVIL_FRAME, norms=CIVIL_NORMS):
                         client_roles=["attore"])
 
 
+ELEMENTS = {"640 c.p.": E640, "641 c.p.": E641, "1385 c.c.": E1385, "1453 c.c.": E1453, "2043 c.c.": E2043}
+
+
+def eid(article, element):
+    """v79.15.1 (brief item 1): the model cites an element by its E-id -- a schema element's text becomes its id
+    («A640cp:E1»); any other text is passed as written (no E-id: rejected / not read, analysis_bad_eid)."""
+    texts = ELEMENTS.get(article) or []
+    if element in texts:
+        return A.element_id(article, texts.index(element) + 1)
+    return element
+
+
 def _line(article, element, tesi="La linea.", cf_=("S1",), cn=None):
-    return {"articolo": article, "elemento_in_gioco": element, "tesi": tesi, "cita_fatti": list(cf_),
+    return {"articolo": article, "elemento_in_gioco": eid(article, element), "tesi": tesi, "cita_fatti": list(cf_),
             "cita_norma": list(cn or [])}
 
 
 def _el(article, element, esito, cf_=(), parte=None):
-    return {"articolo": article, "elemento": element, "esito": esito, "cita_fatti": list(cf_),
-            "parte_che_afferma": parte}
+    return {"articolo": article, "elemento": eid(article, element) if article else element, "esito": esito,
+            "cita_fatti": list(cf_), "parte_che_afferma": parte}
 
 
 class _Model:
@@ -227,13 +240,13 @@ def test_the_prompt_is_the_datas_with_the_verified_frame_the_facts_the_norms_and
     inp = _penal()
     system, human = [m.content for m in A.build_messages(inp)]
     assert system == A.prompt_system() and "linea_principale" in system and "affermazioni_di_diritto" in system
-    assert len(A.prompt_hash()) == 12 and A.prompt_hash() == "eb6d96ed1f46"
+    assert len(A.prompt_hash()) == 12 and A.prompt_hash() == "472423ea32d3"      # v79.15.1: elements by id
     assert human.startswith("QUADRO DEL CASO (verificato):\nCliente: Paolo Sarti\nRuolo del cliente: imputato/indagato")
     assert "Addebito o domanda: 640 c.p.; truffa" in human and "- Giulia Neri (controparte; acquirente)" in human
     assert "S3 [certo] Secondo la Procura" in human and "S8 [certo] L'indagato dichiara" in human
     assert "S9" not in human and "Parte assistita assunta" not in human          # the system's assumption: no fact
     assert "ARTICOLO: 62-bis c.p. (rimedio o parte generale: mai una linea)" in human
-    assert "ARTICOLO: 640 c.p.\n" in human and "- con artifizi o raggiri" in human
+    assert "ARTICOLO: 640 c.p.\n" in human and "- [A640cp:E1] con artifizi o raggiri" in human
     assert "QUESITI DELL'UTENTE:\n- Quali rischi corre Paolo Sarti?" in human
     kwargs = A.request_kwargs()
     assert kwargs["temperature"] == 0 and kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
@@ -299,7 +312,8 @@ def test_a_verified_civil_analysis_its_elements_and_its_law_statements():
     (_line("640 c.p.", E640[0], "Tesi.", ["S9"], ["A640cp.1"]), "cita_fatti inesistenti: S9"),     # sistema
     (_line("640 c.p.", E640[0], "Tesi.", ["S1"], ["A641cp.1"]), "cita_norma non dell'articolo: A641cp.1"),
     (_line("640 c.p.", E640[0], "Tesi.", ["S1"], ["A640cp.2"]), "cita_norma non dell'articolo: A640cp.2"),
-    (_line("640 c.p.", "gli artifizi e i raggiri", "Tesi.", ["S1"], ["A640cp.1"]), "elemento_in_gioco non è il testo"),
+    (_line("640 c.p.", "gli artifizi e i raggiri", "Tesi.", ["S1"], ["A640cp.1"]),      # v79.15.1: a text, no id
+     "elemento_in_gioco «gli artifizi e i raggiri» non è l'id di un elemento"),
     (_line("640 c.p.", E640[0], "", ["S1"], ["A640cp.1"]), "tesi mancante"),
     (_line("640 c.p.", E640[0], "Tesi.", [], []), "nessun id citato"),
     (_line("999 c.p.", E640[0], "Tesi.", ["S1"]), "articolo non tra le norme applicabili"),
@@ -316,19 +330,34 @@ def test_a_line_with_a_bad_id_or_a_non_verbatim_element_is_rejected_and_re_asked
     assert "respinta" in reask[3].content and why in reask[3].content
 
 
-def test_an_element_matched_verbatim_only_after_whitespace_and_quote_normalisation():
-    assert A.verbatim_key("  l’altra può   recedere ") == "l'altra può recedere"
-    assert A.verbatim_key("«con artifizi o raggiri»") == "con artifizi o raggiri"
-    assert A.verbatim_key("Con artifizi o raggiri") != A.verbatim_key("con artifizi o raggiri")     # case as written
-    model = _Model(_reply(_line("640 c.p.", "  con  artifizi o raggiri ", "Tesi.", ["S5"], ["A640cp.1"]), elementi=[
-        _el("640 c.p.", "«inducendo taluno in errore»", "escluso", ["S5"]),
+def test_an_element_is_read_by_its_id_only():
+    """v79.15.1 (brief item 1, replaces the verbatim test): elemento_in_gioco and elemento are E-ids, verified by
+    existence; a text -- even the element's own -- or an unknown id is never read (analysis_bad_eid); the printed text
+    is the schema's."""
+    assert A.parse_eid(" «A640cp:E2» ") == ("640cp", 2) and A.parse_eid("E3") == ("", 3)
+    assert A.parse_eid("con artifizi o raggiri") is None and A.parse_eid("A640cp.1") is None
+    model = _Model(_reply(_line("640 c.p.", "A640cp:E1", "Tesi.", ["S5"], ["A640cp.1"]), elementi=[
+        _el("640 c.p.", "A640cp:E2", "escluso", ["S5"]),
         _el("640 c.p.", "induce in errore la vittima", "provato", ["S2"]),           # a paraphrase: never read
-        _el(None, "procura a sé o ad altri un ingiusto profitto", "provato", ["S2"])]))   # cut short: not verbatim
+        _el("640 c.p.", E640[2], "provato", ["S2"]) | {"elemento": E640[2]},         # the text itself: no id
+        _el(None, "A640cp:E9", "provato", ["S2"])]))                                  # past the last element
     res = A.analyse(_penal(), call=model)
     an = res["analysis"]
-    assert an["linea_principale"]["elemento_in_gioco"] == E640[0]
+    assert an["linea_principale"]["elemento_in_gioco"] == E640[0] and an["linea_principale"]["eid"] == "A640cp:E1"
     assert [e["esito"] for e in an["elementi"]["640 c.p."]] == ["da_provare", "escluso", "da_provare"]
-    assert res["counters"]["analysis_element_not_verbatim"] == 2 and res["counters"]["analysis_element_missing"] == 2
+    assert [e["eid"] for e in an["elementi"]["640 c.p."]] == ["A640cp:E1", "A640cp:E2", "A640cp:E3"]
+    assert res["counters"]["analysis_bad_eid"] == 3 and res["counters"]["analysis_element_missing"] == 2
+    assert "analysis_element_not_verbatim" not in res["counters"]
+    # a bare «E<n>» on the line's own article is read; another article's id never
+    model = _Model(_reply(_line("640 c.p.", "E2", "Tesi.", ["S5"], ["A640cp.1"]),
+                          elementi=[_el(None, "E3", "escluso", ["S5"]), _el(None, "A641cp:E1", "escluso", ["S5"])]))
+    res = A.analyse(_penal(), call=model)
+    assert res["analysis"]["linea_principale"]["elemento_in_gioco"] == E640[1]
+    assert [e["esito"] for e in res["analysis"]["elementi"]["640 c.p."]] == ["da_provare", "da_provare", "escluso"]
+    model = _Model(_reply(_line("640 c.p.", "A641cp:E1", "Tesi.", ["S5"], ["A640cp.1"])), GOOD_PENAL)
+    res = A.analyse(_penal(), call=model)
+    assert "non è l'id di un elemento dello schema di questo articolo (A640cp:E1…E3)" in res["rejected"][0]["why"]
+    assert res["counters"]["analysis_bad_eid"] == 1 and len(model.seen) == 2
 
 
 def test_provato_on_another_partys_or_an_authoritys_assertion_is_contestato_with_the_party():
@@ -396,7 +425,9 @@ def test_escluso_contestato_and_provato_need_an_existing_s_id():
 
 
 def test_a_remedy_article_as_the_line_is_rejected_re_asked_once_then_da_determinare():
-    no_claim = {k: v for k, v in CIVIL_FRAME.items() if k != "addebito_o_domanda"}
+    # v79.15.1: an istituto that is no rubrica -- «caparra confirmatoria» is 1385 c.c.'s (the rubrica fallback)
+    no_claim = {k: v for k, v in CIVIL_FRAME.items() if k != "addebito_o_domanda"} | {
+        "istituto": {"testo": "caparra del preliminare", "frase": "«caparra»"}}
     remedy = _reply(_line("1453 c.c.", E1453[0], "Si chiede la risoluzione.", ["S4"], ["A1453cc.1"]))
     model = _Model(remedy, remedy)
     res = A.analyse(_civil(frame=no_claim), call=model)
@@ -485,7 +516,8 @@ def test_the_deadline_cuts_the_call_and_nothing_is_printed(monkeypatch):
 
 
 def test_a_failed_re_ask_keeps_the_first_replys_verification_with_its_fallbacks():
-    no_claim = {k: v for k, v in CIVIL_FRAME.items() if k != "addebito_o_domanda"}
+    no_claim = {k: v for k, v in CIVIL_FRAME.items() if k != "addebito_o_domanda"} | {     # v79.15.1: no rubrica
+        "istituto": {"testo": "caparra del preliminare", "frase": "«caparra»"}}
     model = _Model(_reply(_line("1453 c.c.", E1453[0], "Risoluzione.", ["S4"], ["A1453cc.1"])),
                    RuntimeError("down"))
     res = A.analyse(_civil(frame=no_claim), call=model)
@@ -539,7 +571,7 @@ def test_run_reads_the_state_and_logs_the_analysis_step_line(monkeypatch):
     assert res["status"] == "ok" and res["analysis"]["linea_principale"]["articolo"] == "640 c.p."
     human = model.seen[0]["messages"][1].content
     assert "ARTICOLO: 640 c.p.\n" in human and "62-bis c.p. (rimedio o parte generale" in human
-    assert "641 c.p." not in human and "[A640cp.1]" in human and "- con artifizi o raggiri" in human
+    assert "641 c.p." not in human and "[A640cp.1]" in human and "- [A640cp:E1] con artifizi o raggiri" in human
     assert "QUADRO DEL CASO (verificato):" in human and "S9" not in human
     line = [d for e, d in events if e == "analysis_step"]
     assert len(line) == 1 and line[0]["prompt_hash"] == A.prompt_hash() and line[0]["status"] == "ok"

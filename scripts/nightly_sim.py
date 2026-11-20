@@ -291,6 +291,22 @@ removed), norms_sentences_dropped (§4's, likewise), legacy_disagrees_line and l
 logged «legacy_plan» and never rendered, against the verified analysis: its main line's article, its element
 verdicts); the section also prints the step's status and prompt hash per cell (state["analysis_step"]).
 
+v79.15.1 (build A; in ANALYSIS_STEP_KEYS): item 1 -- analysis_bad_eid (an element id that names no schema element of
+its article: the line rejected or the verdict not read; replaces analysis_element_not_verbatim); item 2 --
+analysis_line_fallback_rubrica (no verified leading line after the re-ask and no frame charge article: the frame's named
+charge / claim found a fitted rubrica, which leads); item 3 -- analysis_line_exception (a claimant's line on an
+exception / limit element, refused), objections_from_allegations (§7: one per non-client allegation behind a
+«contestato» element), objections_from_exceptions (§7: a claimant's exception elements the model raised).
+v79.15.1 (build B, item 4; in ANALYSIS_STEP_KEYS): the Q&A, §4's prose and §7's written objections reviewed --
+qa_sentences_replaced (a rule with no verified twin replaced by its article's first verified affermazione),
+qa_sentences_dropped_dependent (an anaphoric sentence dropped with the one before it), prose_excluded_article_dropped (a
+sentence citing an article the binding excluded or the fit removed), prose_unfitted_article_dropped (one citing an
+article outside the fitted set the user did not name), objections_sentences_dropped (§7's rule with no verified
+statement for its article, dropped); qa_sentences_dropped / norms_sentences_dropped now count only a rule with no
+verified statement on its article (one with such a statement is replaced).
+v79.15.1 (review; in ANALYSIS_STEP_KEYS): analysis_line_kept_first (a line kind verified on the first reply kept
+because the re-ask's line of that kind was rejected).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -721,14 +737,22 @@ def frame_lines(results: List[Dict[str, Any]]) -> List[str]:
 # v79.15.0 (item 1): the verified analysis step's counters (src/rag/analysis_step.COUNTERS), in the counters table
 ANALYSIS_STEP_KEYS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
                       "analysis_line_rejected", "analysis_line_undetermined", "analysis_frame_charge_missing",
-                      "analysis_bad_sid", "analysis_bad_aid", "analysis_element_not_verbatim", "analysis_element_missing",
+                      "analysis_bad_sid", "analysis_bad_aid", "analysis_bad_eid", "analysis_element_missing",
                       "analysis_esito_invalid", "analysis_provato_downgraded", "analysis_provato_unsupported",
                       "analysis_escluso_unsupported", "analysis_contestato_unsupported", "law_statements_kept",
                       "law_statements_dropped", "law_statements_off_article", "law_statements_ungrounded",
                       "analysis_seconds",
                       # build B: the rendering from the verified analysis, the old engine compared
                       "qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
-                      "legacy_disagrees_esito")
+                      "legacy_disagrees_esito",
+                      # v79.15.1 (build A): elements by id, the rubrica fallback, the claimant's line, §7's objections
+                      "analysis_line_exception", "analysis_line_fallback_rubrica", "objections_from_allegations",
+                      "objections_from_exceptions",
+                      # v79.15.1 (review): a line verified on the first reply kept after the re-ask rejected its own
+                      "analysis_line_kept_first",
+                      # v79.15.1 (build B, item 4): the prose replaced, not deleted
+                      "qa_sentences_replaced", "qa_sentences_dropped_dependent", "prose_excluded_article_dropped",
+                      "prose_unfitted_article_dropped", "objections_sentences_dropped")
 
 
 def analysis_lines(results: List[Dict[str, Any]]) -> List[str]:

@@ -106,21 +106,27 @@ def analysis_reply(parsed, attempt):
     procura, societa = _sid(facts, "Secondo la Procura"), _sid(facts, "La società sostiene")
     cash, denies = _sid(facts, "Dario Melis lavorava"), _sid(facts, "Dario Melis nega")
     dolo = _pick(el, "profitto")
-    elementi = [{"articolo": "646 c.p.", "elemento": dolo, "esito": "provato", "cita_fatti": [procura],
+
+    def ref(e):                 # v79.15.1: the element cited by its id
+        return H.eid(parsed, "646 c.p.", e)
+    elementi = [{"articolo": "646 c.p.", "elemento": ref(dolo), "esito": "provato", "cita_fatti": [procura],
                  "parte_che_afferma": None}]
     for e in el:
         if e == dolo:
             continue
         if "appropria" in e.lower():
-            elementi.append({"articolo": "646 c.p.", "elemento": e, "esito": "provato", "cita_fatti": [societa],
+            elementi.append({"articolo": "646 c.p.", "elemento": ref(e), "esito": "provato",
+                             "cita_fatti": [societa],
                              "parte_che_afferma": None})
         elif "possesso" in e.lower():
-            elementi.append({"articolo": "646 c.p.", "elemento": e, "esito": "provato", "cita_fatti": [cash],
+            elementi.append({"articolo": "646 c.p.", "elemento": ref(e), "esito": "provato",
+                             "cita_fatti": [cash],
                              "parte_che_afferma": None})
         else:
-            elementi.append({"articolo": "646 c.p.", "elemento": e, "esito": "da_provare", "cita_fatti": [],
+            elementi.append({"articolo": "646 c.p.", "elemento": ref(e), "esito": "da_provare",
+                             "cita_fatti": [],
                              "parte_che_afferma": None})
-    return {"linea_principale": {"articolo": "646 c.p.", "elemento_in_gioco": dolo,
+    return {"linea_principale": {"articolo": "646 c.p.", "elemento_in_gioco": ref(dolo),
                                  "tesi": "Il fine di profitto di Dario Melis non è provato: lo afferma solo la Procura, "
                                          "e Dario Melis nega di aver trattenuto il denaro.",
                                  "cita_fatti": [procura, denies], "cita_norma": [norms["646 c.p."]["periods"][0]]},

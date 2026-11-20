@@ -109,7 +109,8 @@ def link(topic, reqs, sents):
 def _line(parsed, article, word, tesi, facts):
     norm = parsed["norms"][article]
     element = next((e for e in norm["elements"] if word in e.lower()), norm["elements"][0])
-    return {"articolo": article, "elemento_in_gioco": element, "tesi": tesi, "cita_fatti": facts,
+    return {"articolo": article, "elemento_in_gioco": H.eid(parsed, article, element), "tesi": tesi,
+            "cita_fatti": facts,
             "cita_norma": [norm["periods"][0]]}
 
 
@@ -124,17 +125,23 @@ def analysis_reply(parsed, attempt):
                                                                            "del preliminare.", [bassi]),
                 "linea_subordinata": None, "elementi": [], "affermazioni_di_diritto": []}
     norm = parsed["norms"]["1385 c.c."]
+
+    def ref(e):                 # v79.15.1: the element cited by its id
+        return H.eid(parsed, "1385 c.c.", e)
     elementi = []
     for e in norm["elements"]:
         low = e.lower()
         if "a titolo di caparra" in low:
-            elementi.append({"articolo": "1385 c.c.", "elemento": e, "esito": "provato", "cita_fatti": [paid],
+            elementi.append({"articolo": "1385 c.c.", "elemento": ref(e), "esito": "provato",
+                             "cita_fatti": [paid],
                              "parte_che_afferma": None})
         elif "ricevuta" in low:
-            elementi.append({"articolo": "1385 c.c.", "elemento": e, "esito": "provato", "cita_fatti": [bassi],
+            elementi.append({"articolo": "1385 c.c.", "elemento": ref(e), "esito": "provato",
+                             "cita_fatti": [bassi],
                              "parte_che_afferma": None})
         else:
-            elementi.append({"articolo": "1385 c.c.", "elemento": e, "esito": "da_provare", "cita_fatti": [],
+            elementi.append({"articolo": "1385 c.c.", "elemento": ref(e), "esito": "da_provare",
+                             "cita_fatti": [],
                              "parte_che_afferma": None})
     period2 = norm["periods"][1] if len(norm["periods"]) > 1 else norm["periods"][0]
     return {"linea_principale": _line(parsed, "1385 c.c.", "ricevuta", "Anna Corsi può recedere ed esigere il doppio "
@@ -213,7 +220,8 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     assert "art. 1385 c.c." in sol and "1453" not in sol and "2043" not in sol
     assert H.section(answer, "conclusioni").startswith("**Linea principale**: art. 1385 c.c.")
     # the Q&A: the unverified statements of 1453 and 2043 c.c. removed, the verified 1385 c.c. one printed
-    assert c["qa_sentences_dropped"] >= 1
+    # v79.15.1 (item 4): the unverified 1385 c.c. statement is replaced by its verified one, no longer dropped
+    assert c["qa_sentences_dropped"] + c["qa_sentences_replaced"] >= 1
     assert WRITER["1453 c.c."] not in answer and WRITER["2043 c.c."] not in answer and QA_DROPPED not in answer
     assert QA_KEPT in H.section(answer, "risposte") or QA_KEPT in answer.split("**1. ")[0]
     assert "**Affermazioni di diritto verificate**" in answer

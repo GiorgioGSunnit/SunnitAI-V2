@@ -7760,7 +7760,8 @@ def legacy_plan_logged(state: Dict[str, Any], contexts: Sequence[Optional[Dict[s
     """v79.15.0 (build B): the old engine's plan of each composed client (lawyer_method.legacy_plan, compared with the
     verified analysis) logged «legacy_plan» -- never rendered; the counters legacy_disagrees_line,
     legacy_disagrees_esito, qa_sentences_dropped (the Q&A statements of a norm with no verified counterpart, removed)
-    and norms_sentences_dropped (§4's, likewise) summed over the clients into block_counters; state["legacy_plan"] the
+    and norms_sentences_dropped (§4's, likewise) -- v79.15.1 (item 4): every other prose counter of
+    analysis_step.RENDER_COUNTERS too -- summed over the clients into block_counters; state["legacy_plan"] the
     plans."""
     from .verbose_logger import vlog
     ctxs = [c for c in contexts or [] if c]
@@ -7768,8 +7769,10 @@ def legacy_plan_logged(state: Dict[str, Any], contexts: Sequence[Optional[Dict[s
     counters = state.setdefault("block_counters", {})
     counters["legacy_disagrees_line"] = sum(int(p.get("legacy_disagrees_line") or 0) for p in plans)
     counters["legacy_disagrees_esito"] = sum(int(p.get("legacy_disagrees_esito") or 0) for p in plans)
-    counters["qa_sentences_dropped"] = sum(int(c.get("qa_sentences_dropped") or 0) for c in ctxs)
-    counters["norms_sentences_dropped"] = sum(int(c.get("norms_sentences_dropped") or 0) for c in ctxs)
+    from . import analysis_step       # v79.15.1 (item 4): every prose counter of the rendering, the new ones included
+    for k in analysis_step.RENDER_COUNTERS:
+        if k not in ("legacy_disagrees_line", "legacy_disagrees_esito"):
+            counters[k] = sum(int(c.get(k) or 0) for c in ctxs)
     state["legacy_plan"] = _jsonable(plans)
     for p in plans:
         vlog("legacy_plan", p)

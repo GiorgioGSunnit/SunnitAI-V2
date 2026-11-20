@@ -204,8 +204,8 @@ def test_compose_with_the_verified_analysis_never_prints_the_no_claim_sections(m
             "elements": [{"id": "R1", "testo": "consegnare la cosa"}]}
     inp = A.make_input(frame, [norm], T._sents(["Tizio ha consegnato la cosa a Caio."]), [], client="Tizio",
                        client_roles=["attore"])
-    reply = T._reply(T._line("1476 c.c.", "consegnare la cosa", "Tizio chiede la consegna della cosa.", ["S1"],
-                             ["A1476cc.1"]), elementi=[T._el("1476 c.c.", "consegnare la cosa", "provato", ["S1"])])
+    reply = T._reply(T._line("1476 c.c.", "A1476cc:E1", "Tizio chiede la consegna della cosa.", ["S1"],     # v79.15.1:
+                             ["A1476cc.1"]), elementi=[T._el("1476 c.c.", "A1476cc:E1", "provato", ["S1"])])  # by id
     result = A.analyse(inp, call=T._Model(reply))
     assert result["status"] == "ok"
     ctx["verified_analysis"] = A.view(result, inp)

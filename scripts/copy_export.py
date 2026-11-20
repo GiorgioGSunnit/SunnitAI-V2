@@ -282,6 +282,20 @@ EXTRA = (
                                       "l'afferma (v79.15.0, voce 2)"),
     ("analysis_step", "TABLE_HEAD", "Metodo, tabella degli elementi: le intestazioni (v79.15.0, voce 2)"),
     ("analysis_step", "SOLUTIONS_HEAD", "Metodo, «Soluzioni a confronto»: le intestazioni (v79.15.0, voce 2)"),
+    # v79.15.1 (items 2-3, ANALYSIS_STEP): the rubrica fallback's line, §7 from the verified analysis -- labels only
+    ("analysis_step", "FALLBACK_TESI", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni»: la linea trovata "
+                                       "dalla rubrica dell'addebito o della domanda nominati dal quadro, penale / "
+                                       "civile (v79.15.1, voce 2)"),
+    ("analysis_step", "OBJ_ALLEGATION", "Metodo, «Obiezioni e risposte»: l'allegazione di un'altra parte che contesta "
+                                        "un elemento (v79.15.1, voce 3)"),
+    ("analysis_step", "OBJ_EXCEPTION", "Metodo, «Obiezioni e risposte»: l'eccezione o il limite della norma sollevati "
+                                       "contro la domanda del cliente (v79.15.1, voce 3)"),
+    ("analysis_step", "ANS_STATUS", "Metodo, «Obiezioni e risposte»: la risposta, l'esito verificato dell'elemento "
+                                    "(v79.15.1, voce 3)"),
+    ("analysis_step", "ANS_CLIENT_FACTS", "Metodo, «Obiezioni e risposte»: la risposta, i fatti del cliente citati "
+                                          "(v79.15.1, voce 3)"),
+    ("analysis_step", "ANS_NO_CLIENT_FACT", "Metodo, «Obiezioni e risposte»: nessun fatto del cliente citato "
+                                            "(v79.15.1, voce 3)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference

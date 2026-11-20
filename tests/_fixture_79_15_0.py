@@ -37,7 +37,7 @@ from src.rag import lawyer_method as M  # noqa: E402
 from src.rag import verbose_logger  # noqa: E402
 
 FLAGS = ("ANALYSIS_STEP", "CASE_FRAME", "APPLICABILITY_FIT", "LAWYER_METHOD")
-EVENTS = ("analysis_step", "applicability_fit", "legacy_plan")
+EVENTS = ("analysis_step", "applicability_fit", "legacy_plan", "lawyer_method_prose_review")     # v79.15.1
 NEW_COUNTERS = tuple(A.COUNTERS) + tuple(A.RENDER_COUNTERS) + ("fit_unverified_ids", "fit_no_unverified_ids",
                                                                "fit_protected_kept")
 
@@ -48,7 +48,7 @@ def _no_network(*a, **k):
 
 def parse_prompt(human: str) -> Dict[str, Any]:
     """The analysis step's human message read back: {"facts": {S-id: text}, "norms": {article: {"elements": [...],
-    "periods": [A-ids], "remedy": bool}}}."""
+    "eids": [the elements' E-ids, v79.15.1], "periods": [A-ids], "remedy": bool}}}."""
     facts = {i: t for i, t in re.findall(r"^(S\d+) \[[^\]]+\] (.*)$", human, re.MULTILINE)}
     norms: Dict[str, Dict[str, Any]] = {}
     current, mode = None, ""
@@ -56,7 +56,7 @@ def parse_prompt(human: str) -> Dict[str, Any]:
         m = re.match(r"^ARTICOLO: (.+?)( \(rimedio o parte generale: mai una linea\))?$", line)
         if m:
             current = m.group(1)
-            norms[current] = {"elements": [], "periods": [], "remedy": bool(m.group(2))}
+            norms[current] = {"elements": [], "eids": [], "periods": [], "remedy": bool(m.group(2))}
             mode = ""
             continue
         if current is None:
@@ -66,7 +66,9 @@ def parse_prompt(human: str) -> Dict[str, Any]:
         elif line.startswith("Testo (periodi numerati):"):
             mode = "per"
         elif mode == "el" and line.startswith("- ") and line != "- (nessuno)":
-            norms[current]["elements"].append(line[2:])
+            e = re.match(r"^- \[(A[^\]]+:E\d+)\] (.*)$", line)          # v79.15.1: «- [A<art>:E<n>] <testo>»
+            norms[current]["eids"].append(e.group(1) if e else "")
+            norms[current]["elements"].append(e.group(2) if e else line[2:])
         elif mode == "per":
             p = re.match(r"^\[(A[^\]]+)\]", line)
             if p:
@@ -89,6 +91,12 @@ class AnalysisModel:
         return json.dumps(self.reply(parsed, len(self.calls)), ensure_ascii=False)
 
 
+def eid(parsed: Dict[str, Any], article: str, text: str) -> str:
+    """v79.15.1: the E-id the prompt gave the element of that text."""
+    norm = parsed["norms"][article]
+    return norm["eids"][norm["elements"].index(text)]
+
+
 def rows_of(articles):
     return [{"_article": [n, c], "_grade": 3, "s": {"name": f"{n}.0.0", "plain_text": text, "titolo_articolo": rubrica},
              "d": {"id": doc, "name": name}} for n, c, text, rubrica, doc, name in articles]
@@ -97,9 +105,18 @@ def rows_of(articles):
 def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     """The case through the real entry. case: TEXT, ARTICLES, FRAME_REPLY, fit_reply, link, analysis_reply, title,
     anchor, rubrica, documents, client, writer_line (label -> the writer's paragraph), writer_question (optional: a
-    question section's title -> its text)."""
+    question section's title -> its text), OLDER_FRAME (optional, v79.15.1: the older frame's fields in round 1's
+    analysis, e.g. central_issue_candidates), objections (optional, v79.15.1: the thesis call's «obiezioni»), ENV
+    (optional, v79.15.1: more environment flags) and REVIEWED_SCHEMAS (optional, v79.15.1: reviewed element-schema
+    lines, written to the run's ARTICLE_SCHEMAS_REVIEWED_FILE)."""
     for flag in FLAGS:
         monkeypatch.setenv(flag, "true")
+    for key, value in (getattr(case, "ENV", None) or {}).items():      # v79.15.1: a case's own flags
+        monkeypatch.setenv(key, value)
+    reviewed = getattr(case, "REVIEWED_SCHEMAS", None)                   # v79.15.1: the lawyer's schema overlay
+    if reviewed:
+        with open(tmp_path / "reviewed.jsonl", "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(x, ensure_ascii=False) + "\n" for x in reviewed)
     monkeypatch.setenv("THESIS_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("ARTICLE_SCHEMAS_FILE", str(tmp_path / "schemas.jsonl"))
     monkeypatch.setenv("ARTICLE_SCHEMAS_REVIEWED_FILE", str(tmp_path / "reviewed.jsonl"))
@@ -118,7 +135,16 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     monkeypatch.setattr(cf, "_default_call", lambda m, k: json.dumps(case.FRAME_REPLY, ensure_ascii=False))
     monkeypatch.setattr(ap, "_default_call", case.fit_reply)
     monkeypatch.setattr(A, "_default_call", model)
-    monkeypatch.setattr(ai_chat, "call_chat_n", F._thesis_replies)
+    objections = getattr(case, "objections", None)
+    if objections is None:
+        monkeypatch.setattr(ai_chat, "call_chat_n", F._thesis_replies)
+    else:                       # v79.15.1: the thesis call's objections as the case gives them
+        def thesis(messages, n, **kw):
+            ids = re.findall(r"^- \[(T\d+)\]", messages[-1].content, re.MULTILINE)
+            valued = {i: {"pro": "p", "contro": "c", "argomento": "a", "realismo": "medio"} for i in ids}
+            reply = {"valutazioni": valued, "obiezioni": list(objections)}
+            return [json.dumps(reply, ensure_ascii=False)] * max(1, int(n or 1))
+        monkeypatch.setattr(ai_chat, "call_chat_n", thesis)
     monkeypatch.setattr(ptw, "negation_review", lambda items, known, call=None: [])
     monkeypatch.setattr(issue_records, "_link_call", case.link)
     monkeypatch.setattr(main, "driver", F._NoGraph())
@@ -127,7 +153,9 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
         topic = {"title": case.TITLE, "anchor": case.ANCHOR, "how": "exact", "rubrica": case.RUBRICA,
                  "articles": list(labels), "matched": list(labels), "planned": len(labels),
                  "grades": {x: 3 for x in labels}, "graded": len(labels), "facts": [], "source": "frame", "merged": []}
-        analysis = {"parte_assistita": "", "frame": {"areas": []}, flow.CASE_KEY: text}
+        # v79.15.1: an optional OLDER_FRAME -- the older frame's fields (central_issue_candidates) in round 1's analysis
+        analysis = {"parte_assistita": "", "frame": {"areas": [], **dict(getattr(case, "OLDER_FRAME", None) or {})},
+                    flow.CASE_KEY: text}
         state = {"schema": flow.SCHEMA, "version": 0, "state": "", "created": "2026-11-20T00:00:00+00:00",
                  "lang": lang, "text": text, "request": request, "additions": [], "analysis": flow._jsonable(analysis),
                  "topics": [topic], "others": [], "units": {},
@@ -214,5 +242,8 @@ def write_report(path: str, title: str, run_: Dict[str, Any], mode: str = "w") -
             f.write(f"call {i}: {call['n_messages']} messages; last message: {call['last'][:600]!r}\n")
         f.write("\n## §1 as delivered\n\n" + section(run_["answer"], "sintesi") + "\n")
         f.write("\n## §4 Esito column (Art. | Elemento | Esito)\n\n" + "\n".join(esito_column(run_["answer"])) + "\n")
+        f.write("\n## §7 objections as delivered\n\n" + section(run_["answer"], "obiezioni") + "\n")      # v79.15.1
+        qa = run_["answer"].split("**1. ")[0].strip()
+        f.write("\n## the Q&A block as delivered\n\n" + (qa if M.ANSWERS_TITLE in qa else "(none)") + "\n")
         f.write("\n## steps the pipeline isolated as failed\n\n" + "".join(f"{x[:200]}\n" for x in run_["failed"]))
         f.write("\n## the answer\n\n" + run_["answer"] + "\n\n")
