@@ -9,7 +9,7 @@ section writer, the documents' names and §4's renderer.
 
 The client, Bruno Gelso, is indagato for appropriazione indebita (646 c.p.) and denies; the company he worked for alleges
 the appropriation («La società sostiene che …»), and claims damages under 2043 c.c. (a civil article the penal binding
-excludes); the fit judges 1439 c.c. «no» with its «fatto_citato» (verified: removed). Expected: 646's elements resting
+excludes); the fit judges 1439 c.c. «no» citing its fact by id (v79.15.0: «cita_fatti»; verified: removed). Expected: 646's elements resting
 on the company's allegation «contestato (allegazione della società)», the defence's theses on them («L'accusa deve
 provare «…»»), never «Ammettere la condotta», corpus_line_code 0, 2043 c.c. and 1439 c.c. absent outside «Altri
 profili». With FIXTURE_79_14_3_OUT set, the three log lines (production format) and the counters are written there.
@@ -63,7 +63,8 @@ FRAME_REPLY = {
 
 
 def _fit_reply(messages, kwargs):
-    """The fit model faked: 646 c.p. and 2043 c.c. «si» on their quoted text; 1439 c.c. «no» with its «fatto_citato»."""
+    """The fit model faked: 646 c.p. and 2043 c.c. «si» citing their first period; 1439 c.c. «no» citing its fact by id
+    (v79.15.0, item 3: «fatto_citato» replaced by «cita_fatti»)."""
     human = messages[-1].content
     sid = {t: i for i, t in re.findall(r"^(S\d+) \[[^\]]+\] (.*)$", human, re.MULTILINE)}
     pm = next(i for t, i in sid.items() if t.startswith("Il pubblico ministero"))
@@ -71,8 +72,8 @@ def _fit_reply(messages, kwargs):
     harm = next(i for t, i in sid.items() if t.startswith("La società chiede"))
     items = {"646 c.p.": F._fit_item("646 c.p.", "si", f"Bruno Gelso custodiva la cassa del negozio ({cash}): «di cui "
                                                      "abbia, a qualsiasi titolo, il possesso»."),
-             "1439 c.c.": dict(F._fit_item("1439 c.c.", "no", f"Il fatto ({pm}) non riguarda un «annullamento del "
-                                                              "contratto».", ambito="rimedio"), fatto_citato=PM),
+             "1439 c.c.": F._fit_item("1439 c.c.", "no", f"Il fatto ({pm}) non riguarda un «annullamento del "
+                                                         "contratto».", ambito="rimedio", cf=[pm], cn=["A1439cc.1"]),
              "2043 c.c.": F._fit_item("2043 c.c.", "si", f"La società chiede a Bruno Gelso il risarcimento del danno "
                                                          f"({harm}): «obbliga colui che ha commesso il fatto a "
                                                          "risarcire il danno».", ambito="rimedio")}
@@ -205,7 +206,7 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert frame["status"] == "ok" and state["posture"]["role"] == "imputato"
     assert (state.get("client") or {}).get("name") == "Bruno Gelso"
     c = state["block_counters"]
-    # 2: the «no» on 1439 c.c. verified on its «fatto_citato», removed
+    # 2: the «no» on 1439 c.c. verified on its cited fact id (v79.15.0: «cita_fatti»), removed
     fit = by["applicability_fit"][0][0]
     assert fit["prompt_hash"] == ap.prompt_hash() and fit["counters"]["fit_no_verified"] == 1
     assert c["fit_removed"] == 1 and "1439" not in answer

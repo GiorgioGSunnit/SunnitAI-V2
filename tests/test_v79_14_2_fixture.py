@@ -75,8 +75,13 @@ FRAME_REPLY = {
     "quesiti": ["Quali rischi corre Bruno Gelso?"]}
 
 
-def _fit_item(article, fit, perche, ambito="fattispecie"):
-    return {"articolo": article, "fit": fit, "perche": perche, "condizione": "", "ambito": ambito}
+def _fit_item(article, fit, perche, ambito="fattispecie", cf=None, cn=None):
+    """v79.15.0 (item 3): the judgment cites ids -- cf the facts («cita_fatti»), cn the article's numbered periods
+    («cita_norma»; default: a «si» cites the article's first period, applicability.article_ids)."""
+    if cn is None and fit == "si":
+        cn = [f"A{ap.article_token(article)}.1"]
+    return {"articolo": article, "fit": fit, "perche": perche, "condizione": "", "ambito": ambito,
+            "cita_fatti": list(cf or []), "cita_norma": list(cn or [])}
 
 
 def _fit_reply(messages, kwargs):
@@ -90,9 +95,8 @@ def _fit_reply(messages, kwargs):
                                                      "artifizi o raggiri»."),
              "646 c.p.": _fit_item("646 c.p.", "si", f"Bruno Gelso ha venduto a Carla Tasso un orologio ({sale}): "
                                                      "«si appropria il denaro o la cosa mobile altrui»."),
-             "1439 c.c.": dict(_fit_item("1439 c.c.", "no", f"«Il pubblico ministero procede per truffa» ({pm}).",
-                                         ambito="rimedio"),       # v79.14.3 (item 2): the fact in «fatto_citato»
-                               fatto_citato="Il pubblico ministero procede per truffa"),
+             "1439 c.c.": _fit_item("1439 c.c.", "no", f"«Il pubblico ministero procede per truffa» ({pm}).",
+                                    ambito="rimedio", cf=[pm]),        # v79.15.0 (item 3): the fact by its id
              "2043 c.c.": _fit_item("2043 c.c.", "si", f"Carla Tasso chiede a Bruno Gelso il risarcimento del danno "
                                                        f"({harm}): "
                                                        "«obbliga colui che ha commesso il fatto a risarcire il danno».",
@@ -242,7 +246,7 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert state["posture"]["role"] == "imputato" and (state.get("client") or {}).get("name") == "Bruno Gelso"
     # A: the verified «no» on 1439 c.c. -- removed, logged, counted; out of «Norme» and of the whole answer
     fit = by["applicability_fit"][0][0]["counters"]
-    assert fit["fit_no_verified"] == 1 and fit["fit_no_unverified_quote"] == 0 and fit["fit_unverified"] == 0
+    assert fit["fit_no_verified"] == 1 and fit["fit_no_unverified_ids"] == 0 and fit["fit_unverified"] == 0
     removal = [d for d, _ in by["applicability_fit_discard"]]
     assert removal == [{"article": "1439 c.c.", "reason": "removed: fit no (verified)", "fit": "no",
                         "perche": removal[0]["perche"]}]

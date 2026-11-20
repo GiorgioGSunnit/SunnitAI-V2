@@ -6729,11 +6729,16 @@ def procedural_answer(question: str, procedure: str) -> List[str]:
 
 def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], procedure: str,
                   sols: Sequence[Dict[str, Any]], main: int, a: Dict[str, Any], client: str,
-                  checked: Callable[[str], str], log: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
+                  checked: Callable[[str], str], log: Optional[Dict[str, Any]] = None,
+                  verified: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
     """v79.6 (item 1): («Risposte ai quesiti», the code-written sentences) -- one numbered answer per question intake
     extracted (ctx["asked"]), in order, two to four sentences: the writer's own section on that question (checked as
     any written prose: Block B's grounding), a procedural question from §8, any other from the selection (the main line
-    and the forecast, code-written); nothing grounded -> NO_SOURCE_ANSWER. Never a guess, never an offer to go on."""
+    and the forecast, code-written); nothing grounded -> NO_SOURCE_ANSWER. Never a guess, never an offer to go on.
+    v79.15.0 (build B, verified: analysis_step.view): the strategy sentence is the verified leading line (no forecast);
+    a prose sentence stating what a norm provides with no verified affermazione_di_diritto is removed
+    (analysis_step.qa_filter: ctx["qa_sentences_dropped"], log «qa_dropped»); the verified affermazioni printed after
+    the answers."""
     asked = [q for q in ctx.get("asked") or [] if str(q).strip()]
     by_title = {t: x for t, x in quesiti}
     for t, _ in quesiti:                # a writer's quesito intake did not list
@@ -6746,6 +6751,10 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
         a.get("esito"), str(a.get("esito") or ""))
     strategy = [f"La linea principale è: {sols[main]['tesi'].rstrip('.')}.",
                 f"L'esito probabile è {esito}: {_plain(a.get('why')).rstrip('.')}."] if sols else []
+    qa_dropped: List[Dict[str, Any]] = []
+    if verified is not None:
+        from . import analysis_step
+        strategy = analysis_step.answer_strategy(verified)
     items, how = [], []
     said_at = 0                 # v79.12.7 (item 7): the answer that printed the main line -- the block prints it once
     for i, q in enumerate(asked, 1):
@@ -6763,6 +6772,10 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
                 got = [MAIN_LINE_SEE_ANSWER.format(n=said_at) if x == strategy[0] else x for x in got]
             else:
                 said_at = i
+        if verified is not None:        # v79.15.0 (build B): no unverified statement of what a norm provides --
+            see = MAIN_LINE_SEE_ANSWER.split("{")[0]            # the code's own lines kept, in their order
+            got = [x for x in got if x in strategy or x.startswith(see)
+                   or analysis_step.qa_filter([x], verified, qa_dropped)]
         got = [x for x in got if x][:ANSWER_SENTENCES[1]]
         if not got:
             got, kind = [NO_SOURCE_ANSWER], "nessuna fonte"
@@ -6770,7 +6783,17 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
         items.append(f"{i}. «{_plain(q).rstrip()}» — {' '.join(got)}")
     if log is not None:
         log["answers"] = how
-    return ANSWERS_TITLE + "\n\n" + "\n".join(items), strategy
+    block = ANSWERS_TITLE + "\n\n" + "\n".join(items)
+    if verified is not None:
+        from . import analysis_step
+        ctx["qa_sentences_dropped"] = len(qa_dropped)
+        ctx["qa_dropped"] = qa_dropped
+        if qa_dropped:
+            _log("qa_dropped", {"removed": qa_dropped})
+        statements = analysis_step.statements_block(verified)
+        if statements:
+            block += "\n\n" + statements
+    return block, strategy
 
 
 def answers_of(answer: str) -> List[Tuple[str, str]]:
@@ -6851,6 +6874,31 @@ def reader_wording(text: str, known: Dict[str, Dict[str, Any]], criminal_matter:
     return "\n".join(out)
 
 
+def legacy_plan(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, sub: Optional[int],
+                verified: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.15.0 (build B, ANALYSIS_STEP): what the old engine (the schema matcher, the thesis generator, the score)
+    would have printed -- its main and subordinate line (article, thesis) and its candidates -- with the comparison
+    against the verified analysis (analysis_step.compare: legacy_disagrees_line, legacy_disagrees_esito); logged
+    «legacy_plan» by the flow, never rendered."""
+    from . import analysis_step
+    records = ctx.get("records") or {}
+    known = elements_by_id(records, ctx.get("circumstances") or {})
+
+    def line(i: Optional[int]) -> Optional[Dict[str, Any]]:
+        if i is None or not sols or i >= len(sols):
+            return None
+        t = sols[i]
+        return {"articolo": line_article(t, known) or None, "tesi": _short(t.get("tesi"), 200),
+                "placeholder": bool(t.get("placeholder"))}
+    out = {"linea_principale": line(main), "linea_subordinata": line(sub),
+           "candidate_articles": [", ".join(candidate_subjects(records)(c)) for c in ctx.get("candidates") or []],
+           "lines": [_short(t.get("tesi"), 120) for t in sols]}
+    got = analysis_step.compare(verified, out, records)
+    out.update(got)
+    out["rendered"] = False
+    return out
+
+
 def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict[str, Any],
             profiles: Sequence[str] = (), log: Optional[Dict[str, Any]] = None) -> str:
     """The answer in the ten sections of his STRUTTURA DELL'OUTPUT, from our checked sections (sections_of the draft),
@@ -6859,6 +6907,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     records = ctx.get("records") or {}
     a = ctx.get("assessment") or {}
     client = ctx.get("client") or ""
+    # v79.15.0 (build B, ANALYSIS_STEP): the verified analysis (analysis_step.view) decides §1, §4's tables, §6, §9, the
+    # counts and the answers' line -- the old engine below still runs, logged (ctx["legacy_plan"]), and renders none of them
+    verified = ctx.get("verified_analysis") if isinstance(ctx.get("verified_analysis"), dict) else None
+    from . import analysis_step
     rulings = ctx.get("rulings") or []
     circ = ctx.get("circumstances") or {}
     by_title = {}
@@ -6929,9 +6981,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     dropped_log: List[str] = []
     norms = checked(charged_blocks(excluded_blocks_out(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
                                                        excluded, dropped_log),
-                                 ctx.get("charged_prose") or {}, charged_log))
+                                 {} if verified is not None else ctx.get("charged_prose") or {}, charged_log))
     quesiti = [(t, x) for t, x in others if t.endswith("?")]
     normative = [(t, x) for t, x in others if not t.endswith("?")]
+    norm_dropped: List[Dict[str, Any]] = []     # v79.15.0 (build B): §4's statements of a norm with no verified twin
+
+    def verified_prose(text: str) -> str:       # v79.15.0 (build B): §4's prose keeps only the verified statements
+        if verified is None or not text:        # of what a norm provides (analysis_step.qa_filter, sentence by sentence)
+            return text
+        return tracked("analysis_step", text, _by_sentence(
+            text, lambda x: x if analysis_step.qa_filter([x], verified, norm_dropped) else ""))
+    norms = verified_prose(norms)
     norms_parts = [norms] if norms else []
     cenni_log: List[Dict[str, str]] = []        # v79.12.7 (item 7): a cenno's rule grounded in its article only
 
@@ -6942,9 +7002,14 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         # Block B's sources on it; naming none, its section's articles -- in place of Block B's answer-wide check
         done = checked(x, rules=False)
         return tracked("cenni", done, text_hygiene.cenni_check(done, ctx.get("cenni_texts") or {}, rule_src, cenni_log))
-    norms_parts += [f"**{t}**\n\n{normative_text(t, excluded_blocks_out(x, excluded, dropped_log))}"
+    norms_parts += [f"**{t}**\n\n{verified_prose(normative_text(t, excluded_blocks_out(x, excluded, dropped_log)))}"
                     for t, x in normative if x and excluded_blocks_out(x, excluded)]
-    if ctx.get("subsumption"):
+    ctx["norms_sentences_dropped"] = len(norm_dropped)
+    if norm_dropped:
+        _log("norms_dropped", {"removed": norm_dropped})
+    if verified is not None:            # v79.15.0 (build B): the verified verdicts only; the remedies named, no table
+        norms_parts.append(f"{ANALYSIS_TITLE}\n\n{analysis_step.norms_tables(verified, list(circ))}")
+    elif ctx.get("subsumption"):
         norms_parts.append(f"{ANALYSIS_TITLE}\n\n{ctx['subsumption']}")
     if profiles:
         from . import interaction_copy as C
@@ -6967,13 +7032,20 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             log["added_theses_dropped"] = added
     # v79.12.5 (item 2): no admitted claim -- the ten sections stay, with no main line and no forecast (no_claim)
     kind = no_claim(ctx) if sols[main].get("placeholder") else ""
+    if verified is not None:            # v79.15.0 (review): the old engine's no-claim verdict decides no section (§3,
+        log["no_claim_legacy"] = kind   # §6, §7, §9, the answers) with the verified analysis -- logged only
+        kind = ""
     log["no_claim"] = kind
     ctx["no_claim_sections"] = kind
-    if sols[main].get("placeholder") and not kind:    # v75: never printed -- "" keeps the standard body, logged
+    # v79.15.0 (build B): with the verified analysis the old engine's placeholder decides nothing -- its forecast and
+    # selection are only skipped (no_line), the sections are the analysis's
+    no_line = bool(kind) or (verified is not None and bool(sols[main].get("placeholder")))
+    if sols[main].get("placeholder") and not kind and verified is None:    # v75: never printed -- "" keeps the
+        # standard body, logged
         log["refused"] = {"why": "placeholder", "tesi": sols[main]["tesi"]}
         _log("compose_refused", log["refused"])
         return ""
-    if not kind:
+    if not no_line:
         a = settle_objective(forecast(ctx, sols[main], a, log), sols, records, circ)      # v79 (E1)
         a = certainty_of(a, records, log)                   # v79.8 (E1): the main line's article alone
     scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
@@ -6987,7 +7059,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         arg = t.get("argomento") or ""
         t["argomento"] = planned(tracked("coherence", arg, coherent_text(arg, records, a, coherence)), code)
     sub = subordinate_of(sols, main)        # v72: the subordinate line, the summary, the conclusions and the next steps
-    strong = {} if kind else strongest_open(ctx, sols, main)       # v79.14.1 (item 6): every element open
+    strong = {} if no_line or verified is not None else strongest_open(ctx, sols, main)    # v79.14.1 (item 6): every
+    # element open (v79.15.0 build B: the old engine's verdicts decide no §7 with the verified analysis)
     objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
     for o in plan.get("obiezioni") or []:
         gone = cites_excluded(f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)
@@ -7026,7 +7099,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
             "obiezioni": objections_reviewed,
             "questione_giuridica": planned(plan.get("questione_giuridica") or "")}
-    if kind:                                # v79.12.5 (item 2): no line, no forecast, no steps
+    if verified is not None:                # v79.15.0 (build B): §9 the verified analysis's
+        conclusions = [analysis_step.conclusions_text(verified)]
+    elif kind:                              # v79.12.5 (item 2): no line, no forecast, no steps
         conclusions = [NO_CLAIM_CONCLUSION]
     else:
         conclusions = [conclusions_from_selection(a, sols, main, sub, ctx, client)]
@@ -7034,8 +7109,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         if steps:
             conclusions.append(steps)
     # v79.6 (item 1): the quesiti are answered first, in «Risposte ai quesiti» -- §9 no longer appends them
-    fallback_objections = [] if kind or strong else \
-        list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
+    fallback_objections = [] if kind or strong or verified is not None else \
+        list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)     # v79.15.0 (build B): the
+    # code's objections are built on the old engine's selection -- none with the verified analysis
     fallback_objections = [o for o in fallback_objections if not cites_excluded(      # v79.14.3 (item 4)
         f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)]
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
@@ -7047,9 +7123,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     general = "" if kind or missing_laws_line(ctx) else corpus_line(ctx)
     bound_line = binding_empty_line(ctx)                # v79.14.2 (B): the charge set the frame's binding emptied
     general = bound_line or general
-    summary = no_claim_summary(ctx, kind) if kind else _with_line(
-        summary_section({}, sols, main, a, client, (ctx.get("charge") or {}).get("article") or "", records, log),
-        general)
+    summary = analysis_step.summary_text(verified) if verified is not None else \
+        no_claim_summary(ctx, kind) if kind else _with_line(
+            summary_section({}, sols, main, a, client, (ctx.get("charge") or {}).get("article") or "", records, log),
+            general)
     log["corpus_line"] = CORPUS_LINE.split(" su ")[0] in summary
     ctx["corpus_line"] = log["corpus_line"]
     # v79.14.1 (item 2): each institution's governing law as the line read it; the line on a code institution (must be 0)
@@ -7058,11 +7135,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # records) it is the honesty line on a code institution, as interactive_flow.role_corpus_counted reads the answer
     ctx["corpus_line_code"] = len(corpus_line_on_code(summary, ctx))
     log["frame_binding_line"] = bool(bound_line) and bound_line in summary          # v79.14.2 (B)
-    summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
-                                       missing_laws_line(ctx)) if x)                             # v79.9 (B2)
+    if verified is None:                # v79.15.0 (build B): §1 the verified analysis's only
+        summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
+                                           missing_laws_line(ctx)) if x)                             # v79.9 (B2)
     keyed = [
         ("sintesi", summary),
-        ("fatti", facts_section(ctx.get("facts") or {})),
+        ("fatti", facts_section(analysis_step.open_facts(verified, ctx.get("facts") or {}, records)
+                                if verified is not None else ctx.get("facts") or {})),      # v79.15.0 (build B)
         ("questione", NO_CLAIM_QUESTION.format(client=client or "la parte assistita", materia=action_subject(ctx))
          if kind and not plan.get("questione_giuridica") else    # v79.12.5 (item 2): no article to frame it on
          question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
@@ -7070,14 +7149,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
         ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points, excluded,
                                            dropped_log)),                                # v79.14.3 (item 4)
-        ("soluzioni", no_claim_solutions(ctx, kind) if kind else solutions_section(
+        ("soluzioni", analysis_step.solutions_text(verified) if verified is not None else   # v79.15.0 (build B)
+         no_claim_solutions(ctx, kind) if kind else solutions_section(
             sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
         ("obiezioni", NO_CLAIM_OBJECTIONS if kind else all_open_section(strong, all_open_pick,
             _party_of(ctx)["side"]) if strong else objections_section(plan, fallback_objections)),     # v79.14.1 (item 6)
         ("processuali", procedure),
         # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
-        ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
+        ("conclusioni", "\n\n".join(conclusions) if verified is not None else
+         _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
     ]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
@@ -7139,7 +7220,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
     answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure,
                                             [] if kind else sols, main, a,      # v79.12.5 (item 2): no line
-                                            client, checked, log)          # v79.6 (item 1): before §1
+                                            client, checked, log, verified=verified)    # v79.6 (item 1): before §1
     if answers:     # v79.12.7 (item 7): built after the sections' reader checks -- the path the codes leaked by
         answers = tracked("wording", answers, reader_wording(answers, known_all, crim))
         answers = tracked("wording", answers, text_hygiene.stance_out(text_hygiene.codes_out(
@@ -7147,10 +7228,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         answers = tracked("citations", answers, whole_citations(answers, headless_log))
         joined = f"{answers}\n\n{joined}"
     # v79.12.7 (item 7): the main line printed at most once per section (tables included)
-    if not kind:
+    if verified is not None or not kind:
         printed = ([("risposte", answers)] if answers else []) + list(body)
-        log["main_line_repeated"] = text_hygiene.main_line_repeated(printed, sols[main]["tesi"])
+        log["main_line_repeated"] = text_hygiene.main_line_repeated(
+            printed, analysis_step.main_tesi(verified) if verified is not None else sols[main]["tesi"])
         ctx["main_line_repeated"] = len(log["main_line_repeated"])
+    if verified is not None:            # v79.15.0 (build B): the old engine's plan, logged and compared -- never printed
+        ctx["legacy_plan"] = legacy_plan(ctx, sols, main, sub, verified)
     # v79 (B3): what the nightly's output check reads -- the sources, the scope, and the code-written texts (built from
     # the sources: never a rule statement to trace)
     code_texts = [x for k, x in keyed if k in ("sintesi", "fatti", "conclusioni")] + \

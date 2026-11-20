@@ -4131,14 +4131,6 @@ def case_text(state: Dict[str, Any]) -> str:
     return case
 
 
-def fact_source(state: Dict[str, Any]) -> str:
-    """v79.14.2 (A, review): the text a «no»'s fact quotes are verified against -- the user's own words only: the
-    message, the request, each precisazione, one per line; never the pipeline's labels (case_text's «PRECISAZIONI DEL
-    CLIENTE …», «RICHIESTA DELL'UTENTE: …»)."""
-    parts = [state.get("text"), state.get("request")] + list(state.get("additions") or [])
-    return "\n".join(str(x).strip() for x in parts if str(x or "").strip())
-
-
 def _works(facts: Dict[str, Any]) -> List[Dict[str, Any]]:
     from . import fact_signals
     return [w for w in facts.get("works_or_signs") or [] if not re.search(fact_signals._CLOSURE_USE_RE, _low(w.get("what")))]
@@ -6433,6 +6425,14 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     rendered = _isolated("render_computed", lambda: render_computed.render(analysis_p, who), state.get("rendered")) or ""
     if single:                  # v60k: §4's open points in the single-shot form, for the section and the writer alike
         rendered = open_points_wording(rendered)
+    # v79.15.0 (build B, ANALYSIS_STEP): the verified analysis step -- after the frame and applicability_fit, on the
+    # records as decomposed and linked; its view decides the method's §1, §4's tables, §6, §9, the counts and the
+    # answers' line (None: the flag off -- 79.14.3's rendering; no records: the step has no input, «da determinare»)
+    verified = None
+    if analysis_flag():
+        mark("analysis_step")
+        from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
+        verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
     method_ctx: Optional[Dict[str, Any]] = None
     method_plan: Dict[str, Any] = {}
     method_clients = None
@@ -6449,6 +6449,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         else:
             method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
                 state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
+        if verified is not None:        # v79.15.0 (build B): every client's sections from the verified analysis
+            for c in ([c for _, c, _ in method_clients] if method_clients else [method_ctx] if method_ctx else []):
+                c["verified_analysis"] = verified
         if method_ctx is not None:      # v79.8 (D1): the special commi made records of their own
             state.setdefault("block_counters", {})["special_comma_records"] = len(
                 (method_ctx.get("records_view") or {}).get("special_commi") or [])
@@ -6461,6 +6464,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         refusals = _isolated("lawyer_method_refusal", lambda: [lawyer_method.client_refusal(c, p) for _, c, p in items],
                              []) if method_ctx is not None else []
         refusals = list(refusals or []) + [{}] * (len(items) - len(refusals or []))
+        if verified is not None and any(refusals):      # v79.15.0 (build B): the old engine's placeholder decides
+            _log("legacy_refusal_ignored", {"tesi": [r.get("tesi") for r in refusals if r]})     # nothing: logged
+            refusals = [{}] * len(items)
         refusal = refusals[0] if refusals and all(refusals) else {}
         state.setdefault("block_counters", {})["no_action_prose"] = int(any(r.get("no_action") for r in refusals))
         if method_clients and not refusal and any(refusals):
@@ -6587,6 +6593,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
                 answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
+        if verified is not None:                # v79.15.0 (build B): the old engine logged and compared, never printed
+            _isolated("legacy_plan", lambda: legacy_plan_logged(state, [c for _, c, _ in method_clients]
+                                                                if method_clients else [method_ctx]))
         # v79.12.5 (item 2): the answers kept in ten sections with no admitted claim, and §1's corpus line
         composed = [c for _, c, _ in method_clients] if method_clients else [method_ctx]
         counters = state.setdefault("block_counters", {})
@@ -7702,11 +7711,68 @@ def _with_aliases(state: Dict[str, Any], labels: Sequence[str]) -> List[str]:
 def fit_protected(state: Dict[str, Any], posture: Dict[str, Any]) -> List[str]:
     """v79.13.0: the norms a «no» never removes -- the ones the user names (user_named: intake's, the case's text) and
     the ones the text charges (intake's contestazione, the case's charge or claim sentences: posture.charge_labels; a
-    record marked charged or named)."""
+    record marked charged or named). v79.15.0 (item 3): and the verified frame's addebito/domanda article
+    (case_frame.charge_label of the held frame -- CASE_FRAME on, the article verified)."""
+    from . import case_frame
     out = [_label(k) for k in user_named(state)] + fit_charged(state, posture)
+    framed = case_frame.charge_label(case_frame.held(state)) if case_frame.held(state) is not None else ""
+    if framed:
+        out.append(framed)
     out += [x for x, r in (state.get("records") or {}).items()
             if isinstance(r, dict) and (r.get("named_due") or r.get("decomposed_for") == DECOMPOSE_WHY["named"])]
     return _with_aliases(state, list(dict.fromkeys(out)))      # (review) a special law's charge as its store's article
+
+
+def analysis_flag() -> bool:
+    """v79.15.0: ANALYSIS_STEP (analysis_step.enabled)."""
+    from . import analysis_step
+    return analysis_step.enabled()
+
+
+def analysis_step_run(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """v79.15.0 (build B, ANALYSIS_STEP): the verified analysis step on the answer's state (analysis_step.run: the held
+    frame's verified fields, the records left after applicability_fit, the sentences, the questions) -- its result in
+    state["analysis_step"], its counters (analysis_step.COUNTERS; the rendering's, RENDER_COUNTERS, at 0 until compose
+    sets them) into block_counters; the rendering's view returned (analysis_step.view: a step that failed or did not
+    run gives the leading line «da determinare», never the old engine's). None with the flag off: nothing read, nothing
+    called, 79.14.3's rendering."""
+    from . import analysis_step
+    if not analysis_step.enabled():
+        return None
+    t0 = time.time()
+    try:
+        inp: Optional[Dict[str, Any]] = analysis_step.inputs(state)
+    except Exception:           # noqa: BLE001 -- run() reads it again and returns the failure, logged
+        inp = None
+    result = analysis_step.run(state, inp=inp, started=t0)
+    state["analysis_step"] = _jsonable({k: result.get(k) for k in ("status", "error", "analysis", "counters",
+                                                                   "prompt_hash", "seconds", "calls", "reasons",
+                                                                   "rejected")})
+    counters = state.setdefault("block_counters", {})
+    for k in analysis_step.COUNTERS:
+        counters[k] = (result.get("counters") or {}).get(k, 0)
+    for k in analysis_step.RENDER_COUNTERS:
+        counters[k] = 0
+    return analysis_step.view(result, inp)
+
+
+def legacy_plan_logged(state: Dict[str, Any], contexts: Sequence[Optional[Dict[str, Any]]]) -> None:
+    """v79.15.0 (build B): the old engine's plan of each composed client (lawyer_method.legacy_plan, compared with the
+    verified analysis) logged «legacy_plan» -- never rendered; the counters legacy_disagrees_line,
+    legacy_disagrees_esito, qa_sentences_dropped (the Q&A statements of a norm with no verified counterpart, removed)
+    and norms_sentences_dropped (§4's, likewise) summed over the clients into block_counters; state["legacy_plan"] the
+    plans."""
+    from .verbose_logger import vlog
+    ctxs = [c for c in contexts or [] if c]
+    plans = [c["legacy_plan"] for c in ctxs if isinstance(c.get("legacy_plan"), dict)]
+    counters = state.setdefault("block_counters", {})
+    counters["legacy_disagrees_line"] = sum(int(p.get("legacy_disagrees_line") or 0) for p in plans)
+    counters["legacy_disagrees_esito"] = sum(int(p.get("legacy_disagrees_esito") or 0) for p in plans)
+    counters["qa_sentences_dropped"] = sum(int(c.get("qa_sentences_dropped") or 0) for c in ctxs)
+    counters["norms_sentences_dropped"] = sum(int(c.get("norms_sentences_dropped") or 0) for c in ctxs)
+    state["legacy_plan"] = _jsonable(plans)
+    for p in plans:
+        vlog("legacy_plan", p)
 
 
 def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
@@ -7737,10 +7803,8 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     role = str((posture or {}).get("role") or "")
     from . import case_frame                    # v79.14.0 (CASE_FRAME): the verified frame as the judgment's context
     context = case_frame.fit_context(state.get("case_frame")) if case_frame.enabled() else ""
-    # v79.14.2 (A): a «no»'s fact quotes verified against the user's own words (fact_source: the message, the request,
-    # the client's precisazioni -- never a pipeline label)
-    result = applicability.judge(norms, facts, role, started=started, frame_context=context,
-                                 case_text=fact_source(state))
+    # v79.15.0 (item 3): every judgment verified by the ids it cites (the facts' S-ids, the article's period ids)
+    result = applicability.judge(norms, facts, role, started=started, frame_context=context)
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
     known = [f["id"] for f in facts]
@@ -7790,6 +7854,7 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     counters["norms_removed_by_fit"] = len(removed)
     counters["fit_removed"] = len(removed)          # v79.14.2 (A): the brief's name for it
     counters["fit_kept_named"] = len(done["kept_named"])
+    counters["fit_protected_kept"] = len(done["kept_named"])     # v79.15.0 (item 3): a verified «no» on a protected norm
     # a judgment rejected for unquoted content never has an effect (must be 0: verify never passes one)
     counters["fit_added_content_in_effects"] = sum(1 for part in done.values() for e in part if e.get("added_content"))
     counters["fit_seconds"] = round(time.time() - started, 3)     # the whole step: inputs, judgment, effects

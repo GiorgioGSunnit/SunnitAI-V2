@@ -55,6 +55,17 @@ def _case_frame_without_model(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _analysis_step_without_model(monkeypatch):
+    """v79.15.0: no test reaches a model through the analysis step (src/rag/analysis_step._default_call): with
+    ANALYSIS_STEP on and no fake, the call fails and nothing from the step is used. A test of the step fakes the call."""
+    from src.rag import analysis_step
+
+    def refuse(messages, kwargs):
+        raise RuntimeError("no model in the tests")
+    monkeypatch.setattr(analysis_step, "_default_call", refuse)
+
+
+@pytest.fixture(autouse=True)
 def _corpus_names_unknown(monkeypatch):
     """v79.9 (B2): no test reads the graph's document names -- unknown, so no missing-laws line, unless a test sets them
     (corpus_laws.set_names, or missing_laws(ctx, known))."""

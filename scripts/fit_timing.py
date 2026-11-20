@@ -64,12 +64,15 @@ SYNTHETIC_FACTS = [
 
 def stub_call(latency: float):
     """A stand-in model: after `latency` seconds, a verifiable «si» for every norm of the batch."""
+    from src.rag import applicability as ap
+
     def call(messages, kwargs):
         time.sleep(latency)
         human = messages[-1].content
         labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
-        items = [{"articolo": label, "fit": "si", "ambito": "rimedio", "condizione": "",
-                  "perche": "I fatti (S2): «non restituisce»."} for label in labels]
+        items = [{"articolo": label, "fit": "si", "ambito": "rimedio", "condizione": "",       # v79.15.0: by ids
+                  "perche": "I fatti (S2): «non restituisce».", "cita_norma": [f"A{ap.article_token(label)}.1"],
+                  "cita_fatti": ["S2"]} for label in labels]
         return json.dumps({"giudizi": items}, ensure_ascii=False)
     return call
 

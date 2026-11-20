@@ -2,9 +2,9 @@
 
 1. the call: batches of at most 8 norms (balanced), bounded concurrency, thinking off and temperature 0 in the request,
    the facts labelled certo / allegazione with their ids, the schema's tipo / rapporto as context only (ELEMENT_SCHEMAS)
-2. the verification: the quoted passage in the article's text (verbatim or by the schema checker's stems), the fact
-   ids named and existing, no content beyond the passage, the named facts and the reviewed note (fit_added_content),
-   a dipende's condizione a grounded question, the elements it touches
+2. the verification: v79.15.0 (item 3) by ids -- a «si» cites the article's numbered periods (cita_norma), a «no» and
+   a «dipende» the facts (cita_fatti), every id existing; no content beyond the cited periods, the facts and the
+   reviewed note (fit_added_content), a dipende's condizione a grounded question, the elements it touches
 3. the brief's synthetic cases: a rissa between two people, a loan with no instalments (1819 c.c., «rateale»), an
    advance payment (646 c.p., «altrui»), an invented condition
 4. malformed replies, missing or unknown fact ids, failed calls, the deadline: the norm unjudged, never a crash
@@ -62,18 +62,18 @@ FACTS_ACCONTO = [{"id": "S1", "text": "Il cliente ha versato a Beta 3.000 euro c
                   "certainty": "allegato"}]
 
 
-def _item(article, fit, perche, ambito="fattispecie", condizione="", fatto=None):
-    """v79.14.3 (item 2): a «no» or a «dipende» carries its fact quote in «fatto_citato» (fatto; None: no such key)."""
+def _item(article, fit, perche, ambito="fattispecie", condizione="", cf=None, cn=None):
+    """v79.15.0 (item 3): a «no» or a «dipende» cites its facts by id (cf: «cita_fatti»), a «si» the article's numbered
+    periods (cn: «cita_norma», applicability.article_ids); None: no such key."""
     out = {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
-    if fatto is not None:
-        out["fatto_citato"] = fatto
+    if cf is not None:
+        out["cita_fatti"] = cf
+    if cn is not None:
+        out["cita_norma"] = cn
     return out
 
 
-LOAN_FACT = "da restituire in un'unica soluzione"         # FACTS_MUTUO's S1, as a «no» cites it
-ACCONTO_FACT = "sul prezzo dei lavori"                     # FACTS_ACCONTO's S1
-FERITA_FACT = "di aver riportato una ferita"               # FACTS_RISSA's S2
-COLPITI_FACT = "si sono colpiti a vicenda davanti a un bar"     # FACTS_RISSA's S1
+RISSA_1 = ["A588cp.1"]          # 588 c.p.: comma 1, «Chiunque partecipa a una rissa è punito …»
 
 
 def _reply(*items):
@@ -103,39 +103,38 @@ def _one(norm, facts, item, role="imputato"):
 def test_rissa_si_on_the_quoted_text_passes():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "si", "Tizio e Caio si sono colpiti a vicenda davanti a un bar (S1): «Chiunque partecipa a una "
-                          "rissa è punito»."))
-    assert rec["verified"] and rec["fit"] == "si" and rec["facts"] == ["S1"]
-    assert rec["passage"] == "Chiunque partecipa a una rissa è punito" and rec["comma"] == "1"
+                          "rissa è punito».", cn=RISSA_1))
+    assert rec["verified"] and rec["fit"] == "si" and rec["facts"] == ["S1"] and rec["cita_norma"] == RISSA_1
+    assert rec["passage"] == "Chiunque partecipa a una rissa è punito con la multa fino a euro 2.000." and \
+        rec["comma"] == "1"
     assert res["counters"]["fit_si"] == 1 and res["counters"]["fit_added_content"] == 0
 
 
 def test_rissa_three_persons_rule_not_in_the_text_is_rejected_and_counted():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "no", "La rissa richiede almeno tre persone, mentre i fatti descrivono «Tizio e Caio, due "
-                          "persone» (S1).", fatto="Tizio e Caio, due persone"))     # v79.14.3: an invented count
-                                                                                      # still out
+                          "persone» (S1).", cf=["S1"]))     # an invented count still out
     assert not rec["verified"] and rec["added_content"]
     assert "tre" in rec["reason"] and "almeno" in rec["reason"]
     c = res["counters"]
     assert c["fit_no"] == 0 and c["fit_unverified"] == 1 and c["fit_added_content"] == 1
 
 
-def test_rissa_no_quoting_a_passage_the_text_does_not_have_is_rejected():
+def test_rissa_no_citing_a_fact_that_does_not_exist_is_rejected():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
-        "588 c.p.", "no", "Tizio e Caio sono due persone (S1), non una «rissa tra almeno tre persone».",
-        fatto="rissa tra almeno tre persone"))
-    # v79.14.3 (item 2): a «no»'s cited fact not in the case text -- unverified, counted as a quote failure
-    assert not rec["verified"] and rec["reason"].startswith("fatto_citato non nei fatti")
+        "588 c.p.", "no", "Tizio e Caio sono due persone (S1), non una rissa.", cf=["S7"]))
+    # v79.15.0 (item 3): a «no» citing a fact id not given -- unverified, counted as an id failure
+    assert not rec["verified"] and rec["reason"] == "cita_fatti: fatto inesistente: S7" and rec["ids_failed"]
     assert res["counters"]["fit_unverified"] == 1 and res["counters"]["fit_added_content"] == 0
-    assert res["counters"]["fit_no_unverified_quote"] == 1
+    assert res["counters"]["fit_no_unverified_ids"] == 1 and res["counters"]["fit_unverified_ids"] == 1
 
 
 def test_rissa_dipende_with_a_grounded_question_passes_and_touches_its_element():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Caio sostiene di aver riportato una ferita (S2): dipende se taluno «riporta lesione "
                                "personale».", condizione="Caio ha riportato una lesione personale?",
-        fatto=FERITA_FACT))[1]
-    assert rec["verified"] and rec["fit"] == "dipende" and rec["fact_quotes"] == [FERITA_FACT]
+        cf=["S2"], cn=["A588cp.2"]))[1]
+    assert rec["verified"] and rec["fit"] == "dipende" and rec["fact_quotes"] == [FACTS_RISSA[1]["text"]]
     assert rec["condizione"] == "Caio ha riportato una lesione personale?"
     assert rec["touches"]["elements"] == ["E2"] and rec["touches"]["commi"] == ["2"]
 
@@ -144,14 +143,14 @@ def test_rissa_dipende_reasoning_adding_the_penalty_rule_is_rejected():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Caio sostiene di aver riportato una ferita (S2), e la pena cambia se taluno «riporta "
                                "lesione personale».", condizione="Caio ha riportato una lesione personale?",
-        fatto=FERITA_FACT))[1]
+        cf=["S2"]))[1]
     assert not rec["verified"] and rec["added_content"] and "pena" in rec["reason"] and "cambia" in rec["reason"]
 
 
 def test_rissa_invented_condition_is_rejected_and_counted():
     res, rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Tizio e Caio si sono colpiti a vicenda (S1): «Chiunque partecipa a una rissa».",
-        condizione="Alla rissa hanno partecipato almeno tre persone?", fatto=COLPITI_FACT))
+        condizione="Alla rissa hanno partecipato almeno tre persone?", cf=["S1"], cn=RISSA_1))
     assert not rec["verified"] and rec["added_content"] and "condizione" in rec["reason"]
     assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_dipende"] == 0
 
@@ -159,63 +158,60 @@ def test_rissa_invented_condition_is_rejected_and_counted():
 def test_dipende_condition_must_be_a_question():
     rec = _one(RISSA, FACTS_RISSA, _item(
         "588 c.p.", "dipende", "Tizio e Caio si sono colpiti a vicenda (S1): «Chiunque partecipa a una rissa».",
-        condizione="Bisogna sapere chi ha colpito per primo.", fatto=COLPITI_FACT))[1]
+        condizione="Bisogna sapere chi ha colpito per primo.", cf=["S1"], cn=RISSA_1))[1]
     assert not rec["verified"] and rec["reason"] == "condizione non è una domanda"
 
 
-def test_loan_without_instalments_1819_no_quoting_rateale_passes():
+def test_loan_without_instalments_1819_no_citing_its_fact_passes():
     res, rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-        ambito="rimedio", fatto=LOAN_FACT), role="attore")
-    assert rec["verified"] and rec["fit"] == "no" and rec["passage"] == "rateale" and rec["ambito"] == "rimedio"
-    assert rec["fact_quotes"] == ["da restituire in un'unica soluzione"] and rec["facts"] == ["S1"]
+        ambito="rimedio", cf=["S1"], cn=["A1819cc.1"]), role="attore")
+    assert rec["verified"] and rec["fit"] == "no" and rec["ambito"] == "rimedio"
+    assert rec["passage"].startswith("Se è stata convenuta la restituzione rateale") and rec["comma"] == "1"
+    assert rec["fact_quotes"] == [FACTS_MUTUO[0]["text"]] and rec["facts"] == ["S1"]
     assert res["counters"]["fit_no"] == 1 and res["counters"]["fit_no_verified"] == 1
-    # v79.14.2 (A): the 79.13 form -- the article quoted, no fact -- is no longer a verified «no» (v79.14.3: no
-    # «fatto_citato»)
+    # v79.15.0 (item 3): a «no» citing no fact (the article's period only) is no verified «no»
     old = _one(MUTUO, FACTS_MUTUO, _item("1819 c.c.", "no", "Il prestito (S1) è da restituire in un'unica soluzione, "
-                                                            "non «rateale».", ambito="rimedio"))[0]
-    assert old["counters"]["fit_no"] == 0 and old["counters"]["fit_no_unverified_quote"] == 1
+                                                            "non «rateale».", ambito="rimedio", cn=["A1819cc.1"]))
+    assert old[1]["reason"] == "cita_fatti mancante"
+    assert old[0]["counters"]["fit_no"] == 0 and old[0]["counters"]["fit_no_unverified_ids"] == 1
 
 
 def test_1819_naming_the_article_itself_is_no_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "L'art. 1819 c.c. non si applica: il prestito è «da restituire in un'unica soluzione» "
-                           "(S1), non «rateale».", ambito="rimedio", fatto=LOAN_FACT))[1]
+                           "(S1), non «rateale».", ambito="rimedio", cf=["S1"]))[1]
     assert rec["verified"], rec["reason"]
 
 
 def test_another_norms_number_is_added_content():
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale», come art. 1820.",
-        ambito="rimedio", fatto=LOAN_FACT))[1]
+        ambito="rimedio", cf=["S1"]))[1]
     assert not rec["verified"] and rec["added_content"] and "1820" in rec["reason"]
 
 
 def test_advance_payment_646_judged_on_altrui_with_the_reasoning_verified():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «il denaro o la cosa mobile "
-                          "altrui»: è di Beta.", fatto=ACCONTO_FACT))
+                          "altrui»: è di Beta.", cf=["S1"], cn=["A646cp.1"]))
     assert rec["verified"] and rec["fit"] == "no" and "altrui" in rec["passage"] and rec["comma"] == "1"
     assert res["counters"]["fit_no"] == 1
 
 
-def test_646_misquoted_passage_fails():
-    for quote in ("il denaro altrui", "cosa mobile propria"):
-        # v79.14.3 (item 2): a «no»'s perché is no longer read for quotes -- a misquote of the article is never kept as
-        # its passage (nothing prints it); the «si» keeps the article-passage check and still fails on it
+def test_646_citing_a_period_of_another_article_fails():
+    # v79.15.0 (item 3): a period id exists only in its own article -- 588's first period is no period of 646
+    for ids in (["A588cp.1"], ["A646cp.1", "A646cp.9"], ["646.1"]):
         rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-            "646 c.p.", "no", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «{quote}».",
-            fatto=ACCONTO_FACT))[1]
-        assert rec["passage"] == "" and quote not in rec["passage"], quote
-        rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
-            "646 c.p.", "si", f"L'acconto versato a Beta «sul prezzo dei lavori» (S1) è «{quote}»."))[1]
-        assert not rec["verified"] and rec["reason"].startswith("passo non nel testo"), quote
+            "646 c.p.", "si", "L'acconto versato a Beta (S1) è il denaro altrui.", cn=ids))[1]
+        assert not rec["verified"] and rec["reason"].startswith("cita_norma: periodo non dell'articolo"), ids
+        assert rec["ids_failed"] and rec["passage"] == ""
 
 
 def test_646_reasoning_adding_a_rule_fails():
     res, rec = _one(APPROPRIAZIONE, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
-                          "passa a chi lo riceve.", fatto=ACCONTO_FACT))
+                          "passa a chi lo riceve.", cf=["S1"], cn=["A646cp.1"]))
     assert not rec["verified"] and rec["added_content"] and "proprieta" in rec["reason"]
     assert res["counters"]["fit_added_content"] == 1
 
@@ -224,7 +220,7 @@ def test_reviewed_note_grounds_the_reasoning():
     norm = dict(APPROPRIAZIONE, note="Nell'acconto la proprietà del denaro passa a chi lo riceve.")
     rec = _one(norm, FACTS_ACCONTO, _item(
         "646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la proprietà del denaro "
-                          "passa a chi lo riceve.", fatto=ACCONTO_FACT))[1]
+                          "passa a chi lo riceve.", cf=["S1"], cn=["A646cp.1"]))[1]
     assert rec["verified"], rec["reason"]
 
 
@@ -250,40 +246,41 @@ def test_stem_tolerant_passage_is_found():
     assert ap.passage_found(ART_588, "partecipa rissa è punito")           # articles, short words aside
 
 
-def test_judgment_naming_no_fact_is_discarded():
-    rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "si", "Tizio e Caio: «Chiunque partecipa a una rissa»."))[1]
-    assert not rec["verified"] and rec["reason"] == "nessun fatto nominato"
+def test_a_no_citing_no_fact_is_discarded():
+    rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "no", "Tizio e Caio: non una rissa.", cf=[], cn=RISSA_1))[1]
+    assert not rec["verified"] and rec["reason"] == "cita_fatti mancante"
 
 
 def test_unknown_fact_id_is_discarded():
-    rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "si", "Tizio e Caio (S1, S9): «Chiunque partecipa a una rissa»."))[1]
+    rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "si", "Tizio e Caio (S1, S9): «Chiunque partecipa a una rissa».",
+                                         cn=RISSA_1))[1]
     assert not rec["verified"] and rec["reason"] == "fatto inesistente: S9"
 
 
-def test_no_quote_is_discarded():
+def test_a_si_citing_no_period_is_discarded():
     rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "si", "Tizio e Caio partecipano a una rissa (S1)."))[1]
-    assert not rec["verified"] and rec["reason"] == "nessun passo dell'articolo citato"
+    assert not rec["verified"] and rec["reason"] == "cita_norma mancante"
 
 
 def test_out_of_schema_values_are_discarded():
     ok = "Tizio e Caio (S1): «Chiunque partecipa a una rissa»."
-    for item, why in ((_item("588 c.p.", "forse", ok), "fit fuori schema"),
-                      (_item("588 c.p.", "si", ok, ambito="altro"), "ambito fuori schema"),
-                      (_item("588 c.p.", "si", ""), "perché mancante"),
-                      (_item("588 c.p.", "dipende", ok, fatto=COLPITI_FACT), "dipende senza condizione"),
-                      (_item("588 c.p.", "dipende", ok), "fatto_citato mancante")):       # v79.14.3 (item 2)
+    for item, why in ((_item("588 c.p.", "forse", ok, cn=RISSA_1), "fit fuori schema"),
+                      (_item("588 c.p.", "si", ok, ambito="altro", cn=RISSA_1), "ambito fuori schema"),
+                      (_item("588 c.p.", "si", "", cn=RISSA_1), "perché mancante"),
+                      (_item("588 c.p.", "dipende", ok, cf=["S1"], cn=RISSA_1), "dipende senza condizione"),
+                      (_item("588 c.p.", "dipende", ok, cn=RISSA_1), "cita_fatti mancante")):       # v79.15.0 (item 3)
         rec = _one(RISSA, FACTS_RISSA, item)[1]
         assert not rec["verified"] and rec["reason"].startswith(why), (item, rec["reason"])
-    assert _one(RISSA, FACTS_RISSA, _item("588 c.p.", "Sì", ok))[1]["verified"]
+    assert _one(RISSA, FACTS_RISSA, _item("588 c.p.", "Sì", ok, cn=RISSA_1))[1]["verified"]
 
 
 def test_two_sentences_are_discarded():
     rec = _one(RISSA, FACTS_RISSA, _item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa». "
-                                                           "Caio sostiene (S2)."))[1]
+                                                           "Caio sostiene (S2).", cn=RISSA_1))[1]
     assert not rec["verified"] and rec["reason"] == "perché di più frasi"
     rec = _one(MUTUO, FACTS_MUTUO, _item(
         "1819 c.c.", "no", "Secondo l'art. 1819 c.c. Il prestito è «da restituire in un'unica soluzione» (S1), non "
-                           "«rateale».", ambito="rimedio", fatto=LOAN_FACT))[1]
+                           "«rateale».", ambito="rimedio", cf=["S1"]))[1]
     assert rec["verified"], rec["reason"]
 
 
@@ -296,7 +293,8 @@ def test_malformed_reply_leaves_the_norms_unjudged():
 
 
 def test_missing_norm_and_non_object_items():
-    reply = _reply("rubbish", _item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa»."))
+    reply = _reply("rubbish", _item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa».",
+                                    cn=RISSA_1))
     res = ap.judge([RISSA, MUTUO], FACTS_RISSA, "imputato", call=lambda m, k: reply)
     assert res["by_article"]["588 c.p."]["verified"]
     assert res["by_article"]["1819 c.c."]["reason"] == "giudizio mancante nella risposta"
@@ -355,7 +353,8 @@ def test_thirty_norms_four_calls_concurrent_and_bounded():
         time.sleep(0.2)
         with lock:
             state["now"] -= 1
-        return _reply(*[_item(l, "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa».") for l in labels])
+        return _reply(*[_item(l, "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa».",
+                              cn=[f"A{ap.article_token(l)}.1"]) for l in labels])
     call = _fake(reply_for)
     res = ap.judge(_thirty(), FACTS_RISSA, "imputato", call=call)
     assert len(call.seen) == 4 and max(len(s["labels"]) for s in call.seen) <= 8
@@ -395,13 +394,15 @@ def test_default_call_binds_the_request_to_the_repo_chat_model(monkeypatch):
     assert bound["temperature"] == 0 and bound["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
-def test_human_message_labels_facts_and_numbers_the_commi():
+def test_human_message_labels_facts_and_numbers_the_periods():
     call = _fake(lambda labels: _reply())
     ap.judge([RISSA], FACTS_RISSA, "imputato", call=call)
     human = call.seen[0]["messages"][1].content
     assert "S1 [certo] Tizio e Caio" in human and "S2 [allegazione] Caio sostiene" in human
     assert "RUOLO DEL CLIENTE: imputato" in human and "Rubrica: Rissa" in human
-    assert "[1] Chiunque partecipa" in human and "[2] Se nella rissa" in human
+    # v79.15.0 (item 3): the article as its numbered periods (applicability.article_ids), what cita_norma cites
+    assert "Testo (periodi numerati):" in human and "[A588cp.1] Chiunque partecipa" in human
+    assert "[A588cp.2] Se nella rissa" in human and "[A588cp.3] La stessa pena" in human
     assert "Contesto dello schema" not in human
 
 
@@ -417,9 +418,9 @@ def test_schema_context_only_with_schemas_on(monkeypatch):
 
 
 def test_counters_add_up_and_the_flag_defaults_off(monkeypatch):
-    items = [_item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa»."),
+    items = [_item("588 c.p.", "si", "Tizio e Caio (S1): «Chiunque partecipa a una rissa».", cn=RISSA_1),
              _item("1819 c.c.", "no", "«Tizio e Caio, due persone» (S1): non «rateale» con tre persone.",
-                   fatto="Tizio e Caio, due persone")]
+                   cf=["S1"])]
     res = ap.judge([RISSA, MUTUO], FACTS_RISSA, "imputato", call=lambda m, k: _reply(*items))
     c = res["counters"]
     assert c["fit_judged"] == c["fit_si"] + c["fit_no"] + c["fit_dipende"] + c["fit_unverified"] == 2

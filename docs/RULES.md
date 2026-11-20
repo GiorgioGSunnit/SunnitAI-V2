@@ -927,6 +927,8 @@ nothing: every word of its judgment is checked by code before it has any effect.
   whose fact quote is missing or not in the case text), `fit_removed` (the norms a verified «no» removed, =
   `norms_removed_by_fit`; each removal logged `applicability_fit_discard` with the reason «removed: fit no
   (verified)»). v79.14.3 (section 11.16): the same counters, a «no» and a «dipende» verified on «fatto_citato».
+  v79.15.0 (section 11.17): verified by ids instead -- `fit_unverified_ids`, `fit_no_unverified_ids` (replacing
+  `fit_no_unverified_quote`), `fit_protected_kept`.
 - **The nightly** (`scripts/nightly_sim.py`) sets `APPLICABILITY_FIT=true` for its cells (`--no-applicability-fit`
   skips it); the counters table carries the counters; the section «Applicability judgment (APPLICABILITY_FIT)» lists
   per cell every removed norm with its quoted passage and perché, every kept-named «no», every dipende with its
@@ -1407,6 +1409,161 @@ or any prompt but the fit's schema block.
   `data/applicability.json`. The synthetic penal fixture (`tests/test_v79_14_3_fixture.py`) runs from
   `intake.request_intake` through `single_shot` -> `write_answer`, every model path refused at its source.
 
+### 11.17 79.15.0 (the verified analysis step, `ANALYSIS_STEP`, decides the line and the element verdicts; the fit verified by ids)
+
+No change to retrieval, the rulings' selection, ingestion, the CCNL path, template / document generation or the
+catalog modules. Build A: the step (item 1) and the fit by ids (item 3); build B: the step wired into the flow and the
+method's rendering (item 2).
+
+- **1. The verified analysis step** (`src/rag/analysis_step.py`, flag `ANALYSIS_STEP`, default off; prompt and word
+  lists `data/analysis_step.json`, remedy set `data/remedy_articles.json`). Input (`make_input`, `inputs(state)`): the
+  verified frame's fields only (`case_frame.held`'s «frame»: cliente, ruolo, rito, stadio, addebito_o_domanda,
+  istituto, parti); the fitted norms -- the records after `applicability_fit` (not dropped, not fit-removed), each with
+  its schema elements (the record's requisites) and its text as numbered periods (`applicability.article_ids`, the
+  fit's own splitter: the commi in order, each cut at a full stop followed by a space and a capital or an opening mark,
+  an abbreviation never ending a period; numbered 1..n across the article; id «A» + the label lowercased with every
+  character but a-z / 0-9 out + «.» + n: «A640cp.1», «A62biscp.2»), a remedy-set norm marked in the prompt; the
+  case's sentences S1..Sn as `issue_records.sentences` numbers them (the state's «sentences»), the system's
+  assumptions (source «sistema») never sent and never valid; the user's questions (the frame's quesiti, else
+  `asked_questions`). One call (thinking off, temperature 0, a JSON reply), on a worker thread within «deadline_s»
+  (40 s) for the whole step; reply: linea_principale / linea_subordinata {articolo, elemento_in_gioco, tesi,
+  cita_fatti, cita_norma}, elementi [{articolo, elemento, esito, cita_fatti, parte_che_afferma}],
+  affermazioni_di_diritto [{testo, cita_norma}]. Verification (`verify`, `finish`, pure code):
+  - every S-id exists among the sentences sent; every A-id among the periods of the article it is cited for (a line's
+    own; a law statement's any fitted article); a claim citing a missing id is void (a line rejected, an element
+    «da_provare», a law statement dropped) -- `analysis_bad_sid`, `analysis_bad_aid`;
+  - elemento / elemento_in_gioco equal to a schema element of that article after only whitespace collapsing and
+    quote normalisation (’ ‘ ` -> ', “ ” « » „ -> ", one enclosing pair of " out; `verbatim_key`) -- else the verdict
+    dropped (`analysis_element_not_verbatim`) or the line rejected; every schema element of a line's article gets one
+    verdict, «da_provare» when the reply leaves it out (`analysis_element_missing`);
+  - «provato» needs one cited sentence that is not a reported assertion of a party other than the client
+    (`reported_by`): parte_che_afferma naming a non-client party, 79.14.3's `alleged_by` mark, or ANY of the
+    sentence's asserting phrases (`_subject_spans`) naming a non-client party of frame.parti (its name or a content
+    word of its ruolo_nel_fatto not in the client's) or an authority (`authority_words`: accusa, Procura, PM, pubblico
+    ministero, investigatori, inquirenti) as the speaker -- whatever the client says in the same sentence («Paolo Sarti
+    nega, ma la Procura sostiene …» is the Procura's). An asserting phrase is the words right before an assertion verb
+    (`assertion_verbs`, whole words, «ritengono», «racconta», «riporta che» included; an inciso between commas and a
+    coordinated verb skipped; the speaker its LAST mention: «La difesa di Giulia Neri» is Giulia Neri), the words
+    after «secondo» / «a detta di» / «nella versione di» … (`speaker_prefixes`) or after «per» at the sentence's start
+    or after a mark (`speaker_prefixes_initial`), and a passive's agent («è accusato da Giulia Neri»), the speaker of
+    the last two their FIRST mention («Per la Procura Paolo Sarti ha …» is the Procura) (`speaker`, `_mentions`). The
+    client is named by his name -- a run of name words naming parties, a party whose matched words are a strict subset
+    of another's left out, so «Giulia Sarti» is never the client «Paolo Sarti»; a bare shared surname, a tie, is read
+    as the other party, never as the client's own statement -- else by his side (cliente, assistito, difesa) or his
+    procedural role (`interactive_flow.client_roles`). The client's own statement is never one. Only such sentences:
+    «contestato» with the party
+    (`analysis_provato_downgraded`); none valid: «da_provare» (`analysis_provato_unsupported`). «escluso» and
+    «contestato» need an S-id (`analysis_escluso_unsupported`, `analysis_contestato_unsupported`); an esito outside
+    the four: «da_provare» (`analysis_esito_invalid`);
+  - a line is rejected (`analysis_line_rejected`) when its article is no fitted norm, is in the remedy / general-part
+    set (1218, 1223, 1224, 1453, 1455, 1458 c.c.; 2043 c.c. only on a contractual frame; 40, 41, 42, 43, 59-62-bis,
+    133 c.p. -- `is_remedy`; the frame's own verified article never), its elemento_in_gioco is not verbatim, its tesi
+    is empty, it cites no id or a missing one. «Contractual» (`is_contractual`): a frame whose rito is not penal and
+    whose addebito_o_domanda article is a c.c. article in 1173-2042 or whose addebito_o_domanda / istituto words
+    begin with a contractual stem (contratt-, inadempi-, compravendit-, locazion-, appalt-, caparr-);
+  - the frame's verified addebito/domanda article (`case_frame.charge_label`) must be the leading or the subordinate
+    line's;
+  - one re-ask at most, carrying every reason at once (rejected lines, a missing leading line, the missing charge;
+    none when the charge is no fitted norm -- the model could not cite it): at most two calls (`analysis_calls`,
+    `analysis_reasked`). After it: a missing or rejected leading line is «da determinare» (`LINE_UNDETERMINED`; §1's
+    label `LINE_UNVERIFIED_LABEL` «linea non verificata»; `analysis_line_undetermined`) -- the old engine's line is
+    never its substitute; a rejected subordinate line is none; the charge still missing -- the frame's article leads
+    (stato «addebito_del_quadro», no tesi, every element «da_provare») and the model's verified leading (else
+    subordinate) line is the subordinate one (`analysis_frame_charge_missing` = 1);
+  - affermazioni_di_diritto kept only with at least one A-id, every one existing, every article the text names
+    (`citations.article_refs`) a fitted norm with at least one of its own periods cited (`law_statements_off_article`:
+    a statement on 62-bis c.p. citing a period of 640 c.p. is dropped), and at least 60% of its tokens (the Q&A
+    filter's `tokens`; data «law_statements.overlap»; the denominator the statement's tokens) in the cited periods'
+    text (`law_statements_ungrounded`) (`law_statements_kept`); else dropped, never printed
+    (`law_statements_dropped`, logged with the reason).
+  The first call failed, late or with no JSON object: status failed / timeout / malformed, `analysis` None, nothing
+  from the step (`analysis_failed`, `analysis_timeouts`); the re-ask failing: the first reply's verification with the
+  fallbacks. `run(state)`: «off» with the flag off (nothing read or called); else the verified analysis, the counters
+  and the log line «analysis_step» (prompt_hash, status, seconds, calls, counters, the verified lines, the
+  rejections). Prompt hash `eb6d96ed1f46`.
+- **2. Rendering with the flag on** (build B). The flow runs the step once per answer (`interactive_flow.analysis_step_run`,
+  in `_write_answer` after the decomposition, `applicability_fit`, `fit_force`, the element link and the records'
+  sides -- so after the frame and the fit, on the records as linked -- before the method); its result in
+  `state["analysis_step"]`, its counters in `block_counters`; `analysis_step.view` is what the rendering reads (a step
+  failed, late, raising or with no input: the leading line «da determinare», nothing else). Each composed client's
+  context carries it (`ctx["verified_analysis"]`) and `lawyer_method.compose` prints from it only:
+  - §1 (`summary_text`): «Linea principale: art. X — <tesi> (elemento in gioco: «…»)», the subordinate line when the
+    step returned one; «da determinare (linea non verificata)» for an undetermined line, «art. X (addebito del quadro,
+    linea non verificata)» for the frame's article kept by the fallback -- the corpus, binding, penal-route and
+    missing-laws lines of the old §1 are not printed;
+  - §4 (`norms_tables`): «Analisi per elementi» -- one table per line article (Elemento | Fatti citati | Esito: the
+    verified verdict, «contestato (allegazione di <parte>)» with the party; the cited sentences as written), then
+    «Esiti dell'art. X: provato a su n; contestato b su n; da provare c su n; escluso d su n.» (the only «x su y» the
+    answer prints, on a line article only; worded so `count_out` never reads it as the prose count); the remedy /
+    general-part articles (the fitted ones the step marked, and the method's circumstances in the set) named under
+    «Rimedi e parte generale collegati alla linea», no table, no count; no line verified: «Nessuna linea verificata:
+    nessuna tabella degli elementi.»; the old engine's charged-article paragraph (`charged_prose`) and its tables and
+    «Circostanze» are not printed; §4's written prose keeps only the sentences stating what a norm provides that have a
+    verified counterpart (the Q&A rule below; `norms_sentences_dropped`, log «lawyer_method_norms_dropped»);
+  - §2's «Fatti mancanti»: only the entries on an element the analysis holds «da_provare» (`open_facts`);
+  - §6 (`solutions_text`): | Linea | Articolo | Elemento in gioco | Tesi | Fatti citati | -- the verified lines only:
+    no containment, no «Ammettere la condotta», no line the step did not return (the subordinate only when returned);
+  - §7: the model's objections as reviewed; the code's fallback objections and the all-open objection (built on the old
+    engine's selection and verdicts) are not printed;
+  - §9 (`conclusions_text`): the lines, the leading article's «Esiti», its «Da provare» and «Contestati» elements --
+    no «Esito probabile», «Grado di certezza», «Rischio residuo» or «Passi successivi» (the old engine's forecast);
+  - «Risposte ai quesiti» (`answers_block(verified=…)`): the strategy sentence is «La linea principale è: <line>.»
+    (no forecast); every prose sentence (the writer's, §8's) that states what a norm provides -- it holds one of
+    `data/analysis_step.json` «qa_statements.verbs» (the verbs and the rule's other phrasings: prevede, punisce,
+    commina, deve, è tenuto, la pena, reclusione, …) and cites an article (`citations.article_refs`) or names a norm
+    with no number («qa_statements.referents»: la norma, la disposizione, l'articolo, …) -- is kept only with a
+    verified affermazione_di_diritto citing the same article number (any article for a sentence with no number) and
+    holding at least 60% («overlap») of the
+    sentence's tokens: its words of 3 letters or more («token_min_len»), lowercased, letters only, the «stopwords» out;
+    the denominator is the sentence's own token count (`analysis_step.tokens`, `overlap`, `counterpart`, `qa_filter`);
+    each removal logged («lawyer_method_qa_dropped»: the sentence, its articles, the best overlap), counted
+    `qa_sentences_dropped`; the verified affermazioni printed after the answers under «Affermazioni di diritto
+    verificate», each with its articles.
+  The old engine still runs whole (the schema matcher, the thesis call, the score, the selection); with the flag on its
+  placeholder never refuses the method (logged «interactive_legacy_refusal_ignored»), its no-claim verdict
+  (`no_claim`) writes no section -- no «NO_CLAIM» §3, §6, §7 or §9, logged `no_claim_legacy` -- and its plan is compared and logged
+  -- `lawyer_method.legacy_plan`, `interactive_flow.legacy_plan_logged`: «legacy_plan» (its main and subordinate line
+  with the article, its candidates, its verdict per element of the analysis's line articles, `rendered` False);
+  `legacy_disagrees_line` (1 when its main line's article is not the analysis's leading one, an undetermined one
+  included), `legacy_disagrees_esito` (the line articles' elements -- matched verbatim on the record -- whose old
+  verdict differs: integrato -> provato, contestato, da provare -> da_provare, non risulta -> escluso). Flag off:
+  nothing read or called, the rendering 79.14.3's (with item 3's fit). The method off: the step runs and logs, the prose
+  answer is unchanged.
+- **3. The fit verified by ids** (`applicability.verify`, `article_ids`, `id_list`; always on with `APPLICABILITY_FIT`,
+  not behind `ANALYSIS_STEP` -- the brief puts it outside items 1-2 and the flag-off answer it protects is 79.14.3's
+  with this change). The string matcher is removed -- `fact_quote_at`, `verify_no`, `cited_fact`, «fatto_citato»
+  (`FACT_FIELD`) and its prompt text, `_rests_on_passage`, `_comma_of`, `interactive_flow.fact_source` -- and so is the
+  «si»'s article-quote check: each norm goes to the model as its numbered periods; a «si» cites them («cita_norma», at
+  least one, of this article only), a «no» and a «dipende» the facts («cita_fatti», at least one S-id given; a system
+  assumption -- certainty «assunto» -- is no fact; «cita_norma» optional and verified the same way). A missing or
+  unknown id: unverified, the norm on its path (`fit_unverified_ids`; a «no»: `fit_no_unverified_ids`, which replaces
+  `fit_no_unverified_quote`). The printed passage is the cited periods' own text, the fact quotes the cited
+  sentences'; the perché's 79.13 checks stay (one sentence, named ids existing, its content words grounded on the
+  cited periods, the cited and named facts, the rubrica and the note -- an invented count, rule or claim:
+  `fit_added_content`; never contradicting a cited fact; a «dipende»'s condizione). Prompt hash `5b06ff45a132`.
+  `fit_protected` adds the verified frame's addebito/domanda article (`case_frame.charge_label` of the held frame) to
+  the user-named and charged ones: a verified «no» never removes them (`fit_protected_kept`).
+
+  — `analysis_step.make_input`, `inputs`, `build_messages`, `reask_messages`, `request_kwargs`, `call_once`,
+  `parse_reply`, `verify`, `finish`, `analyse`, `run`, `reported_by`, `asserting_party`, `subjects`, `is_remedy`,
+  `is_contractual`, `verbatim_key`; `applicability.article_ids`, `article_token`, `id_list`, `verify`, `_norm_block`;
+  `interactive_flow.fit_protected`, `applicability_fit`; `data/analysis_step.json`, `data/remedy_articles.json`,
+  `data/applicability.json`; `tests/conftest.py` refuses `analysis_step._default_call`. Build B:
+  `analysis_step.view`, `summary_text`, `norms_tables`, `solutions_text`, `conclusions_text`, `answer_strategy`,
+  `statements_block`, `open_facts`, `tokens`, `overlap`, `norm_statement`, `counterpart`, `qa_filter`, `compare`;
+  review: `analysis_step._subject_spans`, `_mentions`, `speaker`, `_law_statements`; data «speaker_prefixes_initial»,
+  «qa_statements.referents», «law_statements»; `tests/test_v79_15_0_review.py`;
+  `lawyer_method.compose`, `answers_block`, `legacy_plan`; `interactive_flow._write_answer`, `analysis_flag`,
+  `analysis_step_run`, `legacy_plan_logged`; `data/analysis_step.json` «qa_statements». Tests:
+  `tests/test_v79_15_0_analysis.py`, `tests/test_v79_15_0_render.py`, and the two synthetic fixtures end to end through
+  `intake.request_intake` -> `single_shot` -> `write_answer` with `ANALYSIS_STEP`, `CASE_FRAME`, `APPLICABILITY_FIT`
+  and `LAWYER_METHOD` on (`tests/test_v79_15_0_fixture_civil.py`: a caparra claim on 1385 c.c., the first reply's line
+  on the remedy 1453 c.c. rejected and re-asked; `tests/test_v79_15_0_fixture_penal.py`: an indagato who denies, the
+  Procura's and the company's assertions, the dolo element contested; harness `tests/_fixture_79_15_0.py`) -- every
+  model path refused at its source, any outbound socket refused. Counters (`block_counters`): the step's `analysis_*`,
+  `law_statements_kept`, `law_statements_dropped`, `law_statements_off_article`, `law_statements_ungrounded`; the rendering's `qa_sentences_dropped`, `norms_sentences_dropped`,
+  `legacy_disagrees_line`, `legacy_disagrees_esito`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -1484,4 +1641,5 @@ or any prompt but the fit's schema block.
 | v79.14.1 (the 79.12.8 items 1-3, 6, 8: role flip, honesty line, administrative act, objections, count sentence, §5 relevance) | (1) The method's role is the intake's resolved role unless the request states the client's own (logged `role_decision`): the resisting reading moved from `posture.of` into `intake.resolve`; several clients take the intake's role or the request's statement, never the first read's word; the assumed party and the settled client are on the intake's side, never the counterparty (`data/party_sides.json`, the party_threat subject); the intake's rule-read client over the extraction's, the facts' client over the plan's model-written party; counters `role_flip` (must be 0), `role_request_wins`, `role_client_moved`. (2) «Il corpus non contiene ancora informazioni sufficienti su …» only when the institution's governing law is outside the codes and missing from the archive (`data/institution_laws.json`); never for a code institution (legittima difesa); a no-claim answer keeps its ten sections with `NO_CLAIM_SUMMARY`; counters `corpus_line`, `corpus_line_code` (must be 0). (3) The amministrativo module, family and regime, and the c.p.a. articles (the family gate, the scope check, a last pass) only with an administrative act against the client (`data/administrative_act.json`); counters `amministrativo_refused_no_act`, `amministrativo_without_act` (must be 0), `act_last_pass_stripped`. (6) With every element of the main record «da provare», §7 is one model-written objection on the strongest element (the only one the main line turns on, else the most supported by the facts, else the distinctive one, else the first), grounded as every rule statement, or the line saying none is -- never the per-element template repeated (once at most in any answer); written for the client's role (the imputato's defence objects to a victim client) and, with `CASE_FRAME` on, for the frame's client and role; counters `objection_grounded`, `objection_none`, `objection_template_repeated` (must be 0). (8) Under the method the «requisiti provati N su M» count is never in prose -- the step-aside path's status sentence is the verdict alone, a last pass removes any left; counters `count_sentences_removed`, `count_sentences_left` (must be 0); §5 drops a ruling whose quoted passage never names the record's institution (`data/ruling_relevance.json`), counter `rulings_passage_irrelevant_dropped`. The nightly's `zero_counters` check fails a cell with any must-be-0 counter above 0. Shipped after 79.14.0: with `CASE_FRAME` on, item 1's rules are the fallback for a frame field left empty or unverified (a disagreement logs `frame_conflict` and loses); ONE `role_flip` (`role_flip_reasons` unioned in `case_frame.audit`, each distinct flip once; the nightly fails it once: `case_frame` when it ran, `zero_counters` otherwise); the frame's institution feeds `governing_law`; a frame «amministrativo» rito is never the act. Review: the debtor's other wordings read as resisting (writ «contro» the client, «gli ha notificato», another party's demand of no one named); each multi-client role checked against its own reference (`method_role`), a posture flip or a served counterparty counted once; special-law patterns never take a code institution («fallimento delle trattative», «vita privata»), a module's leading action decides its law; the act read sentence by sentence in the case's words only, a private party's diniego / revoca / delibera only with a public authority, never an act that grants or one negated after it; a mixed record keeps one objection per open element; the count in its other wordings; §5's roots without inflection and suffix, generic roots naming nothing, «612 bis» (section 11.14) |
 | v79.14.2 (the two verified model steps wired in) | (A) The fit verified by verdict type: a «si» or «dipende» quotes the article as before; a «no» quotes the fact sentence(s) it rests on, verified by exact substring of the user's own text after case_frame's normalisation (`applicability.fact_quote_at`, `interactive_flow.fact_source`; a clause of one sentence, two content words at least), no article quote required, its other words grounded on the quotes, the facts, the rubrica and the note (an invented count, rule or claim discarded); an unverified «no» keeps the norm (`fit_no_unverified_quote`), a verified one removes it as 79.13.0 did (the candidates offered to the plan, §4; a named or charged norm kept as the defence's contest), each removal logged `applicability_fit_discard` «removed: fit no (verified)»; one prompt line added; counters `fit_no_verified`, `fit_no_unverified_quote`, `fit_removed`. (B) The verified frame binds the charge set (`lawyer_method.frame_binding`): penal rito (or the stage «indagini») with the client imputato / indagato -- the charge from penal sources only (c.p., c.p.p., `case_frame.is_penal`, the laws `data/institution_laws.json` flags «penal»); civil rito -- never a c.p. article; the excluded stay as context, never the charge, a candidate, «Linea principale» or «Esito probabile»; not verified on the rito or the role: no binding; emptied: the corpus line in §1, no fallback; counters `frame_binding_applied`, `frame_binding_excluded`, `frame_binding_empty` (section 11.15) |
 | v79.14.3 (finishing the wiring of 79.14.2) | (1) An element only another party's allegation supports (§2's «allegazione» with its speaker, never the client's own statement) is «contestato»: «da provare», never «integrato», printed «contestato (allegazione di <parte>)», counted as no proven element, the defence client's primary thesis («L'accusa deve provare «…»»); mixed support unchanged; counters `elements_contestato`, `theses_from_contestato`. (2) The fit's schema carries «fatto_citato»: a «no» and a «dipende» verified on it (the perché no longer parsed for the quote), 79.14.2's prompt line removed (`prompt_hash` 2168ae9ef513); unverified keeps the norm. (3) The binding emptying the charge set with a verified charge article of a code or a listed law: the theses built on that article's record (`frame_binding_rescued`); «Ammettere la condotta» never generated, with or without a frame (no frame field verifies an admission); the corpus line never on a code article or listed law (`corpus_line_code` 0). (4) Excluded means excluded: the binding's excluded and the fit-removed norms out of §4 (schede, tables, blocks), §5, §7 and «Fatti mancanti», «Altri profili» only (`excluded_dropped`) (section 11.16) |
+| v79.15.0 (the verified analysis step decides; the fit by ids) | (1) `ANALYSIS_STEP` (default off): `src/rag/analysis_step.py` -- one model call between the frame and rendering decides the leading and subordinate line and every schema element's esito, each claim citing S-ids (the case's sentences) and A-ids (the fitted norms' numbered periods, `applicability.article_ids`); the code verifies every id, verbatim elements, «provato» never on a non-client party's or an authority's assertion («contestato» with the party), «escluso» only with an S-id, no remedy / general-part article as a line (`data/remedy_articles.json`), the frame's charge among the lines -- one re-ask, then «da determinare» or the frame's article with every element «da_provare»; law statements without a verifying A-id of the article they name, or not grounded in the cited periods, dropped; a failed or late call gives nothing; `run(state)` logs «analysis_step»; counters `analysis_*`, `law_statements_kept`, `law_statements_dropped`, `law_statements_off_article`, `law_statements_ungrounded`. (2) With the flag on, §1, §4's element tables (Esito), §6, §9, every «x su y» and the answers' line come from the verified analysis only; remedy / general-part articles named in §4 under the line, no table, no count; «da determinare» -> «linea non verificata»; containment only as a returned subordinate line; a Q&A or §4 sentence stating what a norm provides with no verified affermazione (same article number, >= 60% of its tokens) removed (`qa_sentences_dropped`, `norms_sentences_dropped`), the verified ones printed; the old engine runs, logged «legacy_plan», never rendered (`legacy_disagrees_line`, `legacy_disagrees_esito`). (3) The fit verified by ids, the string matcher and «fatto_citato» removed: a «si» cites the article's periods, a «no» / «dipende» the facts (`fit_unverified_ids`, `fit_no_unverified_ids`); a «no» never removes the verified frame's addebito/domanda or a user-named article (`fit_protected_kept`); fit prompt hash 5b06ff45a132 (section 11.17) |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

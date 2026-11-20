@@ -54,6 +54,15 @@ The verification (verify -- pure code, no model):
   content words) -- else unverified, the norm kept (a «no»: fit_no_unverified_quote); the perché is no longer parsed for
   the quote (a quote of the article there, found in its text, is kept as the printed passage and grounds its words;
   _rests_on_passage no longer applies); a «dipende»'s condizione as (d), (e). A «si» as (a)-(c), unchanged.
+  v79.15.0 (item 3): the fit verified by ids -- the string matcher of 79.14.2/79.14.3 (fact_quote_at, verify_no,
+  «fatto_citato», the article-passage quote of a «si») removed with its prompt text. The article goes to the model as
+  its numbered periods (article_ids: «A<token>.<n>», the analysis step's own numbering -- one splitter); a «si» cites
+  them (cita_norma: at least one id of this article), a «no» and a «dipende» the facts (cita_fatti: at least one S-id
+  given; cita_norma optional). A missing or unknown id: unverified (fit_unverified_ids; a «no»: fit_no_unverified_ids),
+  the norm kept. The printed passage is the cited periods' text, the fact quotes the cited facts' text. The perché's
+  checks (c) stay on the cited periods, the cited and named facts, the rubrica and the note (an invented count, rule
+  or claim: fit_added_content); a «dipende»'s condizione (d), (e). The flow never removes the frame's verified
+  addebito/domanda article nor an article the user names (fit_protected; counter fit_protected_kept).
 
   judge(norms, facts, role, call=None)   the step: {"judgments", "by_article", "counters", "timing", "prompt_hash",
                                           "log"}; call(messages, kwargs) -> reply text replaces the model (tests)
@@ -65,9 +74,10 @@ The verification (verify -- pure code, no model):
 Counters: fit_judged (norms sent to the model) = fit_si + fit_no + fit_dipende + fit_unverified; fit_added_content
 (judgments rejected for content not in the passage, the facts or the note -- none of them ever has an effect);
 fit_skipped (norms with no text: not sent); fit_calls, fit_failed_calls, fit_timeouts. v79.14.2 (A): fit_no_verified
-(the verified «no», = fit_no), fit_no_unverified_quote (a «no» whose fact quote is missing or not in the case text);
-the flow's fit_removed (the norms a verified «no» removed, each logged «applicability_fit_discard» with the reason
-REMOVED_REASON).
+(the verified «no», = fit_no); the flow's fit_removed (the norms a verified «no» removed, each logged
+«applicability_fit_discard» with the reason REMOVED_REASON). v79.15.0 (item 3): fit_unverified_ids (a judgment whose
+cited ids are missing or unknown), fit_no_unverified_ids (the «no» among them -- 79.14.2's fit_no_unverified_quote
+removed with the matcher); the flow's fit_protected_kept (a verified «no» on a protected article, kept).
 """
 
 import contextvars
@@ -91,9 +101,11 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
                          "applicability.json")
 COUNTERS = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content", "fit_skipped",
             "fit_calls", "fit_failed_calls", "fit_timeouts",
-            "fit_no_verified", "fit_no_unverified_quote")         # v79.14.2 (A)
+            "fit_no_verified",                                     # v79.14.2 (A)
+            "fit_unverified_ids", "fit_no_unverified_ids")         # v79.15.0 (item 3)
 REMOVED_REASON = "removed: fit no (verified)"         # v79.14.2 (A): the removal's «applicability_fit_discard» reason
 SI, NO, DIPENDE = "si", "no", "dipende"
+ASSUMED = "assunto"     # v79.15.0 (item 3): issue_records.ASSUNTO -- the system's assumption, never a fact cited
 
 
 def enabled() -> bool:
@@ -320,60 +332,57 @@ def passage_at(text: str, passage: str) -> Optional[int]:
     return None
 
 
-# v79.14.2 (A, review): a «no»'s fact quote is a clause of one sentence -- at least this many content words (a lone
-# word, «truffa», is no fact) and never across a sentence break of the case text (a stop, «?» or «!» before a capital,
-# or a line break: the message and each precisazione are their own lines)
-FACT_QUOTE_MIN_WORDS = 2
-_SENTENCE_BREAK_RE = re.compile(r"[.!?…]\s+(?=[A-ZÀ-Ü«\"“])|\n")
+# v79.15.0 (item 3): the article's numbered periods -- what a «si» cites (cita_norma) and what the analysis step
+# (src/rag/analysis_step.py) cites, numbered the same way by both (this one splitter). The split: the article's commi
+# (element_schemas.commi, in their order; a comma with no text skipped), each comma's text (its spaces collapsed) cut
+# into its periods at a full stop followed by a space and a capital letter or an opening mark (« " “ ( ) -- an
+# abbreviation never ends one (sentence_split.split: «art.», «Sig.», «c.p.»); every period numbered 1..n across the
+# whole article. Its id: «A» + the article's token (its label lowercased, accents folded, every character but a-z and
+# 0-9 out: «640 c.p.» -> «640cp», «62-bis c.p.» -> «62biscp», «2043 c.c.» -> «2043cc») + «.» + n: «A640cp.1». The
+# code is in the token, so two articles with the same number in two codes never share an id.
+_PERIOD_RE = re.compile(r"(?<=\.)\s+(?=[A-ZÀ-Ü«\"“(])")
+ARTICLE_ID_RE = re.compile(r"\bA[0-9a-z]+\.\d+\b")
 
 
-def _word_spans(text: Any) -> Tuple[str, List[Tuple[int, int]]]:
-    """The text as _full_tokens reads it before lowercasing (NFC, «’» as «'») and each word's span in it -- the same
-    words, in the same order, as _full_tokens'."""
-    s = unicodedata.normalize("NFC", str(text or "").replace("’", "'"))
-    low = s.lower()
-    if len(low) != len(s):          # a character whose lowercase is longer: the spans read on the lowercased text
-        s = low
-    return s, [m.span() for m in _WORD_RE.finditer(s.lower())]
+def article_token(label: Any) -> str:
+    """v79.15.0: an article label as its ids spell it («640 c.p.» -> «640cp»)."""
+    folded = unicodedata.normalize("NFKD", str(label or "").lower())
+    return re.sub(r"[^0-9a-z]", "", "".join(c for c in folded if not unicodedata.combining(c)))
 
 
-def _crosses_sentence(text: str, first: int, last: int) -> bool:
-    """The case text's words first..last span a sentence break (_SENTENCE_BREAK_RE between two of them)."""
-    s, spans = _word_spans(text)
-    if last >= len(spans):
-        return True
-    for k in range(first, last):
-        gap = s[spans[k][1]:spans[k + 1][0] + 1]
-        if _SENTENCE_BREAK_RE.search(gap):
-            return True
-    return False
+def article_ids(label: Any, text: Any) -> List[Dict[str, str]]:
+    """v79.15.0 (item 3): the article's text as its numbered periods -- [{"id": «A<token>.<n>», "comma", "text"}] (the
+    split above); [] for an article with no text."""
+    from .sentence_split import split
+    token = article_token(label)
+    out: List[Dict[str, str]] = []
+    if not token or not str(text or "").strip():
+        return out
+    for comma, body in _es().commi(text).items():
+        body = " ".join(str(body or "").split())
+        if not body:
+            continue
+        for piece in split(body, _PERIOD_RE):
+            piece = piece.strip()
+            if re.search(r"\w", piece):
+                out.append({"id": f"A{token}.{len(out) + 1}", "comma": str(comma), "text": piece})
+    return out
 
 
-def fact_quote_at(text: str, quote: str) -> Optional[int]:
-    """v79.14.2 (A): a «no»'s fact quote in the case text, by exact substring after case_frame's normalisation -- the
-    quote as case_frame.found_at strips it (its spaces collapsed, its marks and edge punctuation out), both as
-    _full_tokens reads them (NFC, lowercased, «’» as «'», accent-folded with the accent kept as a mark: _skey), the
-    quote's words a contiguous run of the text's (no stem, no omitted or added word), never just after a negation of the
-    text (_negated_before, as found_at: «ha versato» is not «non ha versato»). (review) A fact, not a word: at least
-    FACT_QUOTE_MIN_WORDS content words, inside one sentence of the text (never across a stop before a capital or a line
-    break: _crosses_sentence). The index of the text's first word matched, None when not found."""
-    es = _es()
-    q = " ".join(str(quote or "").split()).strip(" «»“”\"'.,;:")
-    if not q or not str(text or "").strip():
-        return None
-    if len([w for w, _ in es._tokens(q) if w not in es.FUNCTION_WORDS]) < FACT_QUOTE_MIN_WORDS:
-        return None
-    ptoks, ttoks = _full_tokens(q), _full_tokens(text)
-    want = [_skey(t) for t in ptoks]
-    have = [_skey(t) for t in ttoks]
-    if not want:
-        return None
-    starts_negated = want[0] in _word_sets()["negation_words"]
-    for i in range(len(have) - len(want) + 1):
-        if have[i:i + len(want)] == want and (starts_negated or not _negated_before(ttoks, i)) \
-                and not _crosses_sentence(text, i, i + len(want) - 1):
-            return i
-    return None
+def id_list(value: Any) -> List[str]:
+    """v79.15.0: a reply's id list (cita_fatti, cita_norma) as strings, each once, in order -- a list of ids, or one
+    string of them (commas, semicolons or spaces between); anything else, none."""
+    if isinstance(value, str):
+        value = re.split(r"[\s,;]+", value)
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: List[str] = []
+    for x in value:
+        x = str(x or "").strip().strip("[]()«»\"'.")
+        if x and x not in out:
+            out.append(x)
+    return out
+
 
 
 def _clauses(text: str) -> List[List[Tuple[str, str, bool]]]:
@@ -429,14 +438,6 @@ def _sentences(text: str) -> int:
     return len(parts)
 
 
-def _comma_of(text: str, passage: str) -> str:
-    es = _es()
-    for label, body in es.commi(text).items():
-        if body and passage_found(body, passage):
-            return label
-    return ""
-
-
 def touches(condizione: str, norm: Dict[str, Any]) -> Dict[str, List[str]]:
     """(e) The norm's elements (its «elements»: [{id, testo}]) and commi the condizione touches: those sharing the most
     grounding words with it (connective and question words aside); none when it shares none."""
@@ -489,7 +490,7 @@ def _record(norm: Dict[str, Any], item: Optional[Dict[str, Any]] = None) -> Dict
     return {"article": norm.get("article"), "fit": None, "perche": str(item.get("perche") or item.get("perché") or ""),
             "passage": "", "comma": "", "facts": [], "condizione": "", "ambito": None, "verified": False,
             "reason": "", "added_content": False, "touches": {"elements": [], "commi": []},
-            "fact_quotes": [], "quote_failed": False}
+            "fact_quotes": [], "cita_fatti": [], "cita_norma": [], "ids_failed": False}
 
 
 def _canon_fit(value: Any) -> Optional[str]:
@@ -504,47 +505,20 @@ def _quantities(text: Any) -> List[str]:
     return list(dict.fromkeys(t[1] for t in _full_tokens(text) if _skey(t) in q))
 
 
-def _rests_on_passage(fit: str, words: str, quoted: Sequence[str], fact_texts: Sequence[str]
-                      ) -> Optional[Tuple[bool, str]]:
-    """(c) A «no» or a «dipende» rests on its quoted passage, never on a rule the passage does not state: (added
-    content, reason) when it does not, None when it does.
-      - a quantity word outside the quotes («due persone», «almeno», «solo») only as the passage's own -- a count or a
-        restriction the passage does not set is an invented rule (added content);
-      - the passage quotes a requirement: one word at least beyond the data's generic words («Chiunque», «è punito»
-        decide nothing) -- for a «no», one the named facts do not state (what the facts lack);
-      - a «no» says what the facts are (a word of the named facts outside the quotes) and that they lack it (one of the
-        data's negation words)."""
-    es = _es()
-    passage = " ".join(quoted)
-    have = set(_quantities(passage))
-    invented = [w for w in _quantities(words) if w not in have]
-    if invented:
-        return True, f"quantità o restrizione non nel passo citato: {', '.join(invented[:6])}"
-    generic = _word_sets()["generic_norm_words"]
-    decisive = [t for t in _full_tokens(passage) if not _strict(t) and _skey(t) not in generic]
-    if not decisive:
-        return False, "il passo citato non contiene un requisito della norma"
-    if fit != NO:
-        return None
-    facts_lex = es.lexicon(" ".join(fact_texts))
-    if all(facts_lex.has(t[1], t[2]) for t in decisive):
-        return False, "il passo citato non indica un requisito che manca nei fatti"
-    neg = _word_sets()["negation_words"]
-    if not any(_skey(t) in neg for t in _full_tokens(words)):
-        return False, "il «no» non dice cosa manca nei fatti"
-    told = [t for t in _full_tokens(words) if not _strict(t) and not _connectives().has(t[1], t[2])
-            and _skey(t) not in neg and facts_lex.has(t[1], t[2])]
-    if not told:
-        return False, "il «no» non dice cosa narrano i fatti"
-    return None
-
-
 def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], case_text: str = "") -> Dict[str, Any]:
-    """One reply item checked against the norm's text and the facts: the judgment record, verified or with the reason
-    it was discarded. Never raises on a malformed item. v79.14.2 (A): a «no» by verify_no (its fact quotes against
-    case_text -- "": the facts' text). v79.14.3 (item 2): a «no» and a «dipende» by verify_no, on their «fatto_citato»
-    (the perché no longer parsed for quotes; the «dipende»'s condizione checks there); a «si» as before -- its perché
-    quoting the article, (a)-(c)."""
+    """One reply item checked against the norm's numbered periods and the facts: the judgment record, verified or with
+    the reason it was discarded. Never raises on a malformed item. v79.15.0 (item 3): verified by ids, no string
+    matcher -- a «si» cites the article's periods it rests on (cita_norma: ids of article_ids, of this article only, at
+    least one), a «no» and a «dipende» the facts (cita_fatti: S-ids of the facts given, at least one; cita_norma
+    optional, verified the same way when given; a system's assumption -- certainty «assunto» -- is no fact to cite);
+    a missing or unknown id: unverified (rec["ids_failed"]: fit_unverified_ids;
+    a «no»: fit_no_unverified_ids), the norm kept on its current path. Then, as 79.13 (c)-(e): the perché one sentence,
+    every fact id it names existing, its content words grounded on the cited periods, the cited and named facts, the
+    rubrica and the reviewed note (an invented count, rule or claim: fit_added_content), for a «no» or a «dipende» a
+    count or a restriction only as the cited periods' own, never contradicting a cited fact; a «dipende»'s condizione
+    a grounded question and the elements it touches. rec["passage"]: the cited periods' text (the article's own words,
+    what the contest prints); rec["fact_quotes"]: the cited facts' text; rec["facts"]: the cited, then the named ids.
+    case_text: unused (kept for the callers)."""
     rec = _record(norm, item if isinstance(item, dict) else None)
     if not isinstance(item, dict):
         rec["reason"] = "giudizio non è un oggetto"
@@ -565,126 +539,63 @@ def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], cas
     if not perche:
         rec["reason"] = "perché mancante"
         return rec
-    if fit in (NO, DIPENDE):        # v79.14.3 (item 2): a «no», a «dipende» -- the fact it quotes in «fatto_citato»
-        return verify_no(rec, item, perche, norm, facts, case_text)
-    text = str(norm.get("text") or "")
-    es = _es()
-    lex = es.lexicon(text)
-    quoted = quotes(perche)
-    if not quoted:
-        rec["reason"] = "nessun passo dell'articolo citato"
-        return rec
-    for q in quoted:                                                            # (a)
-        if not passage_found(text, q, lex):
-            rec["reason"] = f"passo non nel testo dell'articolo: «{q}»"
-            return rec
-    rec["passage"] = " … ".join(quoted)
-    rec["comma"] = _comma_of(text, quoted[0])
-    rest = _unquoted(perche)
-    if _sentences(_strip_own_reference(rest, str(norm.get("article") or ""))) > 1:     # «art. 1819 c.c. Il …»
-        rec["reason"] = "perché di più frasi"
-        return rec
-    by_id = {str(f.get("id")): f for f in facts if isinstance(f, dict) and f.get("id")}
-    named = fact_ids(rest, by_id)                                               # (b)
-    if not named:
-        rec["reason"] = "nessun fatto nominato"
-        return rec
-    unknown = [i for i in named if i not in by_id]
-    if unknown:
-        rec["reason"] = f"fatto inesistente: {', '.join(unknown)}"
-        return rec
-    rec["facts"] = named
-    note = str(norm.get("note") or "")
-    ground = " ".join([" ".join(quoted)] + [str(by_id[i].get("text") or "") for i in named] + [note])
-    words = _strip_ids(_strip_own_reference(rest, str(norm.get("article") or "")), by_id.keys() | set(named))
-    extra = _ungrounded(words, ground, _connectives())                          # (c)
-    if extra:
-        rec["added_content"] = True
-        rec["reason"] = f"contenuto non citato nel passo, nei fatti o nella nota: {', '.join(extra[:6])}"
-        return rec
-    fact_texts = [str(by_id[i].get("text") or "") for i in named]
-    against = contradicted(_strip_ids(_strip_own_reference(perche, str(norm.get("article") or "")),   # (c) the
-                                      by_id.keys() | set(named)), fact_texts)                   # facts' polarity
-    if against:
-        rec["reason"] = f"contraddice il fatto nominato: {', '.join(against[:6])}"
-        return rec
-    rec["verified"] = True
-    return rec
-
-
-FACT_FIELD = "fatto_citato"         # v79.14.3 (item 2): the reply's dedicated fact quote (a «no», a «dipende»)
-
-
-def cited_fact(item: Any) -> str:
-    """v79.14.3 (item 2): the item's «fatto_citato» -- its spaces collapsed, its marks and edge punctuation out (as
-    fact_quote_at strips a quote); "" when absent or not a string."""
-    raw = item.get(FACT_FIELD) if isinstance(item, dict) else None
-    if not isinstance(raw, str):
-        return ""
-    return " ".join(raw.split()).strip(" «»“”\"'.,;:")
-
-
-def verify_no(rec: Dict[str, Any], item: Any, perche: str, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]],
-              case_text: str = "") -> Dict[str, Any]:
-    """v79.14.3 (item 2): a «no» or a «dipende» rests on the fact sentence it quotes in its own field, «fatto_citato»
-    (FACT_FIELD) -- never on a quote read from the perché (79.14.2 parsed the perché's quotes; the model kept quoting
-    the article there). The check: «fatto_citato» non-empty and an exact word run of the case text inside one sentence
-    with at least FACT_QUOTE_MIN_WORDS content words (fact_quote_at -- case_text, else the facts' text joined) -- else
-    unverified, rec["quote_failed"] (fit_no_unverified_quote for a «no»; a «dipende» is fit_unverified): the norm keeps
-    the current path. The perché's quotes are neither required nor verified: one found in the article's text
-    (passage_found) is kept as rec["passage"] (what the contest and the objection print) and grounds its own words;
-    any other grounds nothing. Then, as 79.14.2: the perché one sentence; a named fact id existing; its other content
-    words grounded on the cited fact, the article passages it quotes, the named facts and those holding the cited
-    fact, the rubrica and the reviewed note -- never the article's unquoted text --, a count or a restriction only as a
-    quoted article passage's (else fit_added_content: nothing invented has an effect); never contradicting a named or
-    quoted fact. A «dipende» then keeps its condizione's checks ((d), (e)). rec["fact_quotes"]: [the cited fact];
-    rec["facts"]: the named ids, then the ids of the facts holding the cited fact."""
-    text = str(norm.get("text") or "")
-    by_id = {str(f.get("id")): f for f in facts if isinstance(f, dict) and f.get("id")}
-    source = str(case_text or "").strip() or "\n".join(str(f.get("text") or "") for f in by_id.values())
-    cited = cited_fact(item)
-    if not cited:
-        rec["reason"], rec["quote_failed"] = "fatto_citato mancante", True
-        return rec
-    if fact_quote_at(source, cited) is None:
-        rec["reason"], rec["quote_failed"] = f"fatto_citato non nei fatti: «{cited[:200]}»", True
-        return rec
-    fit = rec.get("fit")
-    art_q = [q for q in quotes(perche) if passage_found(text, q)]       # the article's words it quotes, if any
-    rec["fact_quotes"] = [cited]
-    rec["passage"] = " … ".join(art_q)
-    rec["comma"] = _comma_of(text, art_q[0]) if art_q else ""
     label = str(norm.get("article") or "")
-    rest = _unquoted(perche)
-    if _sentences(_strip_own_reference(rest, label)) > 1:
+    text = str(norm.get("text") or "")
+    by_id = {str(f.get("id")): f for f in facts if isinstance(f, dict) and f.get("id")}
+    periods = {p["id"]: p for p in article_ids(label, text)}
+    cited_f, cited_n = id_list(item.get("cita_fatti")), id_list(item.get("cita_norma"))
+    rec["cita_fatti"], rec["cita_norma"] = cited_f, cited_n
+    bad_f = [i for i in cited_f if i not in by_id]
+    bad_n = [i for i in cited_n if i not in periods]
+    if bad_f:
+        rec["reason"], rec["ids_failed"] = f"cita_fatti: fatto inesistente: {', '.join(bad_f[:6])}", True
+        return rec
+    assumed = [i for i in cited_f if by_id[i].get("certainty") == ASSUMED]     # the system's assumption: no fact
+    if assumed:
+        rec["reason"], rec["ids_failed"] = f"cita_fatti: assunzione del sistema, non un fatto: {', '.join(assumed)}", True
+        return rec
+    if bad_n:
+        rec["reason"], rec["ids_failed"] = f"cita_norma: periodo non dell'articolo: {', '.join(bad_n[:6])}", True
+        return rec
+    if fit == SI and not cited_n:
+        rec["reason"], rec["ids_failed"] = "cita_norma mancante", True
+        return rec
+    if fit in (NO, DIPENDE) and not cited_f:
+        rec["reason"], rec["ids_failed"] = "cita_fatti mancante", True
+        return rec
+    passage = [periods[i]["text"] for i in cited_n]
+    rec["passage"] = " … ".join(passage)
+    rec["comma"] = periods[cited_n[0]]["comma"] if cited_n else ""
+    rec["fact_quotes"] = [str(by_id[i].get("text") or "") for i in cited_f]
+    if _sentences(_strip_own_reference(_unquoted(perche), label)) > 1:     # «art. 1819 c.c. Il …»
         rec["reason"] = "perché di più frasi"
         return rec
-    named = fact_ids(rest, by_id)
+    named = fact_ids(perche, by_id)
     unknown = [i for i in named if i not in by_id]
     if unknown:
         rec["reason"] = f"fatto inesistente: {', '.join(unknown)}"
         return rec
-    holding = [i for i, f in by_id.items() if fact_quote_at(str(f.get("text") or ""), cited) is not None]
-    rec["facts"] = list(dict.fromkeys(named + holding))
+    rec["facts"] = list(dict.fromkeys(cited_f + named))
     fact_texts = [str(by_id[i].get("text") or "") for i in rec["facts"]]
-    # never the article's whole text: an article word the judgment rests on is quoted (and found), else it is a claim
-    # the case does not state -- only the cited fact, the article's quoted passages, the facts, the rubrica and the note
-    ground = " ".join([cited] + art_q + fact_texts + [str(norm.get("rubrica") or ""), str(norm.get("note") or "")])
-    words = _strip_ids(_strip_own_reference(rest, label), by_id.keys() | set(named))
-    extra = _ungrounded(words, ground, _connectives())
-    have = set(_quantities(" ".join(art_q)))    # a count or a restriction outside the quotes: a quoted passage's only
-    extra += [w for w in _quantities(words) if w not in have and w not in extra]
+    ground = " ".join(passage + fact_texts + [str(norm.get("rubrica") or ""), str(norm.get("note") or "")])
+    ids = by_id.keys() | set(named) | set(periods)
+    plain = _strip_ids(_strip_own_reference(perche, label), ids)
+    for pattern in config().get("quote_patterns") or []:            # a quote's words are words like any other
+        plain = re.sub(pattern, lambda m: f" {m.group(1)} ", plain)
+    extra = _ungrounded(plain, ground, _connectives())                          # (c)
+    if fit in (NO, DIPENDE):        # a count or a restriction only as the cited periods' own
+        have = set(_quantities(" ".join(passage)))
+        extra += [w for w in _quantities(plain) if w not in have and w not in extra]
     if extra:
         rec["added_content"] = True
-        rec["reason"] = f"contenuto non citato nei fatti, nell'articolo o nella nota: {', '.join(extra[:6])}"
+        rec["reason"] = f"contenuto non nei periodi citati, nei fatti o nella nota: {', '.join(extra[:6])}"
         return rec
-    against = contradicted(_strip_ids(_strip_own_reference(perche, label), by_id.keys() | set(named)),
-                           fact_texts + [cited])
+    against = contradicted(plain, fact_texts)                                   # (c) the facts' polarity
     if against:
         rec["reason"] = f"contraddice il fatto nominato: {', '.join(against[:6])}"
         return rec
     if fit == DIPENDE:                                                          # (d), as 79.13
-        cond = " ".join(str((item or {}).get("condizione") or "").split())
+        cond = " ".join(str(item.get("condizione") or "").split())
         rec["condizione"] = cond
         if not cond:
             rec["reason"] = "dipende senza condizione"
@@ -697,9 +608,9 @@ def verify_no(rec: Dict[str, Any], item: Any, perche: str, norm: Dict[str, Any],
             rec["reason"] = f"condizione con fatto inesistente: {', '.join(i for i in cond_ids if i not in by_id)}"
             return rec
         cond_ground = " ".join([text] + [str(f.get("text") or "") for f in by_id.values()])
-        cond_words = _strip_ids(_strip_own_reference(cond, label), by_id.keys())
+        cond_words = _strip_ids(_strip_own_reference(cond, label), by_id.keys() | set(periods))
         extra = _ungrounded(cond_words, cond_ground, _question_words())
-        extra += [w for w in _quantities(cond_words) if w not in _quantities(" ".join(art_q)) and w not in extra]
+        extra += [w for w in _quantities(cond_words) if w not in _quantities(" ".join(passage)) and w not in extra]
         if extra:
             rec["added_content"] = True
             rec["reason"] = f"condizione con contenuto non nel testo o nei fatti: {', '.join(extra[:6])}"
@@ -707,6 +618,7 @@ def verify_no(rec: Dict[str, Any], item: Any, perche: str, norm: Dict[str, Any],
         rec["touches"] = touches(cond, norm)                                    # (e)
     rec["verified"] = True
     return rec
+
 
 
 # --- the call ---------------------------------------------------------------------------------------------------------
@@ -751,12 +663,12 @@ def fact_label(fact: Dict[str, Any]) -> str:
 
 
 def _norm_block(norm: Dict[str, Any], with_schema: bool) -> str:
-    es = _es()
     text = str(norm.get("text") or "")
     cap = int(config().get("max_article_chars") or 6000)
-    lines = [f"ARTICOLO: {norm.get('article')}", f"Rubrica: {norm.get('rubrica') or '(nessuna)'}", "Commi:"]
-    for label, body in es.commi(text).items():
-        lines.append(f"[{label}] {body}")
+    lines = [f"ARTICOLO: {norm.get('article')}", f"Rubrica: {norm.get('rubrica') or '(nessuna)'}",
+             "Testo (periodi numerati):"]
+    for period in article_ids(norm.get("article"), text):          # v79.15.0 (item 3): what cita_norma cites
+        lines.append(f"[{period['id']}] {period['text']}")
     block = "\n".join(lines)
     if len(block) > cap:
         logger.info("applicability: %s text cut at %d characters in the prompt", norm.get("article"), cap)
@@ -883,7 +795,7 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
     verified one may have an effect -- the caller's. No facts: nothing is sent (every record «nessun fatto»).
     started: when the caller's step began (build B: the flow's, its inputs read) -- the deadline counts from then.
     frame_context: v79.14.0 -- the verified case frame as the calls' context (case_frame.fit_context); "" none.
-    case_text: v79.14.2 (A) -- the case text a «no»'s fact quotes are verified against (verify_no); "" the facts'."""
+    case_text: unused since v79.15.0 (item 3: the fit verified by ids; kept for the callers)."""
     t0 = started if started is not None else time.time()
     cfg = config()
     counters = empty_counters()
@@ -948,8 +860,9 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
             counters["fit_unverified"] += 1
             if rec["added_content"]:
                 counters["fit_added_content"] += 1
-            if rec.get("quote_failed") and _canon_fit(rec.get("fit")) == NO:     # v79.14.2 (A)
-                counters["fit_no_unverified_quote"] += 1
+            if rec.get("ids_failed"):                                         # v79.15.0 (item 3)
+                counters["fit_unverified_ids"] += 1
+                counters["fit_no_unverified_ids"] += int(_canon_fit(rec.get("fit")) == NO)
             log.append({"article": rec["article"], "reason": rec["reason"]})
             logger.info("applicability: %s unverified: %s", rec["article"], rec["reason"])
             _log("applicability_fit_discard", {"article": rec["article"], "reason": rec["reason"],
@@ -993,7 +906,8 @@ FIT_REMOVED_TRACE = "giudicato non applicabile ai fatti (giudizio di applicabili
 FLOW_COUNTERS = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
                  "fit_skipped", "fit_calls", "fit_failed_calls", "fit_timeouts", "norms_removed_by_fit",
                  "fit_kept_named", "fit_added_content_in_effects", "fit_seconds",
-                 "fit_no_verified", "fit_no_unverified_quote", "fit_removed")      # v79.14.2 (A)
+                 "fit_no_verified", "fit_removed",                                 # v79.14.2 (A)
+                 "fit_unverified_ids", "fit_no_unverified_ids", "fit_protected_kept")   # v79.15.0 (item 3)
 
 
 def _quoted(parts: Iterable[Any]) -> str:
@@ -1086,7 +1000,8 @@ def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[
         if not rec or not rec.get("verified"):
             continue
         entry = {k: rec.get(k) for k in ("article", "fit", "perche", "passage", "comma", "facts", "condizione",
-                                         "ambito", "touches", "added_content", "fact_quotes")}
+                                         "ambito", "touches", "added_content", "fact_quotes", "cita_fatti",
+                                         "cita_norma")}
         label = str(rec.get("article") or "")
         if rec["fit"] == NO:
             named = es.norm_label(label) in guard or " ".join(label.lower().split()) in guard

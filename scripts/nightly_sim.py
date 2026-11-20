@@ -273,6 +273,24 @@ unchanged); item 3 -- frame_binding_rescued (the emptied charge set rebuilt on t
 corpus_line_code stays a must-be-0 counter (never the corpus line on a code article); item 4 -- excluded_dropped (the
 articles the binding excluded or a verified «no» removed, kept out of §4, §5, §7 and «Fatti mancanti»).
 
+v79.15.0 (build A; block_counters, in the counters table): item 3 -- the fit verified by ids (a «si» cites the
+article's numbered periods, a «no» / «dipende» the facts' S-ids; «fatto_citato» and the string matcher removed):
+fit_unverified_ids (a judgment whose cited ids are missing or unknown), fit_no_unverified_ids (the «no» among them;
+replaces fit_no_unverified_quote), fit_protected_kept (a verified «no» on the frame's verified addebito/domanda or a
+user-named article, kept), also in the «Applicability judgment» table; item 1 -- the verified analysis step
+(ANALYSIS_STEP, src/rag/analysis_step.py; ANALYSIS_STEP_KEYS, read from the cell's block_counters --
+interactive_flow.analysis_step_run puts them there -- in the section «Verified analysis step (ANALYSIS_STEP)»,
+analysis_lines): analysis_calls (<= 2), analysis_reasked, analysis_failed, analysis_timeouts,
+analysis_line_rejected, analysis_line_undetermined, analysis_frame_charge_missing, analysis_bad_sid, analysis_bad_aid,
+analysis_element_not_verbatim, analysis_element_missing, analysis_esito_invalid, analysis_provato_downgraded,
+analysis_provato_unsupported, analysis_escluso_unsupported, analysis_contestato_unsupported, law_statements_kept,
+law_statements_dropped, law_statements_off_article (a law statement naming an article none of whose periods it
+cites), law_statements_ungrounded (one its cited periods do not ground), analysis_seconds; build B (item 2, the rendering from the verified analysis) --
+qa_sentences_dropped (the Q&A sentences stating what a norm provides with no verified affermazione_di_diritto,
+removed), norms_sentences_dropped (§4's, likewise), legacy_disagrees_line and legacy_disagrees_esito (the old engine,
+logged «legacy_plan» and never rendered, against the verified analysis: its main line's article, its element
+verdicts); the section also prints the step's status and prompt hash per cell (state["analysis_step"]).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -390,6 +408,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["applicability"] = fit_of(st)                                                       # v79.13.0
         out["checks"].append(fit_check(out["answer"], st))
         out["case_frame"] = frame_of(st, spec["text"])                                          # v79.14.0
+        out["analysis_step"] = {k: (st.get("analysis_step") or {}).get(k) for k in ("status", "prompt_hash")}  # v79.15.0
         for k, v in (out["case_frame"].get("counters") or {}).items():
             out["counters"].setdefault(k, v)
         out["checks"].append(frame_check(out["case_frame"], out["counters"]))
@@ -699,6 +718,36 @@ def frame_lines(results: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+# v79.15.0 (item 1): the verified analysis step's counters (src/rag/analysis_step.COUNTERS), in the counters table
+ANALYSIS_STEP_KEYS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
+                      "analysis_line_rejected", "analysis_line_undetermined", "analysis_frame_charge_missing",
+                      "analysis_bad_sid", "analysis_bad_aid", "analysis_element_not_verbatim", "analysis_element_missing",
+                      "analysis_esito_invalid", "analysis_provato_downgraded", "analysis_provato_unsupported",
+                      "analysis_escluso_unsupported", "analysis_contestato_unsupported", "law_statements_kept",
+                      "law_statements_dropped", "law_statements_off_article", "law_statements_ungrounded",
+                      "analysis_seconds",
+                      # build B: the rendering from the verified analysis, the old engine compared
+                      "qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
+                      "legacy_disagrees_esito")
+
+
+def analysis_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.15.0: per cell, the verified analysis step -- its counters (ANALYSIS_STEP_KEYS, from block_counters), its
+    status and prompt hash; only cells where the step ran."""
+    rows = [c for c in results if (c.get("counters") or {}).get("analysis_calls") is not None]
+    if not rows:
+        return []
+    lines = ["", "## Verified analysis step (ANALYSIS_STEP)", "",
+             "| cell | " + " | ".join(ANALYSIS_STEP_KEYS) + " | status | prompt |",
+             "|---" * (len(ANALYSIS_STEP_KEYS) + 3) + "|"]
+    for c in rows:
+        k = c.get("counters") or {}
+        step = c.get("analysis_step") or {}
+        lines.append(f"| {c['id']} | " + " | ".join(str(k.get(x, "—")) for x in ANALYSIS_STEP_KEYS)
+                     + f" | {step.get('status') or '—'} | {step.get('prompt_hash') or '—'} |")
+    return lines
+
+
 def fit_lines(results: List[Dict[str, Any]]) -> List[str]:
     """v79.13.0: per cell, the applicability judgment -- the counters, every removed norm with its quoted passage and
     its perché (a wrong removal visible), every kept-named «no», every «dipende» with its question."""
@@ -707,7 +756,8 @@ def fit_lines(results: List[Dict[str, Any]]) -> List[str]:
         return []
     keys = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
             "fit_added_content_in_effects", "norms_removed_by_fit", "fit_kept_named", "fit_seconds",
-            "fit_no_verified", "fit_no_unverified_quote", "fit_removed")         # v79.14.2 (A)
+            "fit_no_verified", "fit_removed",                                    # v79.14.2 (A)
+            "fit_unverified_ids", "fit_no_unverified_ids", "fit_protected_kept")  # v79.15.0 (item 3)
     lines = ["", "## Applicability judgment (APPLICABILITY_FIT)", "",
              "| cell | " + " | ".join(keys) + " | prompt |", "|---" * (len(keys) + 2) + "|"]
     for c in rows:
@@ -1345,6 +1395,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += counter_lines(results, baseline)
     lines += fit_lines(results)                     # v79.13.0
     lines += frame_lines(results)                   # v79.14.0
+    lines += analysis_lines(results)                # v79.15.0
     lines += headline_lines(results, baseline)      # v79.11
     lines += ranked_lines(results)
     lines += family_lines(results)                  # v79.9 (C2)

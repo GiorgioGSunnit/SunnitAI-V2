@@ -1,0 +1,14 @@
+{
+  "_doc": "v79.15.0 (item 1): the remedy and general-part articles the verified analysis step (src/rag/analysis_step.py, flag ANALYSIS_STEP) never accepts as a line (linea_principale / linea_subordinata): a line on one of them is rejected, the step re-asked once with the reason, then the line is «da determinare». The brief's initial content. «articles»: by compact code (cc = codice civile, cp = codice penale), each an article number («1218», «62-bis») or a range {\"from\", \"to\"} -- both ends included, a suffixed article between its number and the next (59, 60, 61, 62, 62-bis). «when_contractual»: the articles in the set only when the verified frame says the relationship is contractual (2043 c.c.: the extracontractual remedy beside a contract claim) -- «contractual» defines it from the verified frame's fields: a frame whose rito is not penal and whose addebito_o_domanda article is a c.c. article inside «cc_ranges» (Libro IV, Titoli I-III: obligations in general, contracts in general, the single contracts -- 1173 to 2042) or whose addebito_o_domanda (descrizione, frase) or istituto (testo) holds a word beginning with one of «stems». The frame's own verified addebito/domanda article is never rejected as a remedy (it is the charge or the claim the line must carry).",
+  "articles": {
+    "cc": ["1218", "1223", "1224", "1453", "1455", "1458"],
+    "cp": ["40", "41", "42", "43", {"from": "59", "to": "62-bis"}, "133"]
+  },
+  "when_contractual": {
+    "cc": ["2043"]
+  },
+  "contractual": {
+    "cc_ranges": [{"from": "1173", "to": "2042"}],
+    "stems": ["contratt", "inadempi", "compravendit", "locazion", "appalt", "caparr"]
+  }
+}

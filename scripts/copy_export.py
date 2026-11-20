@@ -250,6 +250,38 @@ EXTRA = (
     ("lawyer_method", "CONTESTED_WHO", "Metodo, «Soluzioni a confronto»: chi deve provare l'elemento contestato, nella "
                                        "tesi «… deve provare «…»» (v79.14.3, voce 1)"),
     ("issue_records", "CONTESTED_WHY", "Registro: perché l'elemento è contestato (v79.14.3, voce 1)"),
+    # v79.15.0 (item 1, ANALYSIS_STEP): the leading line the verified analysis could not verify -- labels only
+    ("analysis_step", "LINE_UNDETERMINED", "Metodo, «Sintesi» e «Soluzioni a confronto»: la linea principale che "
+                                           "l'analisi verificata non ha potuto determinare (v79.15.0, voce 1)"),
+    ("analysis_step", "LINE_UNVERIFIED_LABEL", "Metodo, «Sintesi»: l'etichetta della linea non verificata (v79.15.0, "
+                                               "voce 1)"),
+    # v79.15.0 (build B, item 2): the rendering from the verified analysis -- labels only
+    ("analysis_step", "LABEL_MAIN", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni»: la linea principale "
+                                    "(v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_SUB", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni»: la linea subordinata "
+                                   "(v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_ELEMENT", "Metodo, «Sintesi» e «Conclusioni»: l'elemento su cui la linea si gioca "
+                                       "(v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_FRAME_LINE", "Metodo: la linea sull'addebito o la domanda del quadro, non verificata "
+                                          "(v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_REMEDIES", "Metodo, «Norme e analisi per elementi»: i rimedi e la parte generale "
+                                        "collegati alla linea, senza tabella (v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_ESITI", "Metodo, «Norme» e «Conclusioni»: il conteggio degli esiti dell'articolo della "
+                                     "linea (v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_TO_PROVE", "Metodo, «Conclusioni»: gli elementi da provare (v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_CONTESTED", "Metodo, «Conclusioni»: gli elementi contestati (v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_NO_TABLE", "Metodo, «Norme e analisi per elementi»: nessuna linea verificata "
+                                        "(v79.15.0, voce 2)"),
+    ("analysis_step", "LABEL_NO_FACT", "Metodo, tabella degli elementi: l'elemento senza fatto citato (v79.15.0, "
+                                       "voce 2)"),
+    ("analysis_step", "LABEL_QA_MAIN", "«Risposte ai quesiti»: la linea principale verificata (v79.15.0, voce 2)"),
+    ("analysis_step", "LAW_STATEMENTS_TITLE", "«Risposte ai quesiti»: le affermazioni di diritto verificate "
+                                              "(v79.15.0, voce 2)"),
+    ("analysis_step", "ESITO_LABELS", "Metodo, tabella degli elementi: la colonna «Esito» (v79.15.0, voce 2)"),
+    ("analysis_step", "CONTESTED_BY", "Metodo, tabella degli elementi: l'elemento contestato con la parte che "
+                                      "l'afferma (v79.15.0, voce 2)"),
+    ("analysis_step", "TABLE_HEAD", "Metodo, tabella degli elementi: le intestazioni (v79.15.0, voce 2)"),
+    ("analysis_step", "SOLUTIONS_HEAD", "Metodo, «Soluzioni a confronto»: le intestazioni (v79.15.0, voce 2)"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference

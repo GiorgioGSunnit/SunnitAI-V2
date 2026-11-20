@@ -1,11 +1,11 @@
 """v79.14.2 -- the two verified model steps wired into the pipeline (the model faked; synthetic texts and facts, invented
 names; statutory text of 640 c.p., 1439, 2043 and 1218 c.c.):
 
-A. the fit verification by verdict type (src/rag/applicability.py): a «si» or a «dipende» quotes the article, as
-   before (no quote: unverified); a «no» quotes the fact sentence(s) it rests on -- verified by exact substring of
-   the case text after case_frame's normalisation (fact_quote_at) --, no article quote required; an unverified «no»
-   keeps the norm (fit_no_unverified_quote); a verified «no» removes it (fit_removed, the removal's
-   «applicability_fit_discard» line with the reason «removed: fit no (verified)»); the prompt's one added line
+A. the fit verification by verdict type (src/rag/applicability.py) -- v79.15.0 (item 3): by ids, the string matcher
+   removed: a «si» cites the article's numbered periods (cita_norma), a «no» and a «dipende» the facts (cita_fatti),
+   no article period required for a «no»; an unverified «no» keeps the norm (fit_no_unverified_ids); a verified «no»
+   removes it (fit_removed, the removal's «applicability_fit_discard» line with the reason «removed: fit no
+   (verified)»); the prompt's id fields
 B. the verified frame binds the charge set (src/rag/lawyer_method.py): penal rito + imputato/indagato -- a c.c.
    candidate excluded from the charge, the candidates, «Linea principale» and «Esito probabile», kept as context;
    civil rito -- a c.p. article excluded; a frame not verified on the rito or the role -- no binding; the charge set
@@ -67,179 +67,117 @@ CONTRATTO = {"article": "1439 c.c.", "rubrica": "Dolo", "text": ART_1439}
 TRUFFA = {"article": "640 c.p.", "rubrica": "Truffa", "text": ART_640}
 
 
-def _item(article, fit, perche, ambito="fattispecie", condizione="", fatto=None):
-    """v79.14.3 (item 2): a «no» or a «dipende» carries its fact quote in «fatto_citato» (fatto; None: no such key)."""
+def _item(article, fit, perche, ambito="fattispecie", condizione="", cf=None, cn=None):
+    """v79.15.0 (item 3): a judgment cites ids -- the facts (cf: «cita_fatti», a «no» / «dipende») and the article's
+    numbered periods (cn: «cita_norma», applicability.article_ids; a «si»); None: no such key."""
     out = {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
-    if fatto is not None:
-        out["fatto_citato"] = fatto
+    if cf is not None:
+        out["cita_fatti"] = cf
+    if cn is not None:
+        out["cita_norma"] = cn
     return out
 
 
 PM = "Il pubblico ministero procede per truffa"
 
 
-def _judge(norm, item, case_text=CASE_TEXT):
-    res = ap.judge([norm], FACTS, "imputato", call=lambda m, k: json.dumps({"giudizi": [item]}, ensure_ascii=False),
-                   case_text=case_text)
+def _judge(norm, item, facts=FACTS):
+    res = ap.judge([norm], facts, "imputato", call=lambda m, k: json.dumps({"giudizi": [item]}, ensure_ascii=False))
     return res, res["judgments"][0]
 
 
 # --- A. the verification by verdict type ------------------------------------------------------------------------------
 
-def test_a_verified_no_quotes_the_fact_it_rests_on_no_article_quote_needed():
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", fatto=PM))
+def test_a_verified_no_cites_the_fact_it_rests_on_no_article_period_needed():
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", cf=["S3"]))
     assert rec["verified"] and rec["fit"] == "no" and rec["passage"] == ""
-    assert rec["fact_quotes"] == ["Il pubblico ministero procede per truffa"]
+    assert rec["fact_quotes"] == ["Il pubblico ministero procede per truffa."] and rec["facts"] == ["S3"]
     c = res["counters"]
-    assert c["fit_no"] == 1 and c["fit_no_verified"] == 1 and c["fit_no_unverified_quote"] == 0
-    # the case's own spelling: «’» for «'», case, the spaces, the closing stop -- the same normalisation as the frame
-    rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«bruno gelso ha venduto a carla tasso un orologio dichiarandolo "
-                                                     "d’oro.» (S1)",
-                                  fatto="«bruno gelso ha venduto a carla tasso un orologio dichiarandolo d’oro.»"))[1]
-    assert rec["verified"] and rec["facts"] == ["S1"]
-    # a quote of the article beside the fact: verified on the article's text, kept as the passage
+    assert c["fit_no"] == 1 and c["fit_no_verified"] == 1 and c["fit_no_unverified_ids"] == 0
+    # a period of the article beside the fact: its text the printed passage
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro con un bonifico» (S2), non "
-                                                     "«annullamento del contratto».",
-                                  fatto="Carla Tasso ha pagato 4.000 euro con un bonifico"))[1]
-    assert rec["verified"] and rec["passage"] == "annullamento del contratto" and rec["facts"] == ["S2"]
+                                                     "«annullamento del contratto».", cf=["S2"], cn=["A1439cc.1"]))[1]
+    assert rec["verified"] and rec["passage"].startswith("Il dolo è causa di annullamento del contratto")
+    assert rec["facts"] == ["S2"] and rec["comma"] == "1"
 
 
-@pytest.mark.parametrize("perche,fatto,why", [
-    # v79.14.3 (item 2): the quote is «fatto_citato»'s -- the perché is no longer read for it
-    ("Il contratto non è stato annullato (S1).", None, "fatto_citato mancante"),                 # no field at all
-    ("La norma riguarda il «contratto» (S1).", "", "fatto_citato mancante"),                     # empty
-    ("«Il pubblico ministero procede per truffa» (S3).", None, "fatto_citato mancante"),         # quoted in perché only
-    ("Il fatto (S1) non riguarda la norma.", "Bruno Gelso ha regalato a Carla Tasso un orologio",
-     "fatto_citato non nei fatti"),                                                              # not in the text
-    ("Il fatto (S2) non riguarda la norma.", "Carla Tasso ha pagato 5.000 euro", "fatto_citato non nei fatti"),  # number
-    ("Il fatto (S1) non riguarda la norma.", "orologio dichiarato d'oro", "fatto_citato non nei fatti"),  # stem
+@pytest.mark.parametrize("perche,ids,why", [
+    # v79.15.0 (item 3): the facts by id in «cita_fatti» -- the perché is no citation
+    ("Il contratto non è stato annullato (S1).", None, "cita_fatti mancante"),                    # no field at all
+    ("La norma riguarda il «contratto» (S1).", [], "cita_fatti mancante"),                         # empty
+    ("«Il pubblico ministero procede per truffa» (S3).", None, "cita_fatti mancante"),            # named in perché only
+    ("Il fatto (S1) non riguarda la norma.", ["S9"], "cita_fatti: fatto inesistente: S9"),         # never given
+    ("Il fatto (S2) non riguarda la norma.", ["S2", "S5"], "cita_fatti: fatto inesistente: S5"),   # one of them
+    ("Il fatto (S1) non riguarda la norma.", ["s1"], "cita_fatti: fatto inesistente: s1"),         # as written
 ])
-def test_an_unverified_no_keeps_the_norm_and_is_counted_as_a_quote_failure(perche, fatto, why):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, fatto=fatto))
-    assert not rec["verified"] and rec["quote_failed"] and rec["reason"].startswith(why), rec["reason"]
+def test_an_unverified_no_keeps_the_norm_and_is_counted_as_an_id_failure(perche, ids, why):
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, cf=ids))
+    assert not rec["verified"] and rec["ids_failed"] and rec["reason"] == why, rec["reason"]
     c = res["counters"]
-    assert c["fit_no"] == 0 and c["fit_no_verified"] == 0 and c["fit_no_unverified_quote"] == 1
-    assert c["fit_unverified"] == 1 and ap.effects(res, [])["removed"] == []
+    assert c["fit_no"] == 0 and c["fit_no_verified"] == 0 and c["fit_no_unverified_ids"] == 1
+    assert c["fit_unverified_ids"] == 1 and c["fit_unverified"] == 1 and ap.effects(res, [])["removed"] == []
 
 
-def test_a_no_quoting_a_fact_but_adding_a_rule_is_still_discarded():
+def test_a_no_citing_a_fact_but_adding_a_rule_is_still_discarded():
     res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3): la norma "
-                                                          "vale solo per i contratti scritti.", fatto=PM))
-    assert not rec["verified"] and rec["added_content"] and not rec["quote_failed"]
-    assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_no_unverified_quote"] == 0
+                                                          "vale solo per i contratti scritti.", cf=["S3"]))
+    assert not rec["verified"] and rec["added_content"] and not rec["ids_failed"]
+    assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_no_unverified_ids"] == 0
 
 
-def test_a_si_without_a_quote_of_the_article_stays_unverified():
+def test_a_si_citing_no_period_of_the_article_stays_unverified():
     res, rec = _judge(TRUFFA, _item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio placcato (S1, S2)."))
-    assert not rec["verified"] and rec["reason"] == "nessun passo dell'articolo citato"
-    # a fact quote is no article quote for a «si»
-    rec = _judge(TRUFFA, _item("640 c.p.", "si", "«Bruno Gelso ha venduto a Carla Tasso un orologio» (S1)."))[1]
-    assert not rec["verified"] and rec["reason"].startswith("passo non nel testo")
+    assert not rec["verified"] and rec["reason"] == "cita_norma mancante" and rec["ids_failed"]
+    # a fact id is no period of the article for a «si»
+    rec = _judge(TRUFFA, _item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1).",
+                               cn=["S1"]))[1]
+    assert not rec["verified"] and rec["reason"] == "cita_norma: periodo non dell'articolo: S1"
     res, rec = _judge(TRUFFA, _item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi "
-                                                      "o raggiri»."))
+                                                      "o raggiri».", cn=["A640cp.1"]))
     assert rec["verified"] and res["counters"]["fit_si"] == 1 and res["counters"]["fit_no_verified"] == 0
+    assert rec["passage"] == ART_640
 
 
 @pytest.mark.parametrize("perche", [
-    # (review) a fact quote for show, the «no» resting on a claim in the article's words the case never states
+    # (review) a fact cited for show, the «no» resting on a claim in the article's words the case never states
     "«Il pubblico ministero procede per truffa» e i raggiri non sono stati usati da uno dei contraenti (S3).",
     "«Il pubblico ministero procede per truffa», non un contratto (S3).",
 ])
-def test_a_no_whose_unquoted_words_are_the_articles_not_the_facts_is_discarded(perche):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, fatto=PM))
-    assert not rec["verified"] and rec["added_content"] and not rec["quote_failed"], rec["reason"]
+def test_a_no_whose_words_are_the_articles_uncited_not_the_facts_is_discarded(perche):
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, cf=["S3"]))
+    assert not rec["verified"] and rec["added_content"] and not rec["ids_failed"], rec["reason"]
     assert res["counters"]["fit_no_verified"] == 0 and ap.effects(res, [])["removed"] == []
-    # the article's words quoted are verified on its text and may carry the «no»; the rubrica's word may be said
+    # the article's words with their period cited may carry the «no»; the rubrica's word may be said
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non "
-                                                     "«annullamento del contratto».", fatto=PM))[1]
-    assert rec["verified"] and rec["passage"] == "annullamento del contratto"
+                                                     "«annullamento del contratto».", cf=["S3"], cn=["A1439cc.1"]))[1]
+    assert rec["verified"] and "annullamento del contratto" in rec["passage"]
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non dolo.",
-                                  fatto=PM))[1]
+                                  cf=["S3"]))[1]
     assert rec["verified"], rec["reason"]
 
 
-@pytest.mark.parametrize("fatto", [
-    "truffa",                                                           # a word, not a fact
-    "per truffa",
-    "con un bonifico. Il pubblico ministero procede",                   # across a sentence break
-])
-def test_a_fact_quote_is_a_clause_of_one_sentence_never_a_word_nor_two_sentences(fatto):
-    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", f"«{fatto}» (S2, S3).", fatto=fatto))
-    assert not rec["verified"] and rec["quote_failed"], rec["reason"]
-    assert res["counters"]["fit_no_unverified_quote"] == 1
-
-
-def test_the_sentence_break_and_the_line_break_bound_a_fact_quote():
-    text = "Luca ha pagato 4.000 euro. Il pubblico ministero procede per truffa ai sensi dell'art. 640 c.p. e le " \
-           "indagini sono in corso.\nHo pagato tutto il dovuto."
-    assert ap.fact_quote_at(text, "Luca ha pagato 4.000 euro") == 0
-    assert ap.fact_quote_at(text, "ai sensi dell'art. 640 c.p. e le indagini") is not None     # an abbreviation's stop
-    assert ap.fact_quote_at(text, "4.000 euro. Il pubblico ministero") is None
-    assert ap.fact_quote_at(text, "sono in corso. Ho pagato tutto") is None
-    lines = "Le indagini sono in corso\nho pagato tutto il dovuto"                # no stop: the line break alone
-    assert ap.fact_quote_at(lines, "indagini sono in corso") is not None
-    assert ap.fact_quote_at(lines, "indagini sono in corso ho pagato tutto") is None
-
-
-def test_the_fact_source_is_the_users_words_never_the_pipelines_labels(monkeypatch):
-    state = {"text": "Il pubblico ministero procede per truffa.", "request": "", "additions": ["Ho pagato a Carla il prezzo intero."]}
-    assert "PRECISAZIONI DEL CLIENTE" in flow.case_text(state)            # the writer's case text keeps its label
-    source = flow.fact_source(state)
-    assert source == "Il pubblico ministero procede per truffa.\nHo pagato a Carla il prezzo intero."
-    rec = ap.verify(_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso».", ambito="rimedio",
-                          fatto="PRECISAZIONI DEL CLIENTE fornite dopo il caso"), CONTRATTO, FACTS, source)
-    assert not rec["verified"] and rec["quote_failed"]
-    rec = ap.verify(_item("1439 c.c.", "no", "«Ho pagato a Carla il prezzo intero» (S1).", ambito="rimedio",
-                          fatto="Ho pagato a Carla il prezzo intero"), CONTRATTO,
-                    [{"id": "S1", "text": "Ho pagato a Carla il prezzo intero.", "certainty": "accertato"}], source)
-    assert rec["verified"], rec["reason"]
-    upload = {"text": "Il pubblico ministero procede per truffa.", "request": "Valuta il caso", "additions": []}
-    assert "RICHIESTA DELL'UTENTE" not in flow.fact_source(upload) and "Valuta il caso" in flow.fact_source(upload)
-    # the flow's judgment reads it: a «no» quoting the label keeps the norm
-    monkeypatch.setenv("APPLICABILITY_FIT", "true")
-    sents = [dict(f, source="caso") for f in FACTS]
-    records = {"1439 c.c.": {"article": "1439 c.c.", "rubrica": "Dolo", "requisites": [
-        _req(2, "i raggiri usati da uno dei contraenti", "da provare")]}}
-    st = _flow_state(CASE_TEXT, sents, records)
-    st["additions"] = ["Ho pagato a Carla il prezzo intero."]
-    reply = {"giudizi": [_item("1439 c.c.", "no", "«PRECISAZIONI DEL CLIENTE fornite dopo il caso» (S3).",
-                               fatto="PRECISAZIONI DEL CLIENTE fornite dopo il caso")]}
-    monkeypatch.setattr(ap, "_default_call", lambda m, k: json.dumps(reply, ensure_ascii=False))
-    assert flow.applicability_fit(st, IMPUTATO, [_row("1439", "c.c.", ART_1439, "Dolo")], set(), []) == set()
-    assert "1439 c.c." in st["records"] and st["block_counters"]["fit_no_unverified_quote"] == 1
-
-
-def test_the_fact_quote_is_an_exact_substring_never_cut_after_a_negation():
-    text = "Caio non ha restituito la somma alla scadenza."
-    assert ap.fact_quote_at(text, "Caio non ha restituito la somma") == 0
-    assert ap.fact_quote_at(text, "«non ha restituito la somma alla scadenza.»") == 1
-    assert ap.fact_quote_at(text, "ha restituito la somma") is None          # the opposite of the text
-    assert ap.fact_quote_at(text, "restituita la somma") is None             # stem: not exact
-    assert ap.fact_quote_at(text, "Caio ha restituito") is None              # a word skipped
-    assert ap.fact_quote_at(text, "la") is None and ap.fact_quote_at("", "Caio") is None
-
-
-def test_the_case_text_decides_not_an_assumed_line():
+def test_the_system_assumption_is_no_fact_to_cite():
     facts = FACTS + [{"id": "S4", "text": "Parte assistita assunta: Bruno Gelso", "certainty": "assunto"}]
-    res = ap.judge([CONTRATTO], facts, "imputato", case_text=CASE_TEXT, call=lambda m, k: json.dumps(
-        {"giudizi": [_item("1439 c.c.", "no", "«Parte assistita assunta: Bruno Gelso» (S4).",
-                           fatto="Parte assistita assunta: Bruno Gelso")]}))
-    assert res["counters"]["fit_no_unverified_quote"] == 1
-    # with no case text given, the facts' own text is read
+    res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Parte assistita assunta: Bruno Gelso» (S4).", cf=["S4"]),
+                      facts)
+    assert not rec["verified"] and rec["ids_failed"] and rec["reason"].startswith("cita_fatti: assunzione del sistema")
+    assert res["counters"]["fit_no_unverified_ids"] == 1
     res = ap.judge([CONTRATTO], FACTS, "imputato", call=lambda m, k: json.dumps(
-        {"giudizi": [_item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro» (S2).",
-                           fatto="Carla Tasso ha pagato 4.000 euro")]}))
+        {"giudizi": [_item("1439 c.c.", "no", "«Carla Tasso ha pagato 4.000 euro» (S2).", cf=["S2"])]}))
     assert res["counters"]["fit_no_verified"] == 1
 
 
-def test_the_prompt_gains_exactly_one_line_on_the_no():
-    # v79.14.3 (item 2): 79.14.2's prose line removed -- the fact quote is the schema's «fatto_citato» field instead
+def test_the_prompt_carries_the_id_fields_and_no_fact_quote():
+    # v79.15.0 (item 3): «fatto_citato» and its line removed -- the schema's «cita_norma» and «cita_fatti» instead
     lines = ap.config()["prompt_system"]
-    assert [x for x in lines if x.startswith('- con "no"')] == []
-    field = [x for x in lines if x.startswith('- "fatto_citato"')]
-    assert len(field) == 1 and lines[lines.index(field[0]) - 1].startswith('- "perche": UNA sola frase.')
-    assert '"fatto_citato": "..."' in lines[-1]
-    assert len(lines) == 18
+    assert [x for x in lines if "fatto_citato" in x] == [] and [x for x in lines if x.startswith('- con "no"')] == []
+    norma = [x for x in lines if x.startswith('- "cita_norma"')]
+    fatti = [x for x in lines if x.startswith('- "cita_fatti"')]
+    assert len(norma) == 1 and len(fatti) == 1
+    assert lines[lines.index(norma[0]) - 1].startswith('- "perche": UNA sola frase')
+    assert lines.index(fatti[0]) == lines.index(norma[0]) + 1
+    assert '"cita_norma": ["..."]' in lines[-1] and '"cita_fatti": ["..."]' in lines[-1]
+    assert len(lines) == 19
 
 
 def _flow_state(text, sentences, records, topics=None):
@@ -274,23 +212,23 @@ def test_a_verified_no_removes_the_norm_logs_the_removal_and_counts_it(monkeypat
     state = _flow_state(CASE_TEXT, sents, records)
     rows = [_row("640", "c.p.", ART_640, "Truffa"), _row("1439", "c.c.", ART_1439, "Dolo")]
     reply = {"giudizi": [_item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi o "
-                                                 "raggiri»."),
-                         _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", fatto=PM)]}
+                                                 "raggiri».", cn=["A640cp.1"]),
+                         _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", cf=["S3"])]}
     monkeypatch.setattr(ap, "_default_call", lambda m, k: json.dumps(reply, ensure_ascii=False))
     removed = flow.applicability_fit(state, IMPUTATO, rows, set(), [])
     assert removed == {"1439 c.c."} and "1439 c.c." not in state["records"] and "640 c.p." in state["records"]
     c = state["block_counters"]
     assert c["fit_removed"] == c["norms_removed_by_fit"] == 1 and c["fit_no_verified"] == 1
-    assert c["fit_no_unverified_quote"] == 0
+    assert c["fit_no_unverified_ids"] == 0
     discards = [d for e, d in events if e == "applicability_fit_discard"]
     assert discards == [{"article": "1439 c.c.", "reason": "removed: fit no (verified)", "fit": "no",
                          "perche": "«Il pubblico ministero procede per truffa» (S3)."}]
     assert ap.REMOVED_REASON == "removed: fit no (verified)"
     logged = next(d for e, d in events if e == "interactive_applicability_effects")["counters"]
-    assert {k: logged[k] for k in ("fit_no_verified", "fit_no_unverified_quote", "fit_removed")} == \
-        {"fit_no_verified": 1, "fit_no_unverified_quote": 0, "fit_removed": 1}
+    assert {k: logged[k] for k in ("fit_no_verified", "fit_no_unverified_ids", "fit_removed")} == \
+        {"fit_no_verified": 1, "fit_no_unverified_ids": 0, "fit_removed": 1}
     fit_line = next(d for e, d in events if e == "applicability_fit")["counters"]
-    assert fit_line["fit_no_verified"] == 1 and fit_line["fit_no_unverified_quote"] == 0
+    assert fit_line["fit_no_verified"] == 1 and fit_line["fit_no_unverified_ids"] == 0
 
 
 def test_a_kept_named_no_quoting_only_facts_prints_the_facts_not_an_empty_passage():

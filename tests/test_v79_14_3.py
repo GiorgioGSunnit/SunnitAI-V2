@@ -5,8 +5,8 @@ of 640 c.p., 1439 and 2043 c.c.):
    (status «da provare», never «integrato», never counted as proven), printed «contestato (allegazione di <parte>)»; a
    certain fact among its support (mixed) -- unchanged; the client's own statement -- no allegation for this purpose;
    for a defence client the contested elements are the primary theses («L'accusa deve provare «…»»)
-2. the fit's dedicated fact-quote field «fatto_citato»: a «no» and a «dipende» verified on it (never on the perché's
-   quotes), a «si» with "" as before; an unverified one keeps the norm
+2. the fit's dedicated fact field -- v79.15.0 (item 3): «fatto_citato» replaced by the cited ids (cita_fatti for a «no»
+   and a «dipende», cita_norma for a «si»); an unverified one keeps the norm
 3. an empty plan with a verified charge: the theses built on the frame's charge article, never «Ammettere la condotta»
    under a frame, never the corpus line on a code article
 4. excluded means excluded: an article the binding excluded is absent from §4 (schede and tables), §5, §7 and «Fatti
@@ -171,43 +171,43 @@ def test_a_contested_element_is_the_defence_clients_primary_thesis():
     assert counters["elements_contestato"] == 1 and counters["theses_from_contestato"] == 1
 
 
-# --- 2. the fit's dedicated fact-quote field ---------------------------------------------------------------------------
+# --- 2. the fit's dedicated fact field -- v79.15.0 (item 3): the facts cited by id, «fatto_citato» removed ------------
 
 def _judge(item):
     return T._judge(T.CONTRATTO, item)
 
 
-def test_a_no_with_fatto_citato_is_verified_and_without_it_keeps_the_norm():
+def test_a_no_citing_its_fact_by_id_is_verified_and_without_it_keeps_the_norm():
     res, rec = _judge(T._item("1439 c.c.", "no", f"«{T.PM}» (S3), non «annullamento del contratto».",
-                              fatto=T.PM))
-    assert rec["verified"] and rec["fact_quotes"] == [T.PM] and res["counters"]["fit_no_verified"] == 1
-    # the 79.14.2 behaviour the brief saw: the fact quoted under perché only -- no longer read
+                              cf=["S3"], cn=["A1439cc.1"]))
+    assert rec["verified"] and rec["fact_quotes"] == [T.PM + "."] and res["counters"]["fit_no_verified"] == 1
+    # the fact named under perché only is no citation
     res, rec = _judge(T._item("1439 c.c.", "no", f"«{T.PM}» (S3)."))
-    assert not rec["verified"] and rec["quote_failed"] and rec["reason"] == "fatto_citato mancante"
-    assert res["counters"]["fit_no_unverified_quote"] == 1 and ap.effects(res, [])["removed"] == []
+    assert not rec["verified"] and rec["ids_failed"] and rec["reason"] == "cita_fatti mancante"
+    assert res["counters"]["fit_no_unverified_ids"] == 1 and ap.effects(res, [])["removed"] == []
 
 
-def test_a_dipende_must_carry_a_verified_fatto_citato_and_a_si_may_leave_it_empty():
+def test_a_dipende_must_cite_an_existing_fact_and_a_si_its_article_period():
     item = T._item("1439 c.c.", "dipende", "La vendita (S1) dipende dai «raggiri usati da uno dei contraenti».",
-                   condizione="Bruno Gelso ha usato raggiri?")
-    res, rec = _judge(dict(item, fatto_citato="Bruno Gelso ha venduto a Carla Tasso un orologio"))
+                   condizione="Bruno Gelso ha usato raggiri?", cn=["A1439cc.1"])
+    res, rec = _judge(dict(item, cita_fatti=["S1"]))
     assert rec["verified"] and rec["fit"] == "dipende", rec["reason"]
-    res, rec = _judge(dict(item, fatto_citato="Bruno Gelso ha regalato un orologio"))
-    assert not rec["verified"] and rec["quote_failed"] and res["counters"]["fit_dipende"] == 0
+    res, rec = _judge(dict(item, cita_fatti=["S8"]))
+    assert not rec["verified"] and rec["ids_failed"] and res["counters"]["fit_dipende"] == 0
     assert ap.effects(res, [])["open"] == []                           # unverified: the norm keeps its path
     res, rec = _judge(T._item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio (S1): «con artifizi o raggiri».",
-                              fatto=""))
-    assert not rec["verified"]          # the 640 text is not 1439's: the article-passage check still applies
-    res = ap.judge([T.TRUFFA], T.FACTS, "imputato", case_text=T.CASE_TEXT, call=lambda m, k: json.dumps(
+                              cn=["A640cp.1"]))
+    assert not rec["verified"]          # judged on 1439: 640's period is no period of 1439
+    res = ap.judge([T.TRUFFA], T.FACTS, "imputato", call=lambda m, k: json.dumps(
         {"giudizi": [T._item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio (S1): «con artifizi o raggiri».",
-                             fatto="")]}))
+                             cn=["A640cp.1"], cf=[])]}))
     assert res["judgments"][0]["verified"] and res["counters"]["fit_si"] == 1
 
 
-def test_the_prompt_schema_carries_fatto_citato_and_its_hash_is_new():
+def test_the_prompt_schema_carries_the_id_fields_and_its_hash_is_new():
     text = ap.prompt_system()
-    assert '"fatto_citato"' in text and "il \"perche\" si giustifica citando" not in text
-    assert ap.prompt_hash() == "2168ae9ef513"
+    assert '"fatto_citato"' not in text and '"cita_fatti"' in text and '"cita_norma"' in text
+    assert ap.prompt_hash() == "5b06ff45a132"
 
 
 # --- 3. an empty plan with a verified charge -----------------------------------------------------------------------------

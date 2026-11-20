@@ -86,11 +86,14 @@ def _row(number, code, text, rubrica, **proc):
             **({"_proc": {"version": 4, **proc}} if proc else {})}
 
 
-def _item(article, fit, perche, ambito="fattispecie", condizione="", fatto=None):
-    """v79.14.3 (item 2): a «no» or a «dipende» carries its fact quote in «fatto_citato» (fatto; None: no such key)."""
+def _item(article, fit, perche, ambito="fattispecie", condizione="", cf=None, cn=None):
+    """v79.15.0 (item 3): a judgment cites ids -- the facts (cf: «cita_fatti», a «no» / «dipende») and the article's
+    numbered periods (cn: «cita_norma», applicability.article_ids; a «si»); None: no such key."""
     out = {"articolo": article, "fit": fit, "perche": perche, "condizione": condizione, "ambito": ambito}
-    if fatto is not None:
-        out["fatto_citato"] = fatto
+    if cf is not None:
+        out["cita_fatti"] = cf
+    if cn is not None:
+        out["cita_norma"] = cn
     return out
 
 
@@ -201,7 +204,7 @@ def _section(answer, key):
 def test_rissa_between_two_people_si_on_the_quoted_text_no_rule_invented_nothing_removed(monkeypatch):
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch, _item("588 c.p.", "si", "Tizio e Caio si sono colpiti a vicenda davanti a un bar (S1): "
-                                                "«Chiunque partecipa a una rissa è punito»."))
+                                                "«Chiunque partecipa a una rissa è punito».", cn=["A588cp.1"]))
     got = _flow(_rissa())
     c = got["state"]["block_counters"]
     assert c["fit_judged"] == 1 and c["fit_si"] == 1 and c["norms_removed_by_fit"] == 0
@@ -214,7 +217,7 @@ def test_rissa_between_two_people_si_on_the_quoted_text_no_rule_invented_nothing
 def test_rissa_a_rule_the_text_does_not_hold_is_discarded_and_has_no_effect(monkeypatch):
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch, _item("588 c.p.", "no", "La rissa richiede almeno tre persone, mentre i fatti descrivono "
-                                                "«Tizio e Caio, due persone» (S1).", fatto="Tizio e Caio, due persone"))
+                                                "«Tizio e Caio, due persone» (S1).", cf=["S1"]))
     got = _flow(_rissa())
     c = got["state"]["block_counters"]
     assert c["fit_no"] == 0 and c["fit_unverified"] == 1 and c["fit_added_content"] == 1
@@ -230,9 +233,9 @@ def test_loan_without_instalments_1819_removed_from_records_candidates_and_secti
         event, data, ms))
     _model(monkeypatch,
            _item("1813 c.c.", "si", "Tizio ha prestato a Caio 5.000 euro (S1): «una parte consegna all'altra una "
-                                    "determinata quantità di danaro»."),
+                                    "determinata quantità di danaro».", cn=["A1813cc.1"]),
            _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-                 ambito="rimedio", fatto="da restituire in un'unica soluzione"))
+                 ambito="rimedio", cf=["S1"], cn=["A1819cc.1"]))
     before = _flow(_loan(), judge=False)
     assert "1819" in before["answer"] and any(c.get("article") == "1819 c.c." for c in before["ctx"]["candidates"])
     got = _flow(_loan())
@@ -243,7 +246,7 @@ def test_loan_without_instalments_1819_removed_from_records_candidates_and_secti
     assert "1819" not in got["answer"] and "1819" not in _section(got["answer"], "norme")
     keys = ("article", "passage", "facts", "perche", "ambito")
     assert [{k: e[k] for k in keys} for e in state["fit_removed"]] == [
-        {"article": "1819 c.c.", "passage": "rateale", "facts": ["S1"],
+        {"article": "1819 c.c.", "passage": ART_1819, "facts": ["S1"],
          "perche": "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».", "ambito": "rimedio"}]
     assert state["fit_removed"][0]["record"]["rubrica"] == "Restituzione rateale"      # (review) kept to put back
     logged = dict(events)["applicability_effects"]
@@ -257,19 +260,19 @@ def test_advance_payment_646_judged_on_altrui_its_effect_only_after_verification
     # the reasoning adds a rule the passage, the facts and the note do not hold: no effect
     _model(monkeypatch, _item("646 c.p.", "no", "L'acconto «sul prezzo dei lavori» (S1) non è «altrui» perché la "
                                                 "proprietà del denaro passa a chi lo riceve.",
-                              fatto="acconto sul prezzo dei lavori"))
+                              cf=["S1"], cn=["A646cp.1"]))
     first = _flow(_advance())
     assert "646 c.p." in first["state"]["records"] and not first["state"].get("fit_removed")
     c = first["state"]["block_counters"]
     assert c["fit_added_content"] == 1 and c["norms_removed_by_fit"] == 0
-    assert first["state"]["applicability"]["judgments"][0]["reason"].startswith("contenuto non citato")
+    assert first["state"]["applicability"]["judgments"][0]["reason"].startswith("contenuto non nei periodi citati")
     # the same «no», its reasoning on the quoted passage and the fact only: verified, applied
     _model(monkeypatch, _item("646 c.p.", "no", "L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «il "
                                                 "denaro o la cosa mobile altrui»: è di Beta.",
-                              fatto="acconto sul prezzo dei lavori"))
+                              cf=["S1"], cn=["A646cp.1"]))
     second = _flow(_advance())
     assert "646 c.p." not in second["state"]["records"]
-    assert second["state"]["fit_removed"][0]["passage"] == "il denaro o la cosa mobile altrui"
+    assert "il denaro o la cosa mobile altrui" in second["state"]["fit_removed"][0]["passage"]     # its period
     assert second["state"]["block_counters"]["norms_removed_by_fit"] == 1
     assert "646" not in second["answer"]
 
@@ -279,7 +282,7 @@ def test_an_inventing_judgment_has_no_effect_and_is_counted(monkeypatch):
     _model(monkeypatch, _item("588 c.p.", "dipende", "Tizio e Caio si sono colpiti a vicenda (S1): «Chiunque partecipa "
                                                      "a una rissa».",
                               condizione="Alla rissa hanno partecipato almeno tre persone?",
-                              fatto="si sono colpiti a vicenda davanti a un bar"))
+                              cf=["S1"], cn=["A588cp.1"]))
     got = _flow(_rissa())
     c = got["state"]["block_counters"]
     assert c["fit_dipende"] == 0 and c["fit_unverified"] == 1 and c["fit_added_content"] == 1
@@ -294,7 +297,7 @@ def test_a_charged_article_given_no_is_kept_and_printed_as_the_defences_contest(
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch, _item("646 c.p.", "no", "L'acconto versato a Beta «sul prezzo dei lavori» (S1) non è «il "
                                                 "denaro o la cosa mobile altrui»: è di Beta.",
-                              fatto="acconto sul prezzo dei lavori"))
+                              cf=["S1"], cn=["A646cp.1"]))
     got = _flow(_advance(charged=True))
     state = got["state"]
     assert "646 c.p." in state["records"] and not state.get("fit_removed")
@@ -313,9 +316,9 @@ def test_a_user_named_article_given_no_is_never_removed(monkeypatch):
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch,
            _item("1813 c.c.", "si", "Tizio ha prestato a Caio 5.000 euro (S1): «una parte consegna all'altra una "
-                                    "determinata quantità di danaro»."),
+                                    "determinata quantità di danaro».", cn=["A1813cc.1"]),
            _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-                 ambito="rimedio", fatto="da restituire in un'unica soluzione"))
+                 ambito="rimedio", cf=["S1"], cn=["A1819cc.1"]))
     case = _loan(text_extra="Il cliente chiede se si applica l'art. 1819 c.c.")
     assert "1819 c.c." in flow.fit_protected(case["state"], case["posture"])
     got = _flow(case)
@@ -329,7 +332,7 @@ def test_the_client_own_named_norm_given_no_is_the_other_sides_objection(monkeyp
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch, _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non "
                                                  "«rateale».", ambito="rimedio",
-                              fatto="da restituire in un'unica soluzione"))
+                              cf=["S1"], cn=["A1819cc.1"]))
     case = _loan(text_extra="Il cliente chiede se si applica l'art. 1819 c.c.")
     for rec in case["state"]["records"].values():
         rec["side"] = "weapon"                  # the client's own norm, not the claim against him
@@ -337,7 +340,7 @@ def test_the_client_own_named_norm_given_no_is_the_other_sides_objection(monkeyp
     first = got["ctx"]["objections_fallback"][0]
     assert first["obiezione"] == ("La controparte potrà sostenere che l'art. 1819 c.c. non governa i fatti narrati: "
                                   "il prestito è «da restituire in un'unica soluzione», non «rateale»")
-    assert "«rateale»" in first["risposta"]
+    assert f"«{ART_1819}»" in first["risposta"]          # v79.15.0 (item 3): the cited period, the article's words
 
 
 # --- 2. dipende -------------------------------------------------------------------------------------------------------
@@ -347,7 +350,7 @@ def test_dipende_forces_the_touched_element_da_provare_and_asks_the_question_in_
     _model(monkeypatch, _item("588 c.p.", "dipende", "Caio sostiene di aver riportato una ferita (S2): dipende se "
                                                      "taluno «riporta lesione personale».",
                               condizione="Caio ha riportato una lesione personale?",
-                              fatto="di aver riportato una ferita"))
+                              cf=["S2"], cn=["A588cp.2"]))
     case = _rissa()
     case["state"]["sentences"][1]["certainty"] = "accertato"      # a certain fact that would prove the element
     got = _flow(case)
@@ -406,7 +409,7 @@ def test_decompose_records_with_no_hook_is_unchanged_and_with_one_judges_before_
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch, _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non "
                                                  "«rateale».", ambito="rimedio",
-                              fatto="da restituire in un'unica soluzione"))
+                              cf=["S1"], cn=["A1819cc.1"]))
     judged = json.loads(json.dumps(base))
     dead: set = set()
     calls = []
@@ -426,9 +429,9 @@ def test_a_removed_norm_never_comes_back(monkeypatch):
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch,
            _item("1813 c.c.", "si", "Tizio ha prestato a Caio 5.000 euro (S1): «una parte consegna all'altra una "
-                                    "determinata quantità di danaro»."),
+                                    "determinata quantità di danaro».", cn=["A1813cc.1"]),
            _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-                 ambito="rimedio", fatto="da restituire in un'unica soluzione"))
+                 ambito="rimedio", cf=["S1"], cn=["A1819cc.1"]))
     got = _flow(_loan())
     state = got["state"]
     # a later answer: the decomposition's routes (the ranked, an alternative) never split it again
@@ -469,8 +472,9 @@ def test_write_answer_flag_off_and_all_si_byte_identical_and_a_no_removes(monkey
             if line.startswith("ARTICOLO: "):
                 label = line.split(": ", 1)[1]
             elif label and line.startswith("[") and "] " in line:
-                words = line.split("] ", 1)[1].split()[:4]
-                items.append(_item(label, "si", f"«{' '.join(words).rstrip(',.;:')}» (S1)."))
+                words = line.split("] ", 1)[1].split()[:4]       # v79.15.0: the period it cites, by its id
+                items.append(_item(label, "si", f"«{' '.join(words).rstrip(',.;:')}» (S1).",
+                                   cn=[line[1:line.index("]")]]))
                 label = None
         return json.dumps({"giudizi": items}, ensure_ascii=False)
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
@@ -486,10 +490,10 @@ def test_write_answer_flag_off_and_all_si_byte_identical_and_a_no_removes(monkey
         human = messages[-1].content
         for it in reply["giudizi"]:
             if it["articolo"] == "1061 c.c.":       # (review) a «no» says what the facts lack, on the quoted text
-                # v79.14.2 (A): a «no» quotes the fact it rests on (S1's first words, as the message has them)
+                # v79.15.0 (item 3): a «no» cites the fact it rests on by its id (S1's first words in the perché)
                 s1 = next(x.split("] ", 1)[1] for x in human.splitlines() if x.startswith("S1 ["))
-                quote = ' '.join(s1.split()[:4]).rstrip(',.;:')       # v79.14.3 (item 2): «fatto_citato»
-                it.update(fit="no", perche=f"«{quote}» (S1): non è tra le «servitù non apparenti».", fatto_citato=quote)
+                quote = ' '.join(s1.split()[:4]).rstrip(',.;:')
+                it.update(fit="no", perche=f"«{quote}» (S1): non è tra le «servitù non apparenti».", cita_fatti=["S1"])
         return json.dumps(reply, ensure_ascii=False)
     monkeypatch.setattr(ap, "_default_call", no_1061)
     cut_state = v60f._graded_state(monkeypatch)
@@ -508,13 +512,13 @@ def test_the_nightly_lists_every_removed_norm_and_checks_the_answer(monkeypatch)
     monkeypatch.setenv("APPLICABILITY_FIT", "true")
     _model(monkeypatch,
            _item("1813 c.c.", "si", "Tizio ha prestato a Caio 5.000 euro (S1): «una parte consegna all'altra una "
-                                    "determinata quantità di danaro»."),
+                                    "determinata quantità di danaro».", cn=["A1813cc.1"]),
            _item("1819 c.c.", "no", "Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale».",
-                 ambito="rimedio", fatto="da restituire in un'unica soluzione"))
+                 ambito="rimedio", cf=["S1"], cn=["A1819cc.1"]))
     got = _flow(_loan())
     state = got["state"]
     fit = nightly_sim.fit_of(state)
-    assert fit["ran"] and fit["removed"] == [{"article": "1819 c.c.", "passage": "rateale",
+    assert fit["ran"] and fit["removed"] == [{"article": "1819 c.c.", "passage": ART_1819,
                                               "perche": "Il prestito è «da restituire in un'unica soluzione» (S1), "
                                                         "non «rateale»."}]
     ok = nightly_sim.fit_check(got["answer"], state)
@@ -524,8 +528,8 @@ def test_the_nightly_lists_every_removed_norm_and_checks_the_answer(monkeypatch)
     cell = {"id": "civile_convenuto", "counters": flow.case_counters(state, 1.0), "applicability": fit}
     lines = "\n".join(nightly_sim.fit_lines([cell]))
     assert "## Applicability judgment (APPLICABILITY_FIT)" in lines
-    assert "- removed 1819 c.c.: «rateale» — Il prestito è «da restituire in un'unica soluzione» (S1), non «rateale»." \
-        in lines
+    assert f"- removed 1819 c.c.: «{ART_1819}» — Il prestito è «da restituire in un'unica soluzione» (S1), non " \
+        "«rateale»." in lines
     assert cell["counters"]["norms_removed_by_fit"] == 1 and cell["counters"]["fit_added_content_in_effects"] == 0
     assert nightly_sim.fit_check("", {})["why"] == "not run" and nightly_sim.fit_lines([{"id": "x"}]) == []
 
