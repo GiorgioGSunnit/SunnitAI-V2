@@ -93,8 +93,9 @@ def test_no_admitted_claim_with_an_institution_keeps_the_ten_sections_with_no_li
                      ctx, plan, log=log)
     secs = _sections(text)
     assert list(secs) == M.titles()                                      # the ten sections, in order
-    assert secs[M.title("sintesi")] == ("Il corpus non contiene ancora informazioni sufficienti su comodato: il "
-                                        "parere si limita alle norme dei codici.")
+    # v79.14.1 (item 2): the comodato is a code institution (c.c.) -- never the honesty line; §1 says no line is proposed
+    assert secs[M.title("sintesi")] == M.NO_CLAIM_SUMMARY.format(materia="comodato", client="Tizio")
+    assert M.CORPUS_LINE.split(" su ")[0] not in text
     sol = secs[M.title("soluzioni")]
     assert sol.startswith("Nessuna linea è proposta e nessuna previsione di esito: tra le norme esaminate per comodato "
                           "nessuna attribuisce un'azione al cliente.")
@@ -104,8 +105,8 @@ def test_no_admitted_claim_with_an_institution_keeps_the_ten_sections_with_no_li
     assert secs[M.title("conclusioni")] == M.NO_CLAIM_CONCLUSION
     assert "Esito probabile" not in text and "Linea principale" not in text and "Tesi da costruire" not in text
     assert M.no_action_problems(text) == [] and text.lower().count(M.NO_ACTION_CORE) == 1
-    assert log["no_claim"] == "none" and log["corpus_line"] is True
-    assert ctx["no_claim_sections"] == "none" and ctx["corpus_line"] is True
+    assert log["no_claim"] == "none" and log["corpus_line"] is False
+    assert ctx["no_claim_sections"] == "none" and ctx["corpus_line"] is False and ctx["corpus_line_code"] == 0
     checks = {c["check"]: c["ok"] for c in M.structure_checks(text, {})}
     assert checks["sections"] and checks["no_claim_no_forecast"] and "solutions_table" not in checks
 
@@ -138,8 +139,10 @@ def test_every_claim_barred_by_a_term_keeps_the_sections_with_the_honesty_line()
     assert "Esito probabile" not in text and M.no_action_problems(text) == []
 
 
-def test_the_corpus_line_fires_where_the_institution_has_no_module_and_nothing_of_its_family_was_graded():
-    from src.rag import lawyer_method as M
+def test_the_corpus_line_fires_where_the_governing_law_is_outside_the_codes_and_missing_from_the_archive(monkeypatch):
+    # v79.14.1 (item 2): the contratto di viaggio's law (d.lgs. 79/2011) is no code and no archive document
+    from src.rag import corpus_laws, lawyer_method as M
+    monkeypatch.setitem(corpus_laws._NAMES, "names", ["Codice Civile 2026", "Codice Penale 2026"])
     ctx = _civil({"1218 c.c.": _rec("Responsabilità del debitore", _req(1, "l'inadempimento"))},
                  "Tizio ha prestato a Caio una somma per un viaggio.", ["contratto di viaggio"])
     mods = {m["id"] for m in M.institution_modules()["modules"]}
@@ -190,10 +193,13 @@ def test_the_flow_keeps_the_sections_and_counts_them(monkeypatch):
     text, _ = test_v60g._answer(monkeypatch, state, {}, None, {})
     assert not state.get("method_refused") and "non è stato applicato" not in text
     assert "**1. Sintesi della soluzione**" in text and "**10. Punti da verificare**" in text
-    assert "Il corpus non contiene ancora informazioni sufficienti su servitù" in text
+    # v79.14.1 (item 2): the servitù is a code institution (c.c.) -- §1 says no line is proposed, never the honesty line
+    assert "Il corpus non contiene ancora informazioni sufficienti" not in text
+    assert "Le norme lette su servitù non offrono a" in text
     assert "Esito probabile" not in text and M.no_action_problems(text) == []
     counters = flow.case_counters(state)
-    assert counters["no_claim_sections"] == 1 and counters["corpus_line"] == 1 and counters["no_action_prose"] == 0
+    assert counters["no_claim_sections"] == 1 and counters["corpus_line"] == 0 and counters["no_action_prose"] == 0
+    assert counters["corpus_line_code"] == 0
     assert counters["articles_out_of_scope"] >= 0 and counters["closed_list_kept"] >= 0
 
 

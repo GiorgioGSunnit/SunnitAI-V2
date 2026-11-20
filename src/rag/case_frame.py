@@ -1153,7 +1153,8 @@ def audit(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
       frame_conflict           the bound fields the delivered answer carries changed (must be 0);
       frame_conflict_attempts  the later steps that disagreed and lost (logged with their names);
       role_flip                intake's (the frame's) role is not the method's (the posture's), or the client the
-                               answer serves is a party the frame lists as controparte (must be 0);
+                               answer serves is a party the frame lists as controparte (must be 0); v79.14.1: with
+                               item 1's reasons (state["role_flip_reasons"]) as one set -- each distinct flip once;
       charge_rito_mismatch     a penal rito whose held charge is no penal provision (must be 0).
     «filled»: each fallback field with the value the rules gave it (the nightly prints it)."""
     got = held(state)
@@ -1197,15 +1198,36 @@ def audit(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         read_by = ""
     served = [delivered["cliente"], read_by, str(state.get("plan_client") or ""),       # the plan's (frame_plan)
               str((state.get("analysis") or {}).get("parte_assistita") or "")]
-    taken = any(x and same_party(x, n) for x in served for n in counterparty_names(got))
-    out["role_flip"] = int((known(first) and known(method) and first != method) or taken)
+    taken_names = [n for n in counterparty_names(got) if any(x and same_party(x, n) for x in served)]
+    taken = bool(taken_names)
+    # v79.14.1: ONE role_flip -- this audit's reasons and item 1's (interactive_flow.role_flip_reasons, kept in
+    # state["role_flip_reasons"]: the method's role not the intake's, a client's in multi-client, the counterparty
+    # taken as client) as one set of distinct flips: the same flip read by both definitions counts once
+    from .interactive_flow import ROLE_FLIP_COUNTERPARTY, ROLE_FLIP_ROLE
+    reasons = list(state.get("role_flip_reasons") or [])
+
+    def of_client(reason: str, kind: str) -> str:      # «ruolo:<client>» / «controparte:<client>» -> the client
+        return reason.split(":", 1)[1] if reason.startswith(kind + ":") else ""
+    if known(first) and known(method) and first != method:
+        # the posture's flip carried to a client of a multi-client answer (its method role the posture's): one flip
+        roles = {str(m.get("client")): str(m.get("role")) for m in state.get("method_roles") or []}
+        reasons = [r for r in reasons if not (of_client(r, ROLE_FLIP_ROLE) and
+                                              roles.get(of_client(r, ROLE_FLIP_ROLE)) == method)]
+        reasons.append(ROLE_FLIP_ROLE)
+    for name in taken_names:            # a counterparty served: once, item 1's per-client reason when it names it
+        if not any(same_party(of_client(r, ROLE_FLIP_COUNTERPARTY), name) for r in reasons
+                   if of_client(r, ROLE_FLIP_COUNTERPARTY)):
+            reasons.append(ROLE_FLIP_COUNTERPARTY)
+    reasons = list(dict.fromkeys(reasons))
+    out["role_flip"] = len(reasons)
     posture = state.get("posture") or {}
     rito = bound(state, "rito") or posture.get("intake_rito") or posture.get("rito") or ""
     charge = delivered["addebito_o_domanda"]
     out["charge_rito_mismatch"] = int(bool(charge) and (rito in PENAL_RITI or posture.get("family") == "penale")
                                       and not is_penal(parse_article(charge)))
     out["frame_audit"] = {"changed": changed, "filled": filled, "conflicts": conflicts,
-                          "role": {"frame_or_intake": first, "method": method, "client_is_counterparty": taken}}
+                          "role": {"frame_or_intake": first, "method": method, "client_is_counterparty": taken,
+                                   "role_flip_reasons": reasons}}
     return out
 
 

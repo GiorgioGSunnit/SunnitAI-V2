@@ -58,6 +58,7 @@ sigla «c.d.s.» are read on a bare label's code only (corpus_laws.cited: the ab
 document name).
 """
 
+import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -73,6 +74,110 @@ _STRADA_CODE_RE = re.compile(r"^\s*c\.?\s*d\.?\s*s\.?\s*$", re.IGNORECASE)
 OVERRIDE = "override: "                     # v79.10 (A5): by, for the «istituto» and «nome intero» doors
 DOOR_INSTITUTION, DOOR_USER, DOOR_ARTICLE, DOOR_WHOLE_NAME = "istituto", "utente", "articolo", "nome intero"
 FAMILY_ALARM_MIN = 5                        # v79.10 (A5): graded-relevant articles of one dropped document: the alarm
+
+
+# v79.14.1 (item 3): the administrative act against the client -- data/administrative_act.json (read once)
+ACT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
+                        "administrative_act.json")
+_ACT: Dict[str, Any] = {}
+NO_ACT_WHY = "nessun atto amministrativo contro il cliente (provvedimento, diniego, annullamento, ricorso al TAR)"
+
+
+def act_table() -> Dict[str, Any]:
+    """v79.14.1 (item 3): data/administrative_act.json compiled -- {patterns, authority_patterns, authority, favour,
+    adverse, negation, negation_after, window, modules, families, codes} («{authority}» and «{title}» in a pattern
+    expanded); empty lists when the file is missing (logged): then nothing is gated."""
+    if "d" not in _ACT:
+        import json
+        import logging
+        try:
+            with open(ACT_FILE, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning("family_gate: %s not read: %s", ACT_FILE, exc)
+            raw = {}
+        auth, title = str(raw.get("authority") or r"(?!x)x"), str(raw.get("title") or r"(?!x)x")
+
+        def rx(p: Any) -> "re.Pattern":
+            return re.compile(str(p).replace("{authority}", auth).replace("{title}", title), re.IGNORECASE)
+
+        def opt(key: str) -> Optional["re.Pattern"]:
+            return rx(raw[key]) if raw.get(key) else None
+        _ACT["d"] = {"patterns": [rx(p) for p in raw.get("patterns") or []],
+                     "authority_patterns": [rx(p) for p in raw.get("authority_patterns") or []],
+                     "authority": rx(auth) if raw.get("authority") else None,
+                     "favour": opt("favour_pattern"), "adverse": opt("adverse_pattern"),
+                     "negation": opt("negation_pattern"), "negation_after": opt("negation_after_pattern"),
+                     "window": int(raw.get("negation_window") or 40),
+                     "modules": list(raw.get("modules") or []), "families": list(raw.get("families") or []),
+                     "codes": list(raw.get("codes") or [])}
+    return _ACT["d"]
+
+
+_ACT_NEGATED_RE = re.compile(r"\b(?:non|nessun\w*|alcun\w*|mai|né)\b", re.IGNORECASE)
+_ACT_CLAUSE_END_RE = re.compile(r"(?<!\d)\.|\.(?!\d)|[;:!?\n]")
+
+
+def _act_sentences(text: str) -> List[str]:
+    """The text's sentences (a stop, never a thousands dot or an abbreviation's: «art.», «S.r.l.», «P.A.» keep theirs)."""
+    out, start = [], 0
+    for m in re.finditer(r"(?<=[.!?;])\s+(?=[A-ZÀ-Ü«\"(])|\n+", text):
+        piece = text[start:m.start()]
+        if re.search(r"(?:\b(?:art|artt|n|c|p|a|l|d|lgs|s|r|ss|cfr|ecc|P|A)\.)$", piece.rstrip()):
+            continue
+        out.append(piece)
+        start = m.end()
+    out.append(text[start:])
+    return [x for x in out if x.strip()]
+
+
+def administrative_act(text: Any) -> List[str]:
+    """v79.14.1 (item 3): the words of the text that state an administrative act against the client; [] when none --
+    «Comune», «difformità edilizie», «permesso di costruire» alone are no act. Read sentence by sentence
+    (data/administrative_act.json): a «patterns» hit, or an «authority_patterns» hit in a sentence naming a public
+    authority (a bank's «diniego», a condominium's «delibera», a franchisor's «licenza» are no act); never in a
+    sentence that grants (a «favour_pattern» word and no «adverse_pattern» one: the seller's permesso or sanatoria is
+    no act against the buyer); never a negated hit -- a negation in it, before it in its clause («nessun
+    provvedimento»), or after it («il TAR non è mai stato adito»)."""
+    table = act_table()
+    text = " ".join(str(text or "").split())
+    out: List[str] = []
+    for sentence in _act_sentences(text):
+        if table["favour"] is not None and table["favour"].search(sentence) and not (
+                table["adverse"] is not None and table["adverse"].search(sentence)):
+            continue                    # an act that grants -- never one against the client
+        public = table["authority"] is not None and bool(table["authority"].search(sentence))
+        for rx in table["patterns"] + (table["authority_patterns"] if public else []):
+            for m in rx.finditer(sentence):
+                before = sentence[max(0, m.start() - table["window"]):m.start()]
+                after = sentence[m.end():]
+                end = _ACT_CLAUSE_END_RE.search(after)
+                after = after[:end.start()] if end else after
+                negated = (table["negation"] is not None and table["negation"].search(before)) or (
+                    table["negation_after"] is not None and table["negation_after"].search(after))
+                if negated or _ACT_NEGATED_RE.search(m.group(0)):
+                    continue
+                out.append(m.group(0))
+                break
+    return list(dict.fromkeys(out))
+
+
+def act_text(case: Any, institutions: Sequence[Any] = ()) -> str:
+    """v79.14.1 (item 3): where the act is read -- the case's own words only. v79.14.1 (review): never an institution
+    name (the first read's, its alternatives', the frame's): a model's words, which may name an act the case does not
+    state or denies; the frame's institution is verified against a sentence of the case, which this reads already.
+    «institutions» is kept for the callers and ignored."""
+    return str(case or "")
+
+
+def act_gated_code(code: Any) -> bool:
+    """v79.14.1 (item 3): an article of a code that needs the act (data/administrative_act.json «codes»: the c.p.a.)."""
+    from .plan_then_write import _code_key
+    key = str(_code_key(" ".join(str(code or "").split())) or "").lower()
+    if key in act_table()["codes"]:
+        return True
+    from . import corpus_laws
+    return corpus_laws.law_of_name(code) in act_table()["codes"]
 
 
 def _text(*parts: Any) -> str:
@@ -185,7 +290,10 @@ def context(case: str, words: str = "", institutions: Sequence[Any] = ()) -> Dic
             "sale": lawyer_method.sale_contract(case or ""),                   # v79.12.5 (item 10)
             "qualifier": lawyer_method.counterparty_qualifier(mctx),           # v79.12.5 (item 10)
             "modules_active": lawyer_method.modules_active(mods),                  # v79.12.1: each with its signal
-            "institutions": insts}
+            "institutions": insts,
+            # v79.14.1 (item 3): the administrative act against the client (its words), the modules it refused
+            "admin_act": bool(mctx.get("admin_act_words")), "admin_act_words": list(mctx.get("admin_act_words") or []),
+            "modules_refused_no_act": list(mctx.get("modules_refused_no_act") or [])}
 
 
 def _signal_hit(law_id: str, words: str) -> str:
@@ -288,6 +396,13 @@ def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any
     if not number and row is not None and row.get("_article"):
         number = str(row["_article"][0])
     out = {"ok": True, "family": family, "by": CODE, "door": "", "signal": ""}
+    if family == CODE and act_gated_code(code or doc) and not ctx.get("admin_act", True):
+        # v79.14.1 (item 3): a c.p.a. article never enters a case with no administrative act against the client -- the
+        # user naming the code or the article aside (gate's «articolo» door; the code named in the case's words)
+        said = _cpa_named(ctx.get("case") or "")
+        if said:
+            return {**out, "by": "nominata dall'utente", "door": DOOR_USER, "signal": said}
+        return {**out, "ok": False, "family": "amministrativo", "by": "", "why": NO_ACT_WHY}
     if family == CODE:
         return out
     is_table = bool(law) and law not in (corpus_expected_laws())
@@ -309,7 +424,27 @@ def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any
         if not topic_groups.keyword_hit(row):
             signal = f"«{row['_first_read']}»"
             return {**out, "by": OVERRIDE + signal, "door": DOOR_WHOLE_NAME, "signal": signal}
+    if not scope and act_refused(family, law, ctx):     # v79.14.1 (item 3): the family's signal without the act
+        scope = NO_ACT_WHY
     return {**out, "ok": False, "by": "", **({"why": scope} if scope else {})}
+
+
+_CPA_NAMED_RE = re.compile(r"\bc\.\s*p\.\s*a\.|\bcodice\s+del\s+processo\s+amministrativo\b", re.IGNORECASE)
+
+
+def _cpa_named(case: str) -> str:
+    """v79.14.1 (item 3): the words of the case naming the c.p.a. («c.p.a.», «codice del processo amministrativo»)."""
+    m = _CPA_NAMED_RE.search(case or "")
+    return m.group(0) if m else ""
+
+
+def act_refused(family: str, law: str, ctx: Dict[str, Any]) -> bool:
+    """v79.14.1 (item 3): a document of an act-gated family (data/administrative_act.json «families») the case's words
+    would admit by its family signal but for the missing act -- refused for lack of the signal (counted)."""
+    from . import special_laws
+    if ctx.get("admin_act", True) or family not in act_table()["families"]:
+        return False
+    return bool(special_laws.family_signal(family, ctx.get("words") or ctx.get("case") or "", act=False))
 
 
 def _consumer_scope(family: str, number: str, ctx: Dict[str, Any]) -> str:

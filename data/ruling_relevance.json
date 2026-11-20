@@ -1,0 +1,135 @@
+{
+  "_about": "v79.14.1 (item 8): §5's relevance test (src/rag/rulings.py:passage_names_institution). A ruling's quoted passage stays in §5 only when its sentence names the record's institution, by any of: (1) the record's article cited by its number («art. 646», «646 c.p.», «612 bis», «612-bis»); (2) the institution's name -- the first content noun of the record's rubrica that is not in `generic_stems`, as a root (rulings.relevance_stems: the word without its inflection and its «-zione / -sione / -mento» suffix, so «Estorsione» -> «estors-» meets «estorsiva», «Diffamazione» -> «diffama-» meets «diffamatoria»; «Appropriazione indebita» -> «appropria-», «Rissa» -> «riss-»); (3) at least `rubrica_stems_min` of the rubrica's other non-generic roots together, each met by a different word of the passage -- one alone of a several-word rubrica never (the «indebito» of a credit card's «indebito utilizzo» is not appropriazione indebita); (4) one of the record's own words below (`aliases`: label -> word stems, matched at a word's start; an entry of several stems separated by a space needs all of them: «artifici induc») -- the institution's other names and the nouns of its defining element (582 c.p.: «lesion-», «malatti-»). `generic_stems`: rubrica words that name no institution alone -- never the name of rule (2), never counted in rule (3) («esercizio», «attività», «cagionato», «beni immobili», «reali», «risarcimento», «garanzia»: a passage on a misura cautelare reale or on contractual damages is not on usucapione or on the illecito aquiliano). A passage that names none is dropped with its ruling (it is no ruling on the record), counted (rulings_passage_irrelevant_dropped); a ruling printed with its estremi alone has no sentence to test (its abstract passed the rubrica test, rulings.on_rubrica) and stays; a record with no rubrica root and no alias is not tested. Code's draft list; edit here.",
+  "rubrica_stems_min": 2,
+  "generic_stems": [
+    "eserciz",
+    "attivit",
+    "cagionat",
+    "commess",
+    "immobil",
+    "immobiliar",
+    "mobil",
+    "real",
+    "diritt",
+    "risarc",
+    "garanzi",
+    "personal",
+    "obbligazion",
+    "contratt",
+    "pubblic",
+    "privat",
+    "ufficial",
+    "general",
+    "altrui",
+    "propri",
+    "omess",
+    "pena",
+    "penal",
+    "civil",
+    "material",
+    "moral",
+    "patrimonial"
+  ],
+  "aliases": {
+    "588 c.p.": [
+      "riss"
+    ],
+    "646 c.p.": [
+      "appropria",
+      "interversion"
+    ],
+    "640 c.p.": [
+      "truff",
+      "raggir",
+      "artifici induc",
+      "artifici error"
+    ],
+    "624 c.p.": [
+      "furt",
+      "impossess",
+      "sottra"
+    ],
+    "582 c.p.": [
+      "lesion",
+      "lesiv",
+      "malatti"
+    ],
+    "590 c.p.": [
+      "lesion",
+      "lesiv",
+      "malatti"
+    ],
+    "589 c.p.": [
+      "omicid"
+    ],
+    "584 c.p.": [
+      "preterintenz",
+      "omicid"
+    ],
+    "572 c.p.": [
+      "maltratt",
+      "abitual"
+    ],
+    "612-bis c.p.": [
+      "stalking",
+      "persecut"
+    ],
+    "2043 c.c.": [
+      "illecit",
+      "aquilian",
+      "extracontrattual"
+    ],
+    "2050 c.c.": [
+      "pericolos"
+    ],
+    "2051 c.c.": [
+      "custodi"
+    ],
+    "2052 c.c.": [
+      "animal"
+    ],
+    "2054 c.c.": [
+      "circolazion",
+      "veicol",
+      "conducent"
+    ],
+    "1218 c.c.": [
+      "inadempim",
+      "contrattual"
+    ],
+    "1453 c.c.": [
+      "risoluz",
+      "inadempim"
+    ],
+    "1490 c.c.": [
+      "vizi",
+      "vizio",
+      "redibitor",
+      "estimator"
+    ],
+    "1176 c.c.": [
+      "diligenz"
+    ],
+    "583 c.p.": [
+      "lesion",
+      "lesiv",
+      "malatti",
+      "gravissim"
+    ],
+    "2047 c.c.": [
+      "incapac",
+      "sorveglianz"
+    ],
+    "2048 c.c.": [
+      "precettor",
+      "genitor",
+      "maestr",
+      "sorveglianz"
+    ],
+    "2049 c.c.": [
+      "committent",
+      "prepost",
+      "padron"
+    ]
+  }
+}

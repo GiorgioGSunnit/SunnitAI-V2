@@ -235,6 +235,29 @@ charge_rito_mismatch is above 0. The section «Case frame» prints, per cell, th
 dropped field with why, the fallback value the rules filled it with -- and every step that disagreed: the pipeline's
 frame (state["case_frame"]), else the nightly's own read of the cell's text («source»).
 
+v79.14.1 (items 1-3): in the counters table (interactive_flow.case_counters, block_counters) -- item 1 role_flip (must
+be 0: the method's role differing from the intake's resolved role, or the counterparty taken as client -- a client the
+method writes for read on the side opposite to the intake's, the user not having named it), role_request_wins (a
+client's role the request itself states, over the intake's: allowed) and role_client_moved (the counterparty replaced
+by the party on the intake's side); item 2 corpus_line (§1's honesty line, now only for an institution whose governing
+law is outside the codes and missing from the archive: data/institution_laws.json) and corpus_line_code (must be 0: the
+line on a code institution); item 3 amministrativo_refused_no_act (the amministrativo module, the family gate's rows and
+the c.p.a. articles of the scope check and the last pass refused for lack of an administrative act against the client:
+data/administrative_act.json), amministrativo_without_act (must be 0: still admitted without it) and
+act_last_pass_stripped (a path that bypassed the gate and the scope check when not 0). Check zero_counters: a cell
+with role_flip, corpus_line_code or amministrativo_without_act above 0 fails -- role_flip only where check case_frame
+did not run (CASE_FRAME off): ONE role_flip (case_frame.audit unions item 1's reasons with its own, each distinct flip
+once) and the cell fails on it once.
+
+v79.14.1 (items 6, 8; block_counters): item 6 -- with every element of the main record «da provare», §7 is one
+model-written objection on the strongest element (lawyer_method.strongest_open), grounded as every rule statement, or
+the line saying none is: objection_grounded, objection_none, and objection_template_repeated (must be 0: the same
+element's «da provare» template printed again in a §7, or any template in the all-open one); item 8 -- the
+«requisiti provati N su M» count never in prose under the method (the step-aside path too): count_sentences_removed
+(at source and by the last pass) and count_sentences_left (must be 0); §5's relevance: rulings_passage_irrelevant_dropped
+(a ruling whose quoted passage never names the record's institution: data/ruling_relevance.json). Check zero_counters
+also fails a cell with objection_template_repeated or count_sentences_left above 0.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -355,6 +378,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         for k, v in (out["case_frame"].get("counters") or {}).items():
             out["counters"].setdefault(k, v)
         out["checks"].append(frame_check(out["case_frame"], out["counters"]))
+        # v79.14.1: the zero counters -- role_flip left to check case_frame when it ran (one failure per flip)
+        out["checks"].append(zero_counters_check(out["counters"], frame_ran=bool(out["case_frame"].get("ran"))))
         if spec.get("followup"):                                                                # v79.12.5 (10)
             run_followup(spec, out["answer"], result.get("state") or {}, out)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
@@ -529,6 +554,24 @@ def rites_fit_check(counters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     why = [f"{k}={counters.get(k)}" for k in ("rites_unavailable_offered", "requalify_event_mismatch")
            if int(counters.get(k) or 0)]
     return {"check": "rites_and_alternatives_fit", "ok": not why, "why": "; ".join(why)}
+
+
+ZERO_COUNTERS = ("role_flip", "corpus_line_code", "amministrativo_without_act",      # v79.14.1 (items 1-3)
+                 "objection_template_repeated", "count_sentences_left")                 # v79.14.1 (items 6, 8)
+
+
+def zero_counters_check(counters: Optional[Dict[str, Any]] = None, frame_ran: bool = False) -> Dict[str, Any]:
+    """v79.14.1 (items 1-3): role_flip (the intake's role and the method's differ, or the counterparty taken as client),
+    corpus_line_code (the honesty line on a code institution) and amministrativo_without_act (an amministrativo
+    admission with no administrative act against the client); (items 6, 8) objection_template_repeated (the same
+    element's «da provare» objection template repeated, or any printed with every element open) and count_sentences_left (a
+    «requisiti provati N su M» count left in the delivered prose) -- each must be 0; a counter the run did not set
+    reads 0. v79.14.1: frame_ran -- check case_frame ran on the cell (CASE_FRAME) and fails it on role_flip (one
+    role_flip, frame_check's FRAME_MUST_BE_ZERO): left out here, so a flip fails the cell once."""
+    counters = counters or {}
+    keys = [k for k in ZERO_COUNTERS if not (frame_ran and k in FRAME_MUST_BE_ZERO)]
+    why = [f"{k}={counters.get(k)}" for k in keys if int(counters.get(k) or 0)]
+    return {"check": "zero_counters", "ok": not why, "why": "; ".join(why)}
 
 
 def fit_of(state: Dict[str, Any]) -> Dict[str, Any]:

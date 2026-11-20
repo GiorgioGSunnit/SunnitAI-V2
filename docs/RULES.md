@@ -1068,6 +1068,194 @@ verification; the verified frame is bound across the whole pipeline (below, «Th
   `interactive_flow.applicability_fit`, `frame_plan`, `framed_no_client`; `intake._frame_wanted`,
   `_refine_frame_role`; `scripts/nightly_sim.py:frame_of`, `frame_lines`; `scripts/frame_timing.py`.
 
+### 11.14 79.14.1 (the surviving 79.12.8 items 1-3, 6, 8: role, the honesty line, the administrative act, the objections, the count sentence and §5's relevance)
+
+No new flag: each rule below is unconditional, except item 8's count rule, which applies under the method
+(`LAWYER_METHOD`, as its `no_count_sentence` always did). The tables are `data/party_sides.json`,
+`data/institution_laws.json`, `data/administrative_act.json` and `data/ruling_relevance.json`. 79.13.0's
+`APPLICABILITY_FIT` step is unchanged and runs on what these rules admit.
+
+**With the case frame (79.14.0, `CASE_FRAME`).** 79.14.1 ships after 79.14.0; the verified frame stays the single
+source for client, role, rito, stage, charge, institution and questions. Item 1's rules are the fallback: they decide
+only a field the frame left empty or that failed verification, and with `CASE_FRAME` off they apply as built. With a
+verified field: `intake.resolve`'s resisting rule may still read «convenuto» on a frame «attore», but resolve's wrapper
+restores the frame's role and logs `frame_conflict` («intake.resolve»: it loses, as 79.14.0's posture rule did);
+`posture.of` no longer has a role rule of its own (`intake_role` is the frame's role after binding);
+`role_for_client` gives the frame's client the frame's role («quadro»; its own reading logged `frame_conflict`
+«role_for_client») and the other clients its own; `apply_intake_client` and `plan_client` are not consulted when the
+frame binds the client (`case_frame_client`), and under a verified «sconosciuto» role every client of a multi-client
+answer is «sconosciuto» too (no side's wording; the request stating a client's own role still wins); and `apply_intake_client` never applies a party the frame lists as
+controparte (logged, it loses); `client_on_intake_side` never moves a frame-bound client (the move it would make logged
+`frame_conflict` «client_on_intake_side»), never moves to a frame controparte, and reads no side under a verified
+«sconosciuto» role (`intake_side`). **One `role_flip`:** `interactive_flow.role_flip_reasons` names each distinct
+flip («ruolo», «ruolo:<client>», «controparte», «controparte:<client>»; kept in `state["role_flip_reasons"]`) and
+`case_frame.audit` unions them with its own («ruolo»: the frame's/intake's role not the method's; «controparte»: a
+served client the frame lists as controparte; its bare «controparte» never added when item 1's
+«controparte:<client>» names the same party, and a «ruolo:<client>» whose role is the posture's own flip dropped under its
+«ruolo») -- `case_counters` carries that one count (block_counters' with the flag
+off); the nightly fails a cell on it once (check `case_frame` when it ran, `zero_counters` otherwise). A client read on
+the other side by the extraction's role words while the frame verified the client is no flip (the frame wins). Items 2
+and 3: the frame's institution is the first read's first (`read_institutions`), so it feeds `governing_law` /
+`corpus_gap`; the act is read in the case's words only (`act_text`, review: a model's institution name -- the frame's,
+the first read's, an alternative's -- may name an act the case denies or never states); a frame-verified «amministrativo»
+rito is never the administrative-act signal by itself -- the c.p.a. articles, the module and the family still need an
+act in the text (`administrative_act`).
+
+- **1. Role flip.** The method's role is the intake's resolved role (`intake.resolve`) unless the request itself states
+  otherwise; every decision is logged (`role_decision`: which wins -- «intake» or «richiesta» -- and why). Causes found
+  and fixed: (a) v79.10.2 (B1)'s reading (a model's or a default's «attore» on a civil case showing the client resisting
+  a demand is the «convenuto») lived in `posture.of` only, so the intake said one role and the method used another --
+  it now lives in `intake.resolve` (which also reads the state's text when the analysis has no case), and `posture.of`
+  takes the resolved role as it is (`posture["intake_role"]`, `role_why`, `intake_client`); (b) with several clients
+  (`method_inputs_clients`) each client's role came from the first read's word -- now `role_for_client`: the role the
+  request states for that client (`intake._current_role`, `intake._said_of` on its name: «Caio si è costituito parte
+  civile») wins, else the intake's (`state["method_roles"]`); (c) with the client asked and unanswered the answer assumed
+  the party «a carico» even when the intake reads the client as the claimant -- `_assumed_party` now takes a party on
+  the intake's side, never one read on the other side; (d) the client the intake's rules read in the request («il mio
+  cliente, Rossi, …», «assunte le vesti del legale di X») lost to the extraction's (which may name the counterparty as
+  the assisted party) -- `apply_intake_client` applies it after `apply_stated` (single shot and round 1); (e) the
+  party_threat path (79.12.5 item 6) read the client as resisting while the extraction settled the threatening party as
+  the client -- `client_on_intake_side`, right after `settle_client`: a client nobody stated, read on the side opposite
+  to the intake's (`party_side`: its procedural role word, `data/party_sides.json`'s words -- debitore, creditore,
+  danneggiato …, or its own threat to sue: `intake.threat_parties`), is replaced by the party on the intake's side
+  (`state["role_check"]`; the assumption line renamed); a client the user names wins («richiesta»); (f) with no client
+  settled by the answer, the plan's model-written «parte_assistita» stood as the method's client -- `plan_client`: the
+  client the facts name (`client_of`) wins (`state["method_client"]`). Counters:
+  `role_flip` (must be 0: the method's role differing from the intake's, or the client read on the other side, not
+  stated by the user, or the method writing for another party than the one settled; with several clients each
+  one's, checked against its own reference -- `method_role`: the frame's role for the frame's client, the intake's
+  resolved role, `posture["intake_role"]`, for the others -- and a client that only carries the posture's own flip
+  counted once, under «ruolo»), `role_request_wins` (allowed), `role_client_moved`; the
+  nightly's `zero_counters` check fails a cell with `role_flip` > 0. Review: the resisting rule also reads the debtor's
+  other wordings (`_resist_other_wordings`): a demand's document or a writ «contro» the client («ha ottenuto un decreto
+  ingiuntivo contro Tizio»), one served on «gli / le» by a clause whose subject is another party («Beta gli ha
+  notificato un atto di citazione»), and another party's payment demand of no one named («Beta pretende ora il
+  pagamento della penale») -- the last two only with the client named and no claim of the client's own in the text
+  (`_CLAIM_RE`, `_TASK_CLAIM_RE`), never a hypothesis («se Beta pretendesse …»).
+
+  — `intake.resolve`, `threat_parties`, `_party_threats`; `posture.of`; `interactive_flow.role_for_client`,
+  `method_inputs_clients`, `method_role`, `role_flip_reasons`, `_assumed_party`, `apply_intake_client`, `party_side`, `party_side_words`, `intake_side`,
+  `client_on_intake_side`, `plan_client`, `role_counted`, `role_corpus_counted`; `intake._resist_other_wordings`;
+  `case_frame.audit`.
+
+- **2. The honesty line.** «Il corpus non contiene ancora informazioni sufficienti su <materia>» (`CORPUS_LINE`) fires
+  only when a first-read institution's governing law is outside the codes (`family_gate.ordinary_code`) AND missing from
+  the archive (`law_in_archive`: the law's archive names in `data/corpus_expected.json`, or a `data/special_laws.json`
+  entry of the same number and year, against the graph's primary document names; unknown names never fire). The
+  governing law (`governing_law`): `data/institution_laws.json`'s entry naming the institution (special laws first:
+  contratto di viaggio -> d.lgs. 79/2011; then the codes: legittima difesa -> c.p.; a special law's pattern names its
+  own matter only -- review: «fallimento» needs the impresa, the dichiarazione or the procedure, so «fallimento delle
+  trattative» is art. 1337 c.c. and «furto tentato fallito» the c.p.; «privacy» and «dati personali» need their
+  treatment or code, so «vita privata» is art. 615-bis c.p.; added: responsabilità sanitaria -> L. 24/2017, contratti
+  pubblici -> d.lgs. 36/2023, bancarotta -> d.lgs. 14/2019, guida in stato di ebbrezza -> d.lgs. 285/1992), else the
+  module it names (the law of its leading action: a code article first -> that code, a special law's first -> its
+  first law), else a record whose rubrica is its rubricated name, else
+  a law or article its own words cite; unknown -> never. Cause: 79.12.5 fired it for any institution with no module and
+  nothing graded in its family -- legittima difesa has no module. A no-claim answer whose institution does not qualify
+  keeps its ten sections with `NO_CLAIM_SUMMARY` in §1 («Le norme lette su {materia} non offrono a {client} una linea da
+  proporre sui fatti narrati: il parere le riporta con il motivo di ciascuna, senza una tesi né una previsione.»: §6
+  lists them with their reasons); the missing-laws line still replaces both. Counters: `corpus_line` (the line fired)
+  and `corpus_line_code` (must be 0: the line printed, in the delivered answer, on an institution whose governing law
+  is a code -- `corpus_line_on_code`); compose logs each institution's reading (`corpus_gap`).
+
+  — `lawyer_method.institution_laws`, `code_law`, `governing_law`, `law_in_archive`, `corpus_gap`, `corpus_line`,
+  `corpus_line_on_code`, `no_claim_summary`, `compose`.
+
+- **3. The administrative act.** The amministrativo module and family admit only with an administrative act against the
+  client (`family_gate.administrative_act`: `data/administrative_act.json` -- a provvedimento of the ente, a diniego, an
+  annullamento d'ufficio / in autotutela or of an administrative title, an ordinanza sindacale / di demolizione, the
+  TAR, the Consiglio di Stato, a ricorso straordinario / gerarchico, the silenzio of the administration, a revoca /
+  sospensione / decadenza of a title, a preavviso di rigetto, the ente rejecting an istanza; a negated hit never), read on
+  the case's words only -- never «Comune», «difformità edilizie», «permesso di costruire» alone (a civil sale). Review:
+  read sentence by sentence; the words a private party uses too (a bank's «diniego», a condominium's «delibera», a
+  franchisor's «revoca della licenza», a private «concessione», an employer's «procedura di selezione»:
+  `authority_patterns`) count only in a sentence naming a public authority (`authority`: never the «amministrazione
+  condominiale», never «nel Comune di …»); against the client -- an act that grants (rilasciato, ottenuto, concesso, in
+  sanatoria, with no adverse word: the seller's permesso or sanatoria) never counts; a hit negated after it («il TAR non
+  è mai stato adito») never counts; the Questura's revoca of the porto d'armi and a revoked licenza commerciale do. An
+  adverse act addressed to another party is still read as the case's act (the text alone does not say whom a sentence
+  serves). Where: the module (`_module_signal`: refused, recorded in `modules_refused_no_act`; a
+  module article the request names is the user's naming and stays), the special-law table's amministrativo family
+  signal (`special_laws.family_signal`: the L. 241/1990 never by it without the act), the family gate (`decide`: a
+  c.p.a. article -- a code, always admitted until now -- refused with `NO_ACT_WHY` unless the user names the code or the
+  article; an amministrativo-family row refused for the act is tagged the same), the administrative regime
+  (`fact_signals.regime_candidates`: procedimento amministrativo, ottemperanza), the scope check (`article_scope`: c.p.a.
+  labels out, `act_scope_refused`) and a last pass on the delivered answer (`interactive_flow.admin_act_out`: a sentence
+  citing a c.p.a. article the user did not name dropped). The TU edilizia (d.P.R. 380/2001, family «edilizia») keeps its
+  own signal: private building works are its matter, not the administration's act. Counters:
+  `amministrativo_refused_no_act` (the admissions refused for lack of the act: the modules, the gate's rows, the scope
+  check's articles, the last pass's sentences), `amministrativo_without_act` (must be 0: the module active by the case's
+  words or the read, a c.p.a. or amministrativo-family record the user did not name, a c.p.a. article left in the
+  answer), `act_last_pass_stripped` (a path that bypassed the gate and the scope check when not 0).
+
+  — `family_gate.act_table`, `administrative_act`, `act_text`, `act_gated_code`, `act_refused`, `_cpa_named`, `decide`,
+  `context`; `special_laws.family_signal`; `lawyer_method.act_modules`, `module_act`, `_module_signal`,
+  `act_gated_labels`, `article_scope`; `fact_signals._act_gated`, `regime_candidates`;
+  `interactive_flow.admin_act_words`, `admin_act_out`; `scripts/nightly_sim.py:zero_counters_check`.
+
+- **6. Objections with every element «da provare».** When every live element of the main record (the assessment's
+  article: the charge or the claim) is «da provare» (`all_open`), §7 is ONE model-written objection on the strongest
+  element, or none -- never the per-element template («La controparte negherà l'elemento «…» / Risposta. Va provato:
+  …», «L'accusa cercherà di provare l'elemento «…»», the defence's «L'accusa negherà l'elemento «…» dell'art. …»)
+  repeated. The strongest element (`strongest_open`): the pool is the elements of that record the selected main line
+  contests, else those it rests on, else every live one; in it, the only one the main line turns on, else the one the
+  most narrated facts touch (its «supporting» sentences), else the record's distinctive element, else the first. The
+  objections call itself (no new call) is asked for one objection on that element (`OBJECTIONS_ONE` in place of the
+  three, `STRONGEST_LINE` in the material), grounded in the record's elements or the article, or `{"obiezioni": []}`;
+  of its reply, the first objection on the element (`on_element`: its id or one of its own nouns) is kept, alone. In
+  compose it passes the same checks as every objection, and it is printed only when Block B's grounded-rule check
+  (`rule_statements.check`) removed nothing of it or of its reply; §7 is then `ALL_OPEN_ONE` and the objection, else
+  `ALL_OPEN_NONE` («Tutti gli elementi sono ancora da provare: nessuna obiezione della controparte trova oggi
+  fondamento negli elementi della norma o negli atti.»); no record or selection fallback is added. Cause: with fewer
+  than three objections from the model, `objections_fallback` added one template per open element, and with every
+  element open that was the whole §7. The structure check reads the all-open layout (`objections_all_open`: one objection at most, no
+  template) in place of `three_objections`, and `objection_template_once` on every answer. Counters:
+  `objection_grounded`, `objection_none`, `objection_template_repeated` (must be 0: the same element's template printed
+  again in a §7, or any template in the all-open one, in the delivered answer -- `template_repeats`). Review: item 6 is
+  the all-open case only -- a mixed record (some element proven) keeps 79.14.0's fallback, one objection per open
+  element, each on its own element.
+  For whom the objection is written (`objection_party`, computed in `prepare`): the method's client and the posture's
+  role; who objects follows that role (`objection_side`): the accusa against an imputato or indagato, the imputato's
+  defence against a persona offesa or parte civile (`OBJECTOR`, `ALL_OPEN_WHO` «vittima»; before, the call and the line
+  said «l'accusa» for a victim client too), the controparte in a civil matter. With `CASE_FRAME` on and a verified frame
+  held, the objection is written for the frame's client and the frame's role (the POSIZIONE line of the call's material
+  and who objects): a different posture role, or with one client a different client, is logged `frame_conflict`
+  («objections_plan») and loses; another client of a multi-client answer keeps its own role (`role_for_client`'s); a
+  verified «sconosciuto» role objects from neither side («l'altra parte», `ALL_OPEN_WHO` «ignoto»); in a multi-client
+  answer whose frame binds no client, each client keeps its own role (review).
+
+  — `lawyer_method.all_open`, `strongest_open`, `on_element`, `objection_party`, `objection_side`, `all_open_section`,
+  `template_repeats`, `objections_fallback`, `objections_material`, `objections_plan`, `compose`, `structure_checks`;
+  `interactive_flow.objections_counted`.
+
+- **8. The count sentence and §5's relevance.** Under the method (`LAWYER_METHOD`) the «requisiti provati N su M» count
+  is never in prose on any path: on the step-aside path (the method refused, the standard body written) and on any
+  turn the method does not write, `status_sentence` prints the verdict alone (`ARTICLE_STATUS_VERDICT`: «Esito sui fatti
+  del caso: {verdict}.»; counted at source), and a last pass on the delivered answer (`count_sentences_out`, before the
+  text residue pass) cuts a parenthetical count and removes a sentence still holding one (a writer's own). With the
+  method off the v62 status sentence stays. Counters `count_sentences_removed` (at source and by the pass) and
+  `count_sentences_left` (must be 0); the structure check `no_count_sentence` reads the same pattern (`count_left`).
+  Review: the pattern reads the count in its other wordings («requisiti provati 0/5», «i requisiti provati sono 0 su 5»,
+  «risultano provati 0 requisiti su 5», «sono provati 2 dei 5 requisiti»; a parenthesis holding one cut); §9's
+  assessment reason («3 elementi su 5 dell'art. 646 c.p. risultano provati; gli altri …») is the method's verdict on the
+  named article, not the count line, and stays.
+  §5: a ruling whose quoted passage never names the record's institution is dropped -- from §5 and from the
+  orientation (`rulings.passage_names_institution`, `data/ruling_relevance.json`): the passage names it by the article's
+  number («art. 646», «646 c.p.», «612 bis»), the rubrica's first non-generic root (the institution's name:
+  «appropri-», «riss-», «estors-» meeting «estorsiva»; `relevance_stem` drops the inflection and the «-zione / -sione /
+  -mento» suffix; `generic_stems` -- esercizio, attività, cagionato, immobili, reali, risarcimento, garanzia … -- never
+  name it), two of the rubrica's other non-generic roots each met by a different word (one word never meets two
+  overlapping roots), or one of the record's own words in the table (`aliases`: its other names and its defining element's nouns -- 582 c.p. «lesion-», «malatti-»); one noun alone
+  of a several-word rubrica never (the «indebito» of a credit card's «indebito utilizzo» is not appropriazione
+  indebita). A ruling printed with its estremi alone has no sentence to test and stays (its abstract passed the rubrica
+  test); a record with no rubrica noun and no alias is not tested. Counter `rulings_passage_irrelevant_dropped`
+  (the rulings record's `passage_irrelevant_dropped`, filter `off_institution`). The nightly's `zero_counters` check
+  also fails a cell with `objection_template_repeated` or `count_sentences_left` above 0.
+
+  — `interactive_flow.status_sentence`, `count_sentences_out`, `text_counted`; `lawyer_method.count_out`,
+  `count_left`, `structure_checks`; `rulings.relevance_table`, `relevance_stem`, `relevance_stems`, `institution_stems`, `passage_names_institution`,
+  `build`; `scripts/nightly_sim.py:ZERO_COUNTERS`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -1142,4 +1330,5 @@ verification; the verified frame is bound across the whole pipeline (below, «Th
 | v79.12.7 (review: items 1-7) | (1) A note or a kept passage stating that the jurisprudential element is NOT required («non è richiesta la prevedibilità in concreto», «indipendentemente da …») is no source of it (`penal_lines.states_element`, the rule's «denial_patterns», read in the statement around the hit). (2) The provocazione's patterns no longer read «persona offesa» / «parti offese» nor «provocò la caduta» (a cause, not a provocazione); 62 n. 6's steps skip a hit whose clause is the victim's claim («chiede il risarcimento», «da quantificare», «in separata sede»: «step_exclude_patterns»); the «esclusa» prose check works per clause (`lawyer_method._excl_clauses`): another institute's exclusion in the same sentence stays, each circumstance excluded is rewritten on its own, a subjectless «…, è esclusa» binds to the clause naming the circumstance; an aggravante is rewritten only when the record holds it (`penal_lines.aggravanti_held`), never raised against the client; more ways of excluding («non spetta», «vanno negate», «non può essere invocata»). The «natura del diverbio» point reaches §10 through `collect_points` (tested in test_v79_12_6_b). (3) The soccorso is the offender's: never the place «pronto soccorso», never in a clause naming passers-by, a neighbour, a witness or a passive («fu portato»: «not_by_offender_patterns»), never negated in its clause (`penal_lines.clause_at`); prepare makes the flow's records (state["records"]) agree with the absorption (`penal_lines.absorb_into`, each client's view and the shared state), and absorbed_as_autonomous reads them (ctx["flow_records"]). (4) A riqualificazione fact the sentence denies («nega di aver dato alcuna spinta», «non vi fu alcuna spinta») or a motive («spinto dalla rabbia») bears on nothing (the rule's «negation_pattern»). (5) A trigger the facts deny («non soffriva di alcuna patologia», «esclude errori dei sanitari», «nulla di anomalo») lifts no cap («trigger_negation_pattern»); a capped causation line never leads while another line is eligible, nor demotes the containment line (`never_main`, MAIN_DEMOTED_WHY «causation_capped», logged). (6) The code's own rito lines are never a written offer (`own_rite_sentence`: the precluded patteggiamento's «Calcolo: … art. 444 …» was being dropped by the final rites check); the PM's consent line is printed with the precluded computation too for a listed offence; a contravvenzione (arresto) gets the abbreviato's half (art. 442, co. 2, c.p.p.: «reduction_contravvenzione»); a written sentence on a computed rito stating a figure the computation does not print, or the resulting pena with no figure (`data/penal_lines.json` «rite_prose»), is dropped (`rite_prose_out`, in `rites_out`) -- counters rites_prose_removed, rites_prose_mismatch and rites_prose_uncomputed (0), added by case_counters to rites_computation_mismatch and rites_without_computation. (7a) Code ranges and pairs («R1-R3», «R1/R2», «(R1-R3)») are read as their codes; a stance heading or closing a citation's parenthesis («(contro, Cass. …)») goes; with no known code, a parenthesis of R-codes and a sentence using a bare R-code as an element («code_context_patterns») go. (7b) The headless reference takes its «del / udienza / depositata il» date, «Rv. … - 01», «sent. n.» / «ord. n.». (7c) The iscrizione nel registro degli indagati, the capo d'imputazione and the PM's «ipotizza il reato» are acts; a sentence with a modal or a conditional («potrebbe contestare»: «procedural_act_modals») narrates no act done. (7f) A cenno grounded in a comma's words is still ungrounded when, against the comma it draws on most, it inverts a negation or adds an absolute («sempre», «in ogni caso»: «cenni_absolutes»). No new flag; tests/test_v79_12_6_review.py (synthetic facts only). |
 | v79.13.0 (applicability judgment, `APPLICABILITY_FIT`) | For every admitted candidate the model judges whether the provision governs the facts (si / no / dipende, a one-sentence perché quoting the article and naming fact ids, a condizione as a question, an ambito), in batches of at most 8, thinking off, temperature 0; the code verifies the quoted passage in the text, the fact ids, every content word against the passage, the named facts and the reviewed note, and the condizione against the text and the facts; an unverified judgment has no effect (`fit_unverified`), one adding content is counted (`fit_added_content`). The step runs once per answer after the family gate and the cap, before the decomposition (`interactive_flow.applicability_fit`, `decompose_records`' hook), within 20 s from its start: a verified «no» removes the norm from the records, the candidates and §4 (`state["fit_removed"]`; the last pass drops a sentence still citing it; put back and judged again when the user later names it or the facts change, all undone when the flag is turned off), except a norm the user names or the text charges -- kept, the judgment printed as the defence's contest (`contest_fit`) or the other side's objection; a «dipende» forces the touched elements «da provare» (`issue_records.settle` reads `fit_open`) and asks its condizione in §10. Counters norms_removed_by_fit, fit_kept_named, fit_added_content_in_effects (0), fit_seconds, fit_removed_stripped, fit_removed_left (0); the nightly turns it on and lists every removed norm with its passage (check applicability_fit, also failing when the last pass had to strip a removed norm; the follow-up checked too). Review: a «no» or «dipende» must rest on the quoted passage (no count or restriction it does not set, a requirement the facts lack, a negation), the quote is matched with numbers and short words exact and never cut after a negation, a perché never contradicts its fact, the reply's article matched however spelt, conflicting duplicates unjudged, a queued batch cancelled at the deadline, a special law's charge protected under its store alias, a kept named norm printed with no method record and on the prose path. See 11.12. |
 | v79.14.0 (case frame, `CASE_FRAME`) | One model call at the top of the pipeline (`intake.request_intake`, before intake's rules; once per request, a follow-up reusing it) reads the case frame from the request's full text (parti with their lato, cliente, ruolo, rito, stadio -- each with a quoted perché --, addebito_o_domanda, istituto, quesiti), thinking off, temperature 0, within 15 s; the code verifies every field against the text with the 79.13 fit checker's quote match (`applicability.passage_at`) before it counts: a field that fails is dropped (`frame_unverified.<field>`) and the rules fill it (`frame_fallback.<field>`); a cliente or a ruolo with no quote never accepted, a party listed as controparte never the client, a name quoted only «a carico di» never the client, a penal rito's charge article a penal provision (c.p., 2621-2642 c.c., a penal law's penal articles) or dropped (`charge_rito_dropped`), names matched exactly, a client's quote showing it and never contradicting «assisto X», the quesiti whole questions of the text; a failed, malformed or late call leaves every field to the rules (`frame_failed`). The verified frame is the single source of client, role, rito, stage, charge, institution and questions for the whole pipeline -- intake (confidence `frame`), resolve, the posture, the charge rule, the stated, settled and multiple clients, the first read's client and institution (module activation), the method's header and thesis call, the plan's client and position, «Risposte ai quesiti» --: a later step that disagrees is logged `frame_conflict` with its name and loses; with no client under the frame no reader serves a party; a «sconosciuto» role prints the honesty line (`ROLE_UNKNOWN_CLIENT` new) with neither side's wording. On the delivered answer: `frame_conflict`, `role_flip`, `charge_rito_mismatch` (each must be 0; the nightly's check `case_frame` fails a cell on any), `frame_conflict_attempts`. The verified frame goes to the fit judgment as context (`frame_context`). The nightly turns it on and prints the frame per cell with each fallback's value; `scripts/frame_timing.py` times the call. See 11.13. |
+| v79.14.1 (the 79.12.8 items 1-3, 6, 8: role flip, honesty line, administrative act, objections, count sentence, §5 relevance) | (1) The method's role is the intake's resolved role unless the request states the client's own (logged `role_decision`): the resisting reading moved from `posture.of` into `intake.resolve`; several clients take the intake's role or the request's statement, never the first read's word; the assumed party and the settled client are on the intake's side, never the counterparty (`data/party_sides.json`, the party_threat subject); the intake's rule-read client over the extraction's, the facts' client over the plan's model-written party; counters `role_flip` (must be 0), `role_request_wins`, `role_client_moved`. (2) «Il corpus non contiene ancora informazioni sufficienti su …» only when the institution's governing law is outside the codes and missing from the archive (`data/institution_laws.json`); never for a code institution (legittima difesa); a no-claim answer keeps its ten sections with `NO_CLAIM_SUMMARY`; counters `corpus_line`, `corpus_line_code` (must be 0). (3) The amministrativo module, family and regime, and the c.p.a. articles (the family gate, the scope check, a last pass) only with an administrative act against the client (`data/administrative_act.json`); counters `amministrativo_refused_no_act`, `amministrativo_without_act` (must be 0), `act_last_pass_stripped`. (6) With every element of the main record «da provare», §7 is one model-written objection on the strongest element (the only one the main line turns on, else the most supported by the facts, else the distinctive one, else the first), grounded as every rule statement, or the line saying none is -- never the per-element template repeated (once at most in any answer); written for the client's role (the imputato's defence objects to a victim client) and, with `CASE_FRAME` on, for the frame's client and role; counters `objection_grounded`, `objection_none`, `objection_template_repeated` (must be 0). (8) Under the method the «requisiti provati N su M» count is never in prose -- the step-aside path's status sentence is the verdict alone, a last pass removes any left; counters `count_sentences_removed`, `count_sentences_left` (must be 0); §5 drops a ruling whose quoted passage never names the record's institution (`data/ruling_relevance.json`), counter `rulings_passage_irrelevant_dropped`. The nightly's `zero_counters` check fails a cell with any must-be-0 counter above 0. Shipped after 79.14.0: with `CASE_FRAME` on, item 1's rules are the fallback for a frame field left empty or unverified (a disagreement logs `frame_conflict` and loses); ONE `role_flip` (`role_flip_reasons` unioned in `case_frame.audit`, each distinct flip once; the nightly fails it once: `case_frame` when it ran, `zero_counters` otherwise); the frame's institution feeds `governing_law`; a frame «amministrativo» rito is never the act. Review: the debtor's other wordings read as resisting (writ «contro» the client, «gli ha notificato», another party's demand of no one named); each multi-client role checked against its own reference (`method_role`), a posture flip or a served counterparty counted once; special-law patterns never take a code institution («fallimento delle trattative», «vita privata»), a module's leading action decides its law; the act read sentence by sentence in the case's words only, a private party's diniego / revoca / delibera only with a public authority, never an act that grants or one negated after it; a mixed record keeps one objection per open element; the count in its other wordings; §5's roots without inflection and suffix, generic roots naming nothing, «612 bis» (section 11.14) |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

@@ -196,6 +196,9 @@ LINE_REASON_NOT_RESULTING_ANY = "un suo requisito non risulta"                  
 # v60r (1, my draft, single shot): §2's one status sentence per article -- the requisites' rows go to the response's
 # article citations, never into the body
 ARTICLE_STATUS = "Esito sui fatti del caso: {verdict} (requisiti provati: {proved} su {total})."   # verdict, proved, total
+# v79.14.1 (item 8, my draft): under the lawyer's method (LAWYER_METHOD) every prose path -- the step-aside too --
+# prints the verdict alone, never the «requisiti provati N su M» count
+ARTICLE_STATUS_VERDICT = "Esito sui fatti del caso: {verdict}."                    # verdict
 # v62 (my draft): a threat article's status sentence, from the defence -- the charge or the claim against the client
 THREAT_STATUS = "Per la difesa: {items}."                                          # items, THREAT_ITEMS_JOIN
 THREAT_ITEMS_JOIN = "; "

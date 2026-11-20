@@ -2873,6 +2873,16 @@ def case_issue_names(analysis: Optional[Dict[str, Any]]) -> List[str]:
     return [n for n in (" ".join(x.split()) for x in names) if n and n != "None"]
 
 
+def _act_gated(regime: Dict[str, Any], case: str, names: Sequence[str] = ()) -> bool:
+    """v79.14.1 (item 3): a regime of an act-gated family (data/administrative_act.json «families»: amministrativo) with
+    no administrative act against the client in the case's words (family_gate.administrative_act) -- «Comune»,
+    «difformità edilizie», an «annullamento» of a contract never call for the c.p.a. / L. 241/1990 regime."""
+    from . import family_gate
+    if not set(regime.get("families") or []) & set(family_gate.act_table()["families"]):
+        return False
+    return not family_gate.administrative_act(case)
+
+
 def regime_candidates(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = None,
                       log: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """[{id, refs, matched: [(trigger, the issue it is in)], draft_pending_lawyer, commi}] of the REGIME_CANDIDATES the
@@ -2884,12 +2894,16 @@ def regime_candidates(analysis: Optional[Dict[str, Any]], areas: Optional[List[s
     roles = client_roles(signals.get("facts"), signals.get("fired") or [])
     excluded: List[Dict[str, Any]] = []
     out = []
+    case = str((analysis or {}).get("_case_text") or "")
     for regime in REGIME_CANDIDATES:
         if families and not set(regime["families"]) & families:
             continue
         matched = [(m.group(0), name) for name in names for t in regime["triggers"]
                    for m in [re.search(rf"\b{t}", _low(name))] if m]
         if not matched:
+            continue
+        if case and _act_gated(regime, case, names):    # v79.14.1 (item 3): no administrative act against the client
+            excluded.append({"regime": regime["id"], "why": "no_administrative_act"})
             continue
         if not role_fits(regime.get("client_role", "any"), roles):
             excluded.append({"regime": regime["id"], "role": regime.get("client_role"), "roles": sorted(roles)})

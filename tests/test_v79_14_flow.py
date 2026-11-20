@@ -110,7 +110,9 @@ def test_case_1_the_debtor_is_convenuto_through_posture_and_the_methods_header_n
 
 def test_case_1_flag_off_the_rules_read_the_claimant_the_frame_never_and_a_dropped_role_falls_back(monkeypatch):
     off = _run(monkeypatch, DEBTOR, _debtor_reply(), on=False)
-    assert off["posture"]["role"] == "attore"               # the rules alone: a reading, the claimant (79.13.0)
+    # v79.14.1 (item 1, review): the rules alone now read the debtor too («Delfino pretende ora il pagamento di una
+    # penale»: a demand of no one else named -- the client resists it): convenuto, not 79.13.0's claimant reading
+    assert off["posture"]["role"] == "convenuto" and off["intake"]["resisting"]
     on = _run(monkeypatch, DEBTOR, _debtor_reply())
     assert on["posture"]["role"] == "convenuto"             # the verified frame: the side that resists
     # an «attore» quoting a sentence the text does not hold: dropped, the rules fill the field -- counted, printed
@@ -185,15 +187,22 @@ def test_case_4_questions_a_carico_di_x_x_is_the_counterpartys_subject_the_clien
     assert out["header"] == "POSIZIONE: Carla Ulivo, rito penale, role persona_offesa, stage primo_grado"
     assert out["intake"]["questions"] == ["Quali reati sono configurabili a carico di Dario Cedro?",
                                           "Carla Ulivo può costituirsi parte civile?"]
-    # the model naming Dario Cedro as the client: dropped; the rules' assumption never takes the counterparty
+    # the model naming Dario Cedro as the client: dropped; the rules' assumption never takes the counterparty.
+    # v79.14.1 (deliberate change): the fallback for the dropped client is item 1's assumption -- the party on the
+    # verified role's side (persona offesa: Carla Ulivo), not 79.14.0's honesty line (which followed from the old
+    # assumption picking the party «a carico», the controparte); with no such party, the honesty line as before
     dario = {"nome": "Dario Cedro", "perche": "«Quali reati sono configurabili a carico di Dario Cedro?»"}
     out = _run(monkeypatch, A_CARICO, _a_carico_reply(dario), asked=True,
                parties=(("Carla Ulivo", "persona offesa"), ("Dario Cedro", "imputato")))
     assert out["client"] != "Dario Cedro" and "Dario Cedro" not in out["header"]
-    assert out["line"] == C.CLIENT_UNKNOWN
-    assert out["audit"]["role_flip"] == 0
-    assert any(c["step"] == "settle_client" and c["proposed"] == "Dario Cedro"
-               for c in out["audit"]["frame_audit"]["conflicts"])
+    assert out["client"] == "Carla Ulivo" and "Carla Ulivo" in out["line"] and "Dario" not in out["line"]
+    assert out["posture"]["role"] == "persona_offesa"
+    assert out["audit"]["role_flip"] == 0 and out["audit"]["frame_conflict"] == 0
+    assert not out["audit"]["frame_audit"]["role"]["client_is_counterparty"]
+    alone = _run(monkeypatch, A_CARICO, _a_carico_reply(dario), asked=True, parties=(("Dario Cedro", "imputato"),))
+    assert alone["client"] == "" and alone["line"] == C.CLIENT_UNKNOWN
+    assert "Dario Cedro" not in alone["header"] and flow.client_of(alone["state"]) == ""
+    assert not alone["audit"]["frame_audit"]["role"]["client_is_counterparty"] and alone["audit"]["role_flip"] == 0
 
 
 NO_ROLE_REPLY = {"parti": [{"nome": "Volpe S.r.l.", "lato": "terzo"}, {"nome": "Lupo S.r.l.", "lato": "terzo"}],
@@ -207,7 +216,9 @@ NO_ROLE_REPLY = {"parti": [{"nome": "Volpe S.r.l.", "lato": "terzo"}, {"nome": "
 def test_case_5_no_client_signal_sconosciuto_the_honesty_line_neither_sides_wording(monkeypatch):
     parties = (("Volpe S.r.l.", "convenuta"), ("Lupo S.r.l.", "attrice"))
     off = _run(monkeypatch, NO_CLIENT, NO_ROLE_REPLY, on=False, asked=True, parties=parties)
-    assert off["client"] == "Volpe S.r.l."           # flag off: the rules assume the party the action is directed at
+    # flag off: the rules assume a party -- v79.14.1 (item 1, deliberate change): the one on the resolved role's side
+    # (resolve's reading «attore»: the attrice), never the other side (79.14.0 took the convenuta: a role flip)
+    assert off["client"] == "Lupo S.r.l." and off["posture"]["role"] == "attore"
     out = _run(monkeypatch, NO_CLIENT, NO_ROLE_REPLY, asked=True, parties=parties)
     assert out["intake"]["role"] == "sconosciuto" and out["intake"]["confidence"]["role"] == intake.FRAME
     assert out["posture"]["role"] == "sconosciuto" and out["posture"]["entry"] is None
@@ -478,11 +489,15 @@ def test_review_a_civil_frame_charge_with_no_rito_to_check_it_is_refused_by_the_
 
 def test_review_no_frame_client_means_no_party_served_anywhere_not_the_extractions(monkeypatch):
     dario = {"nome": "Dario Cedro", "perche": "«Quali reati sono configurabili a carico di Dario Cedro?»"}
+    # v79.14.1: with Carla Ulivo among the parties item 1's fallback assumes her (test_case_4_...): here the facts
+    # hold the counterparty alone -- no party to assume, the extraction's client (Dario Cedro) refused
     out = _run(monkeypatch, A_CARICO, _a_carico_reply(dario), asked=True, extraction_client="Dario Cedro",
-               parties=(("Carla Ulivo", "persona offesa"), ("Dario Cedro", "imputato")))
+               parties=(("Dario Cedro", "imputato"),))
     st = out["state"]
     assert out["line"] == C.CLIENT_UNKNOWN and out["client"] == ""
     assert flow.client_of(st) == "" and st["analysis"]["parte_assistita"] == ""
+    assert any(c["step"] == "settle_client" and c["proposed"] == "Dario Cedro"
+               for c in out["audit"]["frame_audit"]["conflicts"])
     analysis = flow._restored_analysis(st["analysis"])
     plan = flow.frame_plan(st, flow._fallback_plan(st, analysis, [], []))
     assert plan["parte_assistita"] == "" and st["plan_client"] == ""

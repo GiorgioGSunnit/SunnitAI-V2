@@ -88,7 +88,11 @@ def test_a_strong_signal_or_two_weak_ones_activate(case):
 
 
 def test_an_institution_activates_the_module():
-    assert "amministrativo" in _ids(CONTRACT, ["annullamento d'ufficio del permesso"])
+    # v79.14.1 (item 3, review): the amministrativo module needs the administrative act in the case's own words -- an
+    # institution naming one (a model's words) no longer opens it alone; the case stating the act does
+    assert "amministrativo" not in _ids(CONTRACT, ["annullamento d'ufficio del permesso"])
+    assert "amministrativo" in _ids(CONTRACT + " Il Comune ha poi annullato d'ufficio il permesso di costruire.",
+                                    ["annullamento d'ufficio del permesso"])
 
 
 def test_the_scia_case_admits_l241_and_the_tu_edilizia():

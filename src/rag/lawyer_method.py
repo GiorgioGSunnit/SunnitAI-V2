@@ -17,7 +17,9 @@ laid out in the ten sections of his STRUTTURA DELL'OUTPUT, replacing ours (the k
                 allowed only declared minoritaria (realismo basso), else barred; a minority thesis leads only without a
                 sustainable non-minority line (the containment line is one when the charge is fully integrato); the strategy: main line, subordinate
                 (the imputato's riti alternativi and sentencing: riti_lines), the stragiudiziale option, always
-  obiezioni     his Fase 6: the three strongest objections, each answered
+  obiezioni     his Fase 6: the three strongest objections, each answered (v79.14.1, item 6: with every element of the
+                main record «da provare», one model-written objection on the strongest element, grounded, or none --
+                strongest_open, all_open_section; the per-element template never repeated)
   processuali   his Fase 8: our computed section, the ratione temporis line (temporal) and the litisconsorzio lines
   conclusioni   his Fasi 9-10: the record's assessment first (assessment(): esito probabile, grado di certezza and what it
                 depends on, obiettivo realistico -- esito pieno / parziale / contenimento --, rischio residuo), then the
@@ -1864,7 +1866,24 @@ def article_scope(ctx: Dict[str, Any], texts: Sequence[str] = ()) -> set:
     scope = {_norm_label(x) for x in labels} | {citations.label(r) for t in written for r in citations.article_refs(t)}
     if ctx.get("fit_removed"):          # v79.13.0: a norm the applicability judgment removed is never in the scope
         scope -= {_norm_label(x) for x in ctx["fit_removed"]}
+    gated = act_gated_labels(ctx, scope)     # v79.14.1 (item 3): no c.p.a. article without the administrative act
+    if gated:
+        scope -= gated
+        ctx["act_scope_refused"] = sorted(gated)
     return scope
+
+
+def act_gated_labels(ctx: Dict[str, Any], labels: Sequence[str]) -> set:
+    """v79.14.1 (item 3): the labels of an act-gated code (the c.p.a.) when the case states no administrative act
+    against the client (module_act) -- never one the user names in the case (its article, or the code by name)."""
+    from . import citations, family_gate
+    if module_act(ctx):
+        return set()
+    case = str(ctx.get("case") or "")
+    if family_gate._cpa_named(case):
+        return set()
+    named = {citations.label(r) for r in citations.article_refs(case)}
+    return {x for x in labels if family_gate.act_gated_code(str(x).partition(" ")[2]) and x not in named}
 
 
 _CITATION_ABBREV_RE = re.compile(r"\b(?:Sez|Cass|n|nn|art|artt|co|pen|civ|Un|sent|ord|Rv|dep|cfr)\.$", re.IGNORECASE)
@@ -2784,32 +2803,166 @@ def no_claim(ctx: Optional[Dict[str, Any]]) -> str:
     return kind if institution_names(ctx.get("institutions") or []) else ""
 
 
+# v79.14.1 (item 2): §1 of a no-claim answer when the honesty line does not fire -- the institution's governing law is a
+# code or in the archive: the norms were read, none gives the client a line (my draft)
+NO_CLAIM_SUMMARY = ("Le norme lette su {materia} non offrono a {client} una linea da proporre sui fatti narrati: il "
+                    "parere le riporta con il motivo di ciascuna, senza una tesi né una previsione.")
+INSTITUTION_LAWS_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_laws.json")
+_INSTITUTION_LAWS: Dict[str, Any] = {}
+
+
+def institution_laws() -> List[Dict[str, Any]]:
+    """v79.14.1 (item 2): data/institution_laws.json «institutions» compiled ({name, law, _rx}); [] when missing
+    (logged)."""
+    if "d" not in _INSTITUTION_LAWS:
+        try:
+            with open(INSTITUTION_LAWS_FILE, encoding="utf-8") as f:
+                raw = json.load(f).get("institutions") or []
+        except (OSError, ValueError) as exc:
+            logger.warning("lawyer_method: %s not read: %s", INSTITUTION_LAWS_FILE, exc)
+            raw = []
+        _INSTITUTION_LAWS["d"] = [{**e, "_rx": [re.compile(p, re.IGNORECASE) for p in e.get("patterns") or []]}
+                                  for e in raw if isinstance(e, dict) and e.get("law")]
+    return _INSTITUTION_LAWS["d"]
+
+
+def code_law(law: str) -> bool:
+    """v79.14.1 (item 2): the law is one of the codes (family_gate.ordinary_code: c.c., c.p., c.p.c., c.p.p., c.p.a., the
+    Constitution, the disposizioni di attuazione)."""
+    from . import family_gate
+    return bool(str(law or "").strip()) and family_gate.ordinary_code(law)
+
+
+def governing_law(inst: Any, ctx: Dict[str, Any]) -> Tuple[str, str]:
+    """v79.14.1 (item 2): (the institution's governing law, where it was read) -- data/institution_laws.json's entry
+    naming it («tabella»), else the institution module it names («modulo»: the code when its leading action is a code
+    article, else its first law), else the code of a record whose rubrica is its rubricated name («rubrica»), else a
+    law or an article its own words cite («citazione»); ("", "") when none (unknown: the line never fires)."""
+    from . import citations, corpus_laws
+    names = institution_names([inst])
+    text = " ".join(names)
+    if not text:
+        return "", ""
+    for e in institution_laws():
+        if any(rx.search(text) for rx in e["_rx"]):
+            return str(e["law"]), "tabella"
+    for m in institution_modules().get("modules") or []:
+        if module_hit(m, text, context=False):
+            # v79.14.1 (item 2, review): the module's leading action decides -- a code article first, the code; a special
+            # law's first (responsabilità sanitaria: art. 7 L. 24/2017), the module's first law
+            first = next((str(a).partition(" ")[2] for a in m.get("actions") or []), "")
+            if first and code_law(first):
+                return first, "modulo"
+            if m.get("laws"):
+                return str(m["laws"][0]), "modulo"
+            code = next((str(a).partition(" ")[2] for a in m.get("actions") or []
+                         if code_law(str(a).partition(" ")[2])), "")
+            if code:
+                return code, "modulo"
+    rub = {_plain(x).lower() for x in names}
+    for label, rec in (ctx.get("records") or {}).items():
+        if isinstance(rec, dict) and _plain(rec.get("rubrica")).lower() in rub and _plain(rec.get("rubrica")):
+            return str(label).partition(" ")[2], "rubrica"
+    for name in names:
+        refs = citations.article_refs(name)
+        if refs:
+            return str(refs[0][1]), "citazione"
+        m = re.search(r"\b(?:l\.|d\.\s*lgs\.|d\.\s*l\.|d\.\s*p\.\s*r\.)\s*(?:n\.\s*)?\d{1,4}\s*/\s*(?:19|20)\d{2}",
+                      name, re.IGNORECASE)
+        if m and corpus_laws.cited(m.group(0))[0]:
+            return m.group(0), "citazione"
+    return "", ""
+
+
+def law_in_archive(law: str, known: Optional[Sequence[str]] = None) -> Optional[bool]:
+    """v79.14.1 (item 2): the law is in the archive -- one of its archive names (data/corpus_expected.json, or a
+    data/special_laws.json entry of the same number and year) among the graph's primary document names; None when the
+    names are unknown (the graph not read)."""
+    from . import corpus_laws, special_laws
+    names = corpus_laws.names() if known is None else known
+    if names is None:
+        return None
+    if corpus_laws.present(law, names):
+        return True
+    key = corpus_laws.law_for(law) or law
+    if key != law and corpus_laws.present(key, names):
+        return True
+    m = re.search(r"(\d{1,4})\s*/\s*((?:19|20)\d{2})\b", str(law or ""))
+    r = None if m else re.search(r"\b((?:19|20)\d{2})\s*/\s*(\d{1,4})\b", str(law or ""))   # a regulation: «2016/679»
+    number, year = (m.group(1), m.group(2)) if m else ((r.group(2), r.group(1)) if r else ("", ""))
+    have = {corpus_laws.norm(n) for n in names}
+    for entry in special_laws.laws():
+        same = bool(number) and (str(entry.get("number") or ""), str(entry.get("year") or "")) == (number, year)
+        if not same:
+            continue
+        if special_laws.exact(entry):           # an exact entry by its archive names only
+            if have & set(special_laws._archive(entry) or []):
+                return True
+        elif any(entry["_code"].search(n) for n in have):       # the others by their expression on a name
+            return True
+    return False
+
+
+def corpus_gap(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.14.1 (item 2): the first first-read institution whose governing law (governing_law) is outside the codes and
+    missing from the archive (law_in_archive False) -- {materia, law, from}; {} when none. Each institution's reading
+    is kept in ctx["corpus_gap_log"] ({institution: {law, from, code, in_archive}}): a code institution never fires."""
+    log: Dict[str, Any] = {}
+    out: Dict[str, Any] = {}
+    for inst in ctx.get("institutions") or []:
+        name = (institution_names([inst]) or [""])[0]
+        if not name:
+            continue
+        law, how = governing_law(inst, ctx)
+        code = code_law(law)
+        present = law_in_archive(law) if law and not code else None
+        log[name] = {"law": law, "from": how, "code": code, "in_archive": present}
+        if not out and law and not code and present is False:
+            out = {"materia": name, "law": law, "from": how}
+    ctx["corpus_gap_log"] = log
+    return out
+
+
 def corpus_line(ctx: Dict[str, Any]) -> str:
-    """v79.12.5 (item 2): CORPUS_LINE (with its stop) when the first read found an institution that has no module
-    (read_families names none of institution_modules.json) and no record of the client's is of its family (article_families:
-    nothing graded in it); "" otherwise."""
+    """v79.12.5 (item 2): CORPUS_LINE (with its stop). v79.14.1 (item 2): only when a first-read institution's governing
+    law is outside the codes AND missing from the archive (corpus_gap) -- never for a code institution (legittima
+    difesa: art. 52 c.p.), never when the law is unknown or the graph's names are; the line names that institution.
+    "" otherwise."""
     if not institution_names(ctx.get("institutions") or []):
         return ""
-    families = read_families(ctx) or []
-    mod_ids = {str(m["id"]) for m in institution_modules().get("modules") or []}
-    if any(f in mod_ids for f in families):
-        return ""
-    fams = set(families)
-    if fams and any(set(article_families(x)) & fams for x, r in (ctx.get("records") or {}).items()
-                    if isinstance(r, dict) and not r.get("ranked_candidate") and not r.get("unprinted")):
-        return ""
-    return CORPUS_LINE.format(materia=action_subject(ctx)) + "."
+    gap = corpus_gap(ctx)
+    return CORPUS_LINE.format(materia=gap["materia"]) + "." if gap else ""
+
+
+_CORPUS_LINE_RE = re.compile(re.escape(CORPUS_LINE.split("{materia}")[0]) + r"(.+?)" +
+                             re.escape(CORPUS_LINE.split("{materia}")[1]))
+
+
+def corpus_line_on_code(text: str, ctx: Optional[Dict[str, Any]] = None) -> List[str]:
+    """v79.14.1 (item 2): the honesty lines of the text whose materia is a code institution (its governing law a code:
+    governing_law on the materia's own words, else on the first-read institution of that name) -- must be []."""
+    out = []
+    for m in _CORPUS_LINE_RE.finditer(text or ""):
+        materia = m.group(1).strip()
+        inst = next((x for x in (ctx or {}).get("institutions") or [] if materia in institution_names([x])), materia)
+        law, _ = governing_law(inst, ctx or {})
+        if code_law(law):
+            out.append(materia)
+    return out
 
 
 def no_claim_summary(ctx: Dict[str, Any], kind: str) -> str:
     """v79.12.5 (item 2): §1 with no admitted claim -- the honesty line naming the terms (expired), else CORPUS_LINE;
     "" when the missing-laws line is said (missing_laws_line: it names the laws the corpus lacks and already says the
-    parere is limited to the code -- the two never both)."""
+    parere is limited to the code -- the two never both). v79.14.1 (item 2): CORPUS_LINE only when corpus_line fires
+    (the governing law outside the codes and missing from the archive); else NO_CLAIM_SUMMARY -- the norms read on the
+    institution give the client no line to propose (the reasons are §6's)."""
     if kind == "expired":
         return str(ctx.get("no_action") or "").rstrip(".") + "."
     if missing_laws_line(ctx):
         return ""
-    return CORPUS_LINE.format(materia=action_subject(ctx)) + "."
+    return corpus_line(ctx) or NO_CLAIM_SUMMARY.format(materia=action_subject(ctx),
+                                                       client=ctx.get("client") or "la parte assistita")
 
 
 def no_claim_solutions(ctx: Dict[str, Any], kind: str) -> str:
@@ -3166,12 +3319,36 @@ def _module_signal(mods: Sequence[Dict[str, Any]], ctx: Dict[str, Any]) -> Tuple
     readers = (("istituto", by_institution),
                ("parole dell'utente", lambda m: module_hit(m, case, context=False) if case else []),
                ("articolo", lambda m: named_module_articles(m, case)))
+    act = module_act(ctx)
     for signal, read in readers:
         hit = [(m, words) for m, words in ((m, read(m)) for m in mods) if words]
         hit = [(m, w) for m, w in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
+        # v79.14.1 (item 3): the amministrativo module only with an administrative act against the client -- a module
+        # article the request names aside (the user's own naming); a refusal recorded (modules_refused_no_act)
+        refused = [m for m, _ in hit if not act and signal != "articolo" and str(m.get("id")) in act_modules()]
+        if refused:
+            seen = ctx.setdefault("modules_refused_no_act", [])
+            seen += [str(m["id"]) for m in refused if str(m["id"]) not in seen]
+            hit = [(m, w) for m, w in hit if m not in refused]
         if hit:
             return signal, hit
     return "", []
+
+
+def act_modules() -> List[str]:
+    """v79.14.1 (item 3): the modules that need the administrative act (data/administrative_act.json «modules»)."""
+    from . import family_gate
+    return list(family_gate.act_table()["modules"])
+
+
+def module_act(ctx: Dict[str, Any]) -> List[str]:
+    """v79.14.1 (item 3): the administrative act against the client in the case's words or the first read's institution
+    names (family_gate.administrative_act), once per ctx (ctx["admin_act_words"])."""
+    if "admin_act_words" not in ctx:
+        from . import family_gate
+        ctx["admin_act_words"] = family_gate.administrative_act(family_gate.act_text(ctx.get("case") or "",
+                                                                                      ctx.get("institutions") or []))
+    return list(ctx["admin_act_words"])
 
 
 def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -4336,10 +4513,16 @@ def excluded_theses(sols: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [t for t in sols if t.get("barred") or t.get("unverifiable")]
 
 
-def objections_material(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, sub: Optional[int]) -> str:
+def objections_material(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, sub: Optional[int],
+                        party: Optional[Dict[str, Any]] = None) -> str:
+    """The objections call's material; v79.14.1 (item 6): the POSIZIONE is the objection_party's (the frame's client
+    and role under CASE_FRAME)."""
     a = ctx.get("assessment") or {}
+    party = party or _party_of(ctx)
+    where = posture_text({**(ctx.get("posture") or {}), "role": party.get("role") or ""}) if party.get("frame") else \
+        ctx.get("posture_text")
     out = [f"CASO:\n{ctx.get('case') or ''}",
-           f"POSIZIONE: {ctx.get('client') or 'la parte assistita'}, {ctx.get('posture_text') or 'non indicata'}",
+           f"POSIZIONE: {party.get('client') or ctx.get('client') or 'la parte assistita'}, {where or 'non indicata'}",
            f"SCHEDE:\n{records_block(ctx.get('records') or {}, ctx.get('circumstances')) or '(nessuna)'}",
            "VALUTAZIONE DAL REGISTRO: " + f"esito probabile {a.get('esito')}; grado di certezza {a.get('grado')}; "
            f"obiettivo realistico {a.get('obiettivo')} ({a.get('why')})",
@@ -4510,17 +4693,30 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     """v73: the objections written for the selected line -- one call after the selection (selection(): compose's own),
     given the main line, the subordinate and the barred list; an answer that argues a barred thesis (same_line) is
     dropped, logged. The plan with them as its «obiezioni» (none when the call fails: compose's fallbacks then, the
-    record's and the selection's). Timed into ctx["timings"]["objections_s"], logged into the thesis log."""
+    record's and the selection's). Timed into ctx["timings"]["objections_s"], logged into the thesis log. v79.14.1
+    (item 6): with every element of the main record «da provare» (strongest_open) the same call is asked for ONE
+    objection on the strongest element (OBJECTIONS_ONE, STRONGEST_LINE), grounded in the record or the article, or
+    none; the first objection of the reply on that element (on_element) is kept alone, into ctx["objection_all_open"]
+    (compose then prints it only when the grounded-rule check removes nothing of it, and never adds a fallback)."""
     from langchain_core.messages import HumanMessage, SystemMessage
     from .llm_reply import parse_json_reply
     sols, main, sub = selection(ctx, plan)
     if sols[main].get("placeholder"):   # v79.12.5 (item 2): no line to object to (no_claim, or the step-aside)
         return plan
-    penal = criminal(ctx.get("posture"))                          # v79 (E2)
-    system = OBJECTIONS_SYSTEM.format(who="l'accusa" if penal else "la controparte")
+    party = _party_of(ctx)              # v79.14.1 (item 6): the frame's client and role under CASE_FRAME
+    who = OBJECTOR[party["side"]]       # v79 (E2): «l'accusa» in a criminal matter; the defence for a victim client
+    system = OBJECTIONS_SYSTEM.format(who=who)
+    # v79.14.1 (item 6): every element of the main record «da provare» -- the same call asks for ONE objection, on the
+    # strongest element (strongest_open), grounded in the record's elements or the article, or none
+    strong = strongest_open(ctx, sols, main)
+    material = objections_material(ctx, sols, main, sub, party)
+    if strong:
+        system = system.replace(OBJECTIONS_THREE.format(who=who), OBJECTIONS_ONE.format(who=who))
+        material += "\n\n" + STRONGEST_LINE.format(id=strong["id"], el=strong["text"], art=strong["article"],
+                                                    why=STRONGEST_WHY[strong["why"]])
     rules = writer_rules_text(ctx.get("rito") or "", ctx.get("areas") or ())
     messages = [SystemMessage(content=system + ("\n\n" + rules if rules else "")),
-                HumanMessage(content=objections_material(ctx, sols, main, sub))]
+                HumanMessage(content=material)]
     t0 = time.time()
     raw: Any = {}
     text, error = "", ""
@@ -4546,11 +4742,16 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     replies = bind_replies(kept, sols[main], elements_by_id(ctx.get("records") or {}, ctx.get("circumstances")),
                            review_call)                    # v75b: no reply negates past the main line's «contesta»
     causation_replies(ctx, kept)                            # v79.12.7 (item 5): the subjective element, not the nexus
+    if strong:          # v79.14.1 (item 6): the model's first objection on the strongest element, alone; else none
+        pick = next((o for o in kept if on_element(f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", strong)),
+                    None)
+        ctx["objection_all_open"] = {**strong, "written": bool(pick), "offered": len(kept)}
+        kept = [pick] if pick else []
     seconds = round(time.time() - t0, 1)
     ctx.setdefault("timings", {})["objections_s"] = seconds
     entry = {"main": sols[main]["tesi"], "subordinate": sols[sub]["tesi"] if sub is not None else "",
              "barred": [t["tesi"] for t in excluded], "kept": len(kept), "dropped": dropped, "seconds": seconds,
-             "error": error, "reply_binding": replies}
+             "error": error, "reply_binding": replies, "all_open": dict(ctx.get("objection_all_open") or {})}
     objections_log(ctx, messages, text, raw, entry)
     _log("objections", entry, seconds * 1000)
     return {**plan, "obiezioni": [{"obiezione": o["obiezione"], "risposta": o.get("risposta") or ""}
@@ -5355,12 +5556,166 @@ OBJ_OPEN = {"penale": ("L'accusa cercherà di provare l'elemento «{el}»",
                        "Il caso non lo dice: la prova spetta a chi lo afferma (art. 2697 c.c.).")}
 OBJ_DENIED = ("La controparte negherà l'elemento «{el}»", "Va provato: {missing}.")
 
+# --- v79.14.1 (item 6): every element «da provare» -- one model-written objection on the strongest element, or none ----
+ALL_OPEN_PREFIX = "Tutti gli elementi sono ancora da provare"
+ALL_OPEN_ONE = "Tutti gli elementi sono ancora da provare: l'obiezione più forte {who} riguarda l'elemento «{el}»."
+ALL_OPEN_NONE = ("Tutti gli elementi sono ancora da provare: nessuna obiezione {who} trova oggi fondamento negli "
+                 "elementi della norma o negli atti.")                    # my drafts; both open with ALL_OPEN_PREFIX
+ALL_OPEN_WHO = {"penale": "dell'accusa", "civile": "della controparte",
+                "vittima": "della difesa dell'imputato",      # a penal client in VICTIM_ROLES: the defence objects
+                "ignoto": "dell'altra parte"}                 # the frame's verified role «sconosciuto»: neither side
+# who objects, in the objections call (OBJECTIONS_SYSTEM's {who}); the same keys as ALL_OPEN_WHO
+OBJECTOR = {"penale": "l'accusa", "civile": "la controparte", "vittima": "la difesa dell'imputato",
+            "ignoto": "l'altra parte"}
+# the call's sentence asking for three, and the one replacing it when every element is open (my draft)
+OBJECTIONS_THREE = "Scrivi le tre obiezioni più forti che {who} opporrà alla LINEA PRINCIPALE, ciascuna con la risposta."
+OBJECTIONS_ONE = ("Tutti gli elementi della norma principale sono da provare: scrivi UNA sola obiezione che {who} "
+                  "opporrà alla LINEA PRINCIPALE, sull'ELEMENTO PIÙ FORTE indicato, con la risposta. Ogni regola che "
+                  "enunci, nell'obiezione o nella risposta, deve leggersi negli elementi delle SCHEDE o nel testo "
+                  "dell'articolo; se nessuna obiezione è fondata così, rispondi {{\"obiezioni\": []}}.")
+STRONGEST_LINE = "ELEMENTO PIÙ FORTE: {id} «{el}» dell'art. {art} ({why})"
+STRONGEST_WHY = {"main_line": "l'elemento su cui si decide la linea principale",
+                 "facts": "l'elemento che i fatti narrati toccano di più",
+                 "distinctive": "l'elemento che distingue la fattispecie",
+                 "first": "il primo elemento della norma"}
+# a per-element «da provare» template (OBJ_DENIED, OBJ_OPEN, DEFENCE_WORDS["obj_open"])
+OPEN_TEMPLATE_RE = re.compile(r"\b(?:negherà|cercherà\s+di\s+provare)\s+l['’]elemento\s+«([^»\n]*)")
+
+
+def all_open(ctx: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    """v79.14.1 (item 6): (the main record's label, its live elements) when every one of them is «da provare» -- the
+    record of the assessment's article (the charge or the claim), at least one element; ("", []) otherwise."""
+    label = str((ctx.get("assessment") or {}).get("article") or "")
+    rec = (ctx.get("records") or {}).get(label) or {}
+    live = [r for r in _live(rec) if r.get("id")]
+    if not live or any((r.get("status") or DA_PROVARE) != DA_PROVARE for r in live):
+        return "", []
+    return label, live
+
+
+def strongest_open(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]] = (), main: Optional[int] = None
+                   ) -> Dict[str, str]:
+    """v79.14.1 (item 6): with every element of the main record «da provare» (all_open), the strongest one -- {id,
+    text, article, why}; {} otherwise. The pool: the elements of that record the selected main line contests, else
+    those it rests on, else every live one. The strongest in the pool: the only one the main line turns on
+    («main_line»); else the one the most narrated facts touch (its «supporting» sentences, one at least: «facts»); else
+    the record's distinctive element («distinctive»); else the first the main line turns on («main_line») or the
+    record's first («first»)."""
+    label, live = all_open(ctx)
+    if not live:
+        return {}
+    by_id = {str(r["id"]): r for r in live}
+    m = sols[main] if sols and main is not None and 0 <= main < len(sols) else {}
+    pool = [by_id[str(x)] for x in m.get("contesta") or [] if str(x) in by_id] or \
+        [by_id[str(x)] for x in m.get("poggia_su") or [] if str(x) in by_id]
+    from_line = bool(pool)
+    pool = list({id(r): r for r in pool}.values()) or live
+    facts = lambda r: len(r.get("supporting") or [])
+    best = max(pool, key=lambda r: (facts(r), bool(r.get("distinctive")), -pool.index(r)))
+    if from_line and len(pool) == 1:
+        why = "main_line"
+    elif facts(best):
+        why = "facts"
+    elif best.get("distinctive"):
+        why = "distinctive"
+    else:
+        why = "main_line" if from_line else "first"
+    return {"id": str(best["id"]), "text": _short(best.get("text"), 100), "article": label, "why": why}
+
+
+def on_element(text: str, strong: Dict[str, str]) -> bool:
+    """v79.14.1 (item 6): an objection (with its reply) is on the strongest element -- its id, or one of its own nouns
+    (issue_records.element_nouns)."""
+    from . import issue_records
+    if not strong:
+        return False
+    if re.search(rf"(?<![\w]){re.escape(strong['id'])}(?![\w])", text or ""):
+        return True
+    return bool(issue_records.element_nouns(strong.get("text") or "") & issue_records.element_nouns(text or ""))
+
+
+def objection_party(state: Optional[Dict[str, Any]], client: str, posture: Optional[Dict[str, Any]]
+                    ) -> Dict[str, Any]:
+    """v79.14.1 (item 6): for whom the objections are written -- {client, role, side, frame}. The method's client and
+    the posture's role; with CASE_FRAME on and a verified frame held (case_frame.held), the frame's client and role:
+    for the frame's own client (or the only client when the frame holds none; never a client of a multi-client answer
+    when the frame binds no client) the frame's verified role, a different
+    posture role logged frame_conflict («objections_plan») and losing; with one client only (no state["method_roles"])
+    a client other than the frame's is logged the same way and the frame's client written for. Another client of a
+    multi-client answer keeps its own (role_for_client's) role. «side» (objection_side): ALL_OPEN_WHO's and OBJECTOR's
+    key."""
+    posture = posture or {}
+    out = {"client": str(client or ""), "role": str(posture.get("role") or ""), "frame": False}
+    out["side"] = objection_side(posture, out["role"])
+    from . import case_frame
+    if not isinstance(state, dict) or case_frame.held(state) is None:
+        return out
+    f_client = case_frame.bound(state, "cliente") or ""
+    f_role = case_frame.bound(state, "ruolo") or ""
+    several = bool(state.get("method_roles"))
+    if several and not (f_client and out["client"] and case_frame.same_value("cliente", out["client"], f_client)):
+        return out          # another client, or a frame binding no client: its own role (role_for_client's), unlogged
+    if f_client and out["client"] and not case_frame.same_value("cliente", out["client"], f_client):
+        case_frame.conflict(state, "cliente", "objections_plan", out["client"], f_client)
+    if f_client:
+        out["client"] = f_client
+    if f_role:
+        if out["role"] and out["role"] != f_role:
+            case_frame.conflict(state, "ruolo", "objections_plan", out["role"], f_role)
+        out["role"] = f_role
+    out["frame"] = True
+    out["side"] = "ignoto" if case_frame.role_unknown_held(state) else objection_side(posture, out["role"])
+    return out
+
+
+def objection_side(posture: Optional[Dict[str, Any]], role: str = "") -> str:
+    """v79.14.1 (item 6): who objects to the client's main line (ALL_OPEN_WHO's and OBJECTOR's key): «vittima» a penal
+    client in VICTIM_ROLES (the imputato's defence), «penale» another penal client (the accusa), «civile» the
+    controparte (_other_side's reading)."""
+    if not criminal(posture):
+        return "civile"
+    return "vittima" if str(role or (posture or {}).get("role") or "") in VICTIM_ROLES else "penale"
+
+
+def _party_of(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """The ctx's objection_party (prepare's), else the method's client and the posture's role (a ctx built by hand)."""
+    got = ctx.get("objection_party")
+    return got if isinstance(got, dict) and got.get("side") else objection_party(None, ctx.get("client") or "",
+                                                                                 ctx.get("posture"))
+
+
+def all_open_section(strong: Dict[str, str], objection: Optional[Dict[str, str]], penal: Any) -> str:
+    """v79.14.1 (item 6): §7 with every element open -- the one objection, said on which element, or the line saying
+    none is grounded; never the per-element template. «penal»: the objecting side's key (objection_side), or a bool."""
+    side = penal if isinstance(penal, str) and penal in ALL_OPEN_WHO else ("penale" if penal else "civile")
+    who = ALL_OPEN_WHO[side]
+    if not objection:
+        return ALL_OPEN_NONE.format(who=who)
+    return ALL_OPEN_ONE.format(who=who, el=strong["text"]) + "\n\n" + objections_section({"obiezioni": [objection]})
+
+
+def template_repeats(answer: str) -> int:
+    """v79.14.1 (item 6): the per-element «da provare» templates repeated in each «Obiezioni e risposte» (each client's
+    part on its own) -- every one where §7 is the all-open layout (ALL_OPEN_PREFIX: one model-written objection or
+    none, never the template), and elsewhere (a mixed record: each open element its own objection) the same element's
+    template printed again: must be 0."""
+    n = 0
+    for t, body in answer_sections(answer or ""):
+        if t != title("obiezioni"):
+            continue
+        for part in re.split(r"(?m)^\*\*Nell'interesse di [^*\n]+\*\*\s*$", body):
+            found = [" ".join(x.lower().split()) for x in OPEN_TEMPLATE_RE.findall(part)]
+            n += len(found) if ALL_OPEN_PREFIX in part else len(found) - len(set(found))
+    return n
+
 
 def objections_fallback(records: Dict[str, Dict[str, Any]], a: Dict[str, Any], penal: bool,
                         by_id: Dict[str, Dict[str, Any]], titles_: Sequence[str] = ()) -> List[Dict[str, str]]:
     """Objections from the record when the method plan gives fewer than three: defending, the main charge's proven
     elements (conceded, answered on qualification and pena) and its open ones (the burden); claiming, the client's
-    open elements (the proof to acquire); then our objections' titles."""
+    open elements (the proof to acquire); then our objections' titles. v79.14.1 (item 6, review): used only when some
+    element is proven -- with every element open compose prints all_open_section instead, so each open element of a
+    mixed record keeps its own objection (79.14.0's)."""
     out = []
     label = a.get("article") or ""
     rec = (records or {}).get(label) or {}
@@ -6190,8 +6545,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         arg = t.get("argomento") or ""
         t["argomento"] = planned(tracked("coherence", arg, coherent_text(arg, records, a, coherence)), code)
     sub = subordinate_of(sols, main)        # v72: the subordinate line, the summary, the conclusions and the next steps
+    strong = {} if kind else strongest_open(ctx, sols, main)       # v79.14.1 (item 6): every element open
     objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
     for o in plan.get("obiezioni") or []:
+        rules_before = len(rules_log)       # v79.14.1 (item 6): the rule check removed nothing of it -- grounded
         said = planned(o.get("obiezione") or "")
         if not said:
             articles_log.append(_removed_note(o))
@@ -6204,7 +6561,20 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             objections_dropped.append(_removed_note({"obiezione": said}, "reply"))      # the fallback fills §7
             tracked("objections", said, "")
             continue
-        objections_reviewed.append({**o, "obiezione": said, "risposta": answered})
+        objections_reviewed.append({**o, "obiezione": said, "risposta": answered,
+                                    "_grounded": len(rules_log) == rules_before})
+    all_open_pick: Optional[Dict[str, str]] = None
+    if strong:      # v79.14.1 (item 6): one objection -- the model's first grounded one on the strongest element -- or none
+        all_open_pick = next(({"obiezione": o["obiezione"], "risposta": o.get("risposta") or ""}
+                              for o in objections_reviewed if o["_grounded"] and on_element(
+                                  f"{o['obiezione']} {o.get('risposta') or ''}", strong)), None)
+        log["objections_all_open"] = {**strong, "printed": bool(all_open_pick),
+                                      "offered": len(plan.get("obiezioni") or []),
+                                      "ungrounded": sum(1 for o in objections_reviewed if not o["_grounded"])}
+        objections_reviewed = [all_open_pick] if all_open_pick else []
+    objections_reviewed = [{k: v for k, v in o.items() if k != "_grounded"} for o in objections_reviewed]
+    ctx["objection_grounded"] = int(bool(strong) and all_open_pick is not None)
+    ctx["objection_none"] = int(bool(strong) and all_open_pick is None)
     plan = {**plan, "subordinata": sols[sub]["tesi"] if sub is not None else "",      # are the selection's -- never
             "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
             "obiezioni": objections_reviewed,
@@ -6217,10 +6587,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         if steps:
             conclusions.append(steps)
     # v79.6 (item 1): the quesiti are answered first, in «Risposte ai quesiti» -- §9 no longer appends them
-    fallback_objections = [] if kind else \
+    fallback_objections = [] if kind or strong else \
         list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
-                              "fallback": max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
+                              "fallback": 0 if strong else max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
     # v79.12.5 (item 2): the corpus line in §1 -- with no admitted claim (no_claim_summary), else wherever the first
@@ -6231,6 +6601,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         general)
     log["corpus_line"] = CORPUS_LINE.split(" su ")[0] in summary
     ctx["corpus_line"] = log["corpus_line"]
+    # v79.14.1 (item 2): each institution's governing law as the line read it; the line on a code institution (must be 0)
+    log["corpus_gap"] = dict(ctx.get("corpus_gap_log") or {})
+    ctx["corpus_line_code"] = len(corpus_line_on_code(summary, ctx))
     summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
                                        missing_laws_line(ctx)) if x)                             # v79.9 (B2)
     keyed = [
@@ -6245,7 +6618,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("soluzioni", no_claim_solutions(ctx, kind) if kind else solutions_section(
             sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
-        ("obiezioni", NO_CLAIM_OBJECTIONS if kind else objections_section(plan, fallback_objections)),
+        ("obiezioni", NO_CLAIM_OBJECTIONS if kind else all_open_section(strong, all_open_pick,
+            _party_of(ctx)["side"]) if strong else objections_section(plan, fallback_objections)),     # v79.14.1 (item 6)
         ("processuali", procedure),
         # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
         ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
@@ -6621,6 +6995,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
            "notes": notes,
            "posture_text": posture_text(posture or {}), "records": every, "circumstances": circ,
+           "objection_party": objection_party(state, client, posture),   # v79.14.1 (item 6): the frame's under CASE_FRAME
            "facts": facts, "assessment": a, "riti": riti,
            "rites": rites, "riti_precluded": riti_out,                        # v79.10.3 (C1)
            "subsumption": subsumption_section(records, order, by_id, circ, note),
@@ -6916,6 +7291,45 @@ def no_claim_layout(solutions: str) -> bool:
     return NO_CLAIM_HEAD.split(":")[0] in (solutions or "")
 
 
+# --- v79.14.1 (item 8): the «requisiti provati N su M» count never in prose, on any path ------------------------------------
+# v79.14.1 (item 8, review): the count in any of its wordings -- «requisiti provati: 0 su 5», «requisiti provati 0/5»,
+# «i requisiti provati sono 0 su 5», «dei requisiti, provati 0 su 5», «risultano provati 0 requisiti su 5», «sono
+# provati 0 su 5 requisiti», «sono provati 2 dei 5 requisiti»; never §9's assessment reason («3 elementi su 5 dell'art.
+# 646 c.p. risultano provati; gli altri …»: the method's verdict on the named article, its order not a count's)
+COUNT_SENTENCE_RE = re.compile(
+    r"\b(?:requisiti|elementi)\b[^.;\n]{0,40}?\bprovati\s*(?:sono\s*)?:?\s*\d+\s*(?:su|/|di)\s*\d+|"
+    r"\bprovati\s*:?\s*\d+\s+(?:(?:su|dei|degli|di)\s+\d+\s+(?:requisiti|elementi)\b|(?:requisiti|elementi)\s+(?:su|di)\s+"
+    r"\d+)", re.IGNORECASE)
+_COUNT_PAREN_RE = re.compile(r"[ \t]*\(([^()\n]{0,100})\)")
+
+
+def count_out(text: str, log: Optional[List[str]] = None) -> str:
+    """v79.14.1 (item 8): the count «requisiti provati N su M» out of the prose -- a parenthetical one cut (the sentence
+    keeps its verdict: «Esito sui fatti del caso: da provare.»), a sentence still holding one removed; each into log."""
+    found = log if log is not None else []
+
+    def cut(m: "re.Match") -> str:
+        if not COUNT_SENTENCE_RE.search(m.group(1)):
+            return m.group(0)
+        found.append(m.group(0).strip())
+        return ""
+    out = _COUNT_PAREN_RE.sub(cut, text or "")
+    if not COUNT_SENTENCE_RE.search(out):
+        return out if found else (text or "")
+
+    def review(sentence: str) -> str:
+        if COUNT_SENTENCE_RE.search(sentence):
+            found.append(sentence.strip()[:160])
+            return ""
+        return sentence
+    return _by_sentence(out, review)
+
+
+def count_left(text: str) -> List[str]:
+    """v79.14.1 (item 8): the counts still in a text (must be none in a delivered answer)."""
+    return [m.group(0) for m in COUNT_SENTENCE_RE.finditer(text or "")]
+
+
 _CLIENT_LAYOUT_RE = re.compile(r"(?m)^\*\*Nell'interesse di [^*\n]+\*\*\s*$|^_Sezione comune a [^\n]+_\s*$")
 
 
@@ -6943,8 +7357,7 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
                                    for p in parts), f"more than {SUMMARY_LINES} sentences")
     sub = by.get(title("norme")) or ""
     check("subsumption_table", "| Elemento | Fatto che lo integra | Esito |" in sub, "no element table")
-    check("no_count_sentence", not re.search(r"requisiti provati:?\s*\d+\s+su\s+\d+", answer or "", re.I),
-          "a «requisiti provati N su M» line")
+    check("no_count_sentence", not count_left(answer), "a «requisiti provati N su M» line")    # v79.14.1 (item 8)
     sol = by.get(title("soluzioni")) or ""
     con = by.get(title("conclusioni")) or ""
     if no_claim_layout(sol):    # v79.12.5 (item 2): no admitted claim -- no table, no line, no forecast, said so
@@ -6954,8 +7367,15 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
         check("solutions_table", "| Tesi | Pro | Contro | Realismo |" in sol, "no solutions table")
         check("stragiudiziale", "Opzione stragiudiziale:" in sol, "no stragiudiziale option in the strategy")
         obj = by.get(title("obiezioni")) or ""
-        check("three_objections", len(re.findall(r"(?m)^\*\*Obiezione \d+\.\*\*", obj)) >= OBJECTIONS,
-              "fewer than three objections")
+        if ALL_OPEN_PREFIX in obj:      # v79.14.1 (item 6): every element open -- one objection or none, no template
+            check("objections_all_open", not OPEN_TEMPLATE_RE.search(obj) and len(re.findall(
+                r"(?m)^\*\*Obiezione \d+\.\*\*", obj)) <= obj.count(ALL_OPEN_PREFIX),
+                "more than one objection, or the per-element template, with every element open")
+        else:
+            check("three_objections", len(re.findall(r"(?m)^\*\*Obiezione \d+\.\*\*", obj)) >= OBJECTIONS,
+                  "fewer than three objections")
+        check("objection_template_once", not template_repeats(answer), "the per-element «da provare» template "
+                                                                        "repeated")     # v79.14.1 (item 6)
         for line in ("**Esito probabile**", "**Grado di certezza**", "**Obiettivo realistico**"):
             check(f"conclusions:{line.strip('*')}", line in con, "missing")
         check("obiettivo_label", bool(re.search(

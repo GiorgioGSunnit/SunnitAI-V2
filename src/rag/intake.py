@@ -1404,6 +1404,21 @@ _RESIST_SELF_RE = re.compile(
     rf"\b(?:ho|abbiamo)\s+ricevut[oa]\s+(?:un|una|il|la|l['’])?\s*{_DEMAND_DOC}",
     re.IGNORECASE)
 _CLIENT_SUBJECT_RE = re.compile(r"\b(?:cliente|assistit[oa])\b", re.IGNORECASE)
+# v79.14.1 (item 1, review): the debtor's other wordings -- a demand's document or a writ obtained or brought «contro»
+# the client («ha ottenuto un decreto ingiuntivo contro Tizio»), served on «gli / le» (the client the clause does not
+# name as its subject: «Beta gli ha notificato un atto di citazione»), a party other than the client demanding a
+# payment of no one named («Beta pretende ora il pagamento della penale»: the demand's recipient is the client)
+_SUIT_DOC = rf"(?:{_DEMAND_DOC}|(?:atto\s+di\s+)?citazione|ricorso\s+(?:per\s+decreto\s+ingiuntivo|monitorio))"
+_RESIST_AGAINST = rf"\b{_SUIT_DOC}[^.;]{{{{0,40}}}}?\bcontro\s+{{ref}}\b"
+_RESIST_PRONOUN_RE = re.compile(
+    r"\b(?:gli|le)\s+(?:(?:ha|hanno|aveva|avevano)\s+)?(?:notificat\w*|notific\w+|intimat\w*|chiest[oa]|richiest[oa]|"
+    rf"chied\w*|richied\w*|pretend\w*|intim\w*|inviat\w*|mandat\w*|spedit\w*)\b[^.;]{{0,30}}?(?:{_SUIT_DOC}|{_DEMAND_OBJECT})",
+    re.IGNORECASE)
+_THIRD_DEMAND_RE = re.compile(rf"\b{_DEMAND_VERB}\b(?:\s+\w+){{0,2}}?\s+{_DEMAND_OBJECT}", re.IGNORECASE)
+_IF_HEAD_RE = re.compile(r"\b(?:se|qualora|ove|laddove|nel\s+caso\s+(?:in\s+cui|che)|casomai)\b|\w+(?:esse|asse|isse|essero|"
+                         r"assero|issero)\b", re.IGNORECASE)
+_DEMAND_RECIPIENT_RE = re.compile(r"\b(?:a|al|alla|all['’]|ai|alle|da|dal|dalla|dai|dalle|verso|nei\s+confronti\s+di)\s*"
+                                  r"(?:[A-ZÀ-Ü][\w'’-]+|(?:la|il|lo|l['’])\s*\w+)")
 _RESIST_ROLE_RE = re.compile(r"\b(?:difensore|legale|avvocat[oa]|assist(?:o|iamo|i))\s+(?:del|della|dell['’]|il|la|l['’])\s*"
                              r"(?:debitor[ei]|debitrice|destinatari[oa]|ingiunt[oa]|intimat[oa])\b", re.IGNORECASE)
 _ECCEPIRE_RE = re.compile(r"\becce(?:pire|pisc\w*|pit\w*|piamo)\b|\bquali\s+eccezioni\b", re.IGNORECASE)
@@ -1461,10 +1476,44 @@ def resisting(text: str, name: str = "") -> str:
     m = _actual(_RESIST_ROLE_RE, text)
     if m:
         return _flat(m.group(0))[:100]
+    got = _resist_other_wordings(text, name)
+    if got:
+        return got
     for sentence in sentences(ask_part(text)):          # the client's «eccepire» -- never another party's
         m = _ECCEPIRE_RE.search(sentence)
         if m and _eccepire_is_clients(sentence, name):
             return _flat(m.group(0))[:100]
+    return ""
+
+
+def _resist_other_wordings(text: str, name: str = "") -> str:
+    """v79.14.1 (item 1, review): the debtor's other wordings (_RESIST_AGAINST, _RESIST_PRONOUN_RE, _THIRD_DEMAND_RE),
+    each actual (never hypothetical), in the clause of a party other than the client; the last two only with the
+    client named and no claim of its own in the text (_CLAIM_RE, _TASK_CLAIM_RE: «quali azioni può intraprendere»);
+    "" with none."""
+    for ref in _client_refs(name):
+        m = re.search(_RESIST_AGAINST.format(ref=ref), text, re.IGNORECASE)
+        if m and not hypothetical(text, m.start(), m.end()):
+            return _flat(m.group(0))[:100]
+    blanked = _company_blanked(text)
+
+    def head(m: "re.Match") -> str:
+        stops = [x.end() for x in _CLAUSE_STOP_RE.finditer(blanked, 0, m.start())]
+        return blanked[stops[-1] if stops else 0:m.start()]
+    if not name or _CLAIM_RE.search(text) or _TASK_CLAIM_RE.search(text):
+        return ""       # no client named (79.12.5: the task decides), or the client's own claim: the demand alone decides nothing
+
+    def unreal(m: "re.Match") -> bool:                      # a future, a hypothesis, «se Beta pretendesse …»
+        return hypothetical(blanked, m.start(), m.end()) or bool(_IF_HEAD_RE.search(head(m) + " " + m.group(0)))
+    for m in _RESIST_PRONOUN_RE.finditer(blanked):          # «Beta gli ha notificato …»: the clause's subject not the client
+        if not unreal(m) and _threat_subjects(head(m), name):
+            return _flat(text[m.start():m.end()])[:100]
+    for m in _THIRD_DEMAND_RE.finditer(blanked):            # «Beta pretende il pagamento …»: of no one named
+        stops = [x.start() for x in _CLAUSE_STOP_RE.finditer(blanked, m.end())]
+        rest = blanked[m.end():stops[0] if stops else len(blanked)]
+        if unreal(m) or _DEMAND_RECIPIENT_RE.search(rest) or not _threat_subjects(head(m), name):
+            continue
+        return _flat(text[m.start():m.end()])[:100]
     return ""
 
 
@@ -1577,9 +1626,19 @@ def party_threat(text: str, name: str = "") -> Tuple[str, List[Tuple[int, int]]]
     """v79.12.5 (item 6, row 54): (the words, their spans) of «agire / citare in giudizio» (and the like) whose subject
     is a named party demanding something of the client (_demanding) -- that party's threat against the client, never the
     client's claim; ("", []) with none."""
+    words, spans, _ = _party_threats(text, name)
+    return words, spans
+
+
+def threat_parties(text: str, name: str = "") -> List[str]:
+    """v79.14.1 (item 1): the parties whose threat party_threat reads -- the demanding side, never the client's."""
+    return _party_threats(text, name)[2]
+
+
+def _party_threats(text: str, name: str = "") -> Tuple[str, List[Tuple[int, int]], List[str]]:
     text = text or ""
     blanked = _company_blanked(text)        # review: «Beta S.p.A. pretende …» -- the form's dots end no clause
-    words, spans = "", []
+    words, spans, parties = "", [], []
     for m in _THREAT_ACT_RE.finditer(blanked):
         stops = [x.end() for x in _CLAUSE_STOP_RE.finditer(blanked, 0, m.start())]
         start = stops[-1] if stops else 0
@@ -1588,7 +1647,9 @@ def party_threat(text: str, name: str = "") -> Tuple[str, List[Tuple[int, int]]]
         if party:
             spans.append((start, m.end()))
             words = words or _flat(text[start:m.end()])[:100]
-    return words, spans
+            if party not in parties:
+                parties.append(party)
+    return words, spans, parties
 
 
 def task_side(text: str) -> str:
@@ -1922,7 +1983,9 @@ def _resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Opti
     """The intake with its default role and rito filled as the existing logic reads them once the case is analysed: the
     rito from the frame's area (interactive_flow.frame_families), the role from the client's side
     (fact_signals.client_side: accused -> imputato in penale, convenuto otherwise; victim -> persona_offesa in penale,
-    attore otherwise). Confidence stays default; a rule's or the model's value is never changed."""
+    attore otherwise). Confidence stays default; a rule's value is never changed. v79.14.1 (item 1): a model's or a
+    default's «attore» on a civil case showing the client resisting a demand is the «convenuto» here (v79.10.2 B1's
+    reading, moved from posture.of) -- the method's role is this resolved role (role_why says why)."""
     if not result:
         return result
     from . import fact_signals, interactive_flow
@@ -1956,4 +2019,15 @@ def _resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Opti
             out["role"], out["role_reading"] = role, reading
             out["role_why"] = why
             out["confidence"]["role"] = DEFAULT
+    if out.get("role") == "attore" and out["confidence"].get("role") != RULE:
+        # v79.14.1 (item 1): the posture's v79.10.2 (B1) reading moved here, so the method's role is this one -- a
+        # model's or a default's «attore» on a civil case that shows the client resisting a demand is the defending role
+        from . import interactive_flow, posture
+        if posture.family(str(out.get("rito") or "")) == "civile":
+            case = str((analysis or {}).get(interactive_flow.CASE_KEY) or "")
+            resist = out.get("resisting") or resisting(case, str((out.get("client") or {}).get("name") or ""))
+            if resist:
+                out["role"], out["resisting"] = "convenuto", resist
+                out["client"] = {**(out.get("client") or {}), "side": "accused"}
+                out["role_why"] = RESIST_WHY.format(words=resist)
     return out

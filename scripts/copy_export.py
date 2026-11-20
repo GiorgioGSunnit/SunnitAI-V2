@@ -67,7 +67,12 @@ EXTRA = (
                                                 "(v79.12.4, voce 7; v79.12.5, voce 2: le dieci sezioni restano)"),
     # v79.12.5 (item 2): no admitted claim -- the ten sections kept
     ("lawyer_method", "CORPUS_LINE", "Metodo, «Sintesi»: nessuna domanda ammessa, o un istituto senza modulo né norme "
-                                     "lette della sua famiglia (le parole del PO, v79.12.5, voce 2)"),
+                                     "lette della sua famiglia (le parole del PO, v79.12.5, voce 2); v79.14.1 (voce 2): "
+                                     "solo quando la legge che regola l'istituto è fuori dai codici e manca "
+                                     "dall'archivio (data/institution_laws.json), mai per un istituto del codice"),
+    ("lawyer_method", "NO_CLAIM_SUMMARY", "Metodo, «Sintesi»: nessuna domanda ammessa su un istituto del codice o la cui "
+                                          "legge è nell'archivio -- le norme lette non offrono una linea (v79.14.1, "
+                                          "voce 2)"),
     ("lawyer_method", "NO_CLAIM_HEAD", "Metodo, «Soluzioni a confronto»: nessuna linea e nessuna previsione, senza "
                                        "domanda ammessa (v79.12.5, voce 2)"),
     ("lawyer_method", "NO_CLAIM_EXPIRED_WHY", "Metodo, «Soluzioni a confronto»: il perché, ogni domanda preclusa da un "
@@ -79,6 +84,16 @@ EXTRA = (
                                               "linea al cliente (v79.12.5, voce 2)"),
     ("lawyer_method", "NO_CLAIM_QUESTION", "Metodo, «Questione giuridica»: senza domanda ammessa (v79.12.5, voce 2)"),
     ("lawyer_method", "NO_CLAIM_OBJECTIONS", "Metodo, «Obiezioni e risposte»: senza linea proposta (v79.12.5, voce 2)"),
+    # v79.14.1 (item 6): every element of the main record «da provare» -- one objection on the strongest, or none
+    ("lawyer_method", "ALL_OPEN_ONE", "Metodo, «Obiezioni e risposte»: tutti gli elementi da provare, l'unica obiezione "
+                                      "sull'elemento più forte (v79.14.1, voce 6)"),
+    ("lawyer_method", "ALL_OPEN_NONE", "Metodo, «Obiezioni e risposte»: tutti gli elementi da provare, nessuna obiezione "
+                                       "fondata (v79.14.1, voce 6)"),
+    ("lawyer_method", "ALL_OPEN_WHO", "Metodo, «Obiezioni e risposte»: chi obietta, tutti gli elementi da provare "
+                                      "(v79.14.1, voce 6: per il ruolo del cliente; «ignoto» il ruolo «sconosciuto» "
+                                      "del quadro del caso)"),
+    ("lawyer_method", "OBJECTOR", "Metodo, la chiamata delle obiezioni: chi obietta alla linea principale, per il ruolo "
+                                  "del cliente (v79.14.1, voce 6)"),
     ("lawyer_method", "NO_CLAIM_CONCLUSION", "Metodo, «Conclusioni»: senza linea né previsione (v79.12.5, voce 2)"),
     ("lawyer_method", "MISSING_LAWS_LINE", "Metodo, «Sintesi» e «Conclusioni»: la disciplina speciale assente "
      "dall'archivio (le parole del PO, v79.9)"),

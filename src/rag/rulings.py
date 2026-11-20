@@ -346,7 +346,8 @@ def element_noun_hit(sentence: str, element: Dict[str, Any]) -> bool:
 
 
 FILTERS = ("rubrica", "rank_demoted", "shortlist_cut", "length", "mid_reference", "rule_verb", "procedural",
-           "element_nouns", "penal_on_civil", "no_principle", "off_element", "unrelated")    # v79.7 (item 4); v79.8
+           "element_nouns", "penal_on_civil", "no_principle", "off_element", "unrelated",    # v79.7 (item 4); v79.8
+           "off_institution")                                                               # v79.14.1 (item 8)
 PRESELECT_PER_ARTICLE = 30      # v79.8: the rulings per article whose text is read before the shortlist
 _INSTITUTION_SKIP = {"azione", "azioni", "diritto", "diritti", "danno", "danni", "responsabilità", "obbligo", "obblighi",
                      "effetti", "contenuto", "nozione", "disposizioni"}
@@ -369,6 +370,100 @@ def names_institution(sentence: str, rubrica: str) -> bool:
     stems_ = {x for x in stems_ if len(x) >= 4}
     words = re.findall(r"[a-zàèéìòù]{4,}", (sentence or "").lower())
     return bool(stems_) and any(w.startswith(x) for x in stems_ for w in words)
+
+
+# --- v79.14.1 (item 8): §5's relevance -- a quoted passage names the record's institution ----------------------------------
+RELEVANCE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
+                              "ruling_relevance.json")
+
+
+@lru_cache(maxsize=1)
+def relevance_table() -> Dict[str, Any]:
+    """data/ruling_relevance.json -- {rubrica_stems_min, generic_stems, aliases: {label: [stem]}}; the defaults when
+    unreadable."""
+    try:
+        with open(RELEVANCE_FILE, encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("rulings: %s unreadable (%s) -- no aliases", RELEVANCE_FILE, exc)
+        got = {}
+    aliases = {str(k): [str(x).lower() for x in v or []] for k, v in (got.get("aliases") or {}).items()
+               if not str(k).startswith("_")}
+    return {"rubrica_stems_min": int(got.get("rubrica_stems_min") or 2), "aliases": aliases,
+            "generic": [str(x).lower() for x in got.get("generic_stems") or []]}
+
+
+# an elided article or preposition («dall'incapace», «dell'esercizio») is no content noun
+_ELIDED = {"dall", "dell", "nell", "sull", "all", "coll", "quell", "quest", "dalla", "della", "nella", "sulla"}
+
+
+def relevance_stem(word: str) -> str:
+    """v79.14.1 (item 8, review): a word's root for §5's relevance -- without its inflection (the final vowels) and its
+    «-zione / -sione / -mento» suffix, at most HEAD_STEM_CHARS letters: «estorsione» -> «estors», «diffamazione» ->
+    «diffama», «appropriazione» -> «appropri», «committenti» -> «committe»; a passage's «estorsiva», «diffamatoria»,
+    «committente» begin with it."""
+    w = re.sub(r"[aeiouàèéìòù]+$", "", (word or "").lower())
+    for suffix, keep in (("zion", ""), ("sion", "s"), ("ment", "")):
+        if w.endswith(suffix) and len(w) - len(suffix) + len(keep) >= 5:
+            w = w[:-len(suffix)] + keep
+            break
+    return w[:HEAD_STEM_CHARS]
+
+
+def institution_stems(rubrica: str) -> List[str]:
+    """The rubrica's content nouns as roots (relevance_stem), in its order -- its generic words, its elided articles
+    and a root inside another aside (four letters at least): the first is the institution's name («Appropriazione
+    indebita» -> [«appropri», «indebit»]); data/ruling_relevance.json «generic_stems» are kept out by
+    relevance_stems."""
+    out: List[str] = []
+    for w in re.findall(r"[a-zàèéìòù]{4,}", (rubrica or "").lower()):
+        if w in _RUBRICA_SKIP or w in _INSTITUTION_SKIP or w in _ELIDED:
+            continue
+        stem = relevance_stem(w)
+        if len(stem) < 4 or any(stem.startswith(x) or x.startswith(stem) for x in out):
+            continue                # «immobili … immobiliari»: one root, never two
+        out.append(stem)
+    return out
+
+
+def relevance_stems(rubrica: str) -> List[str]:
+    """institution_stems without data/ruling_relevance.json «generic_stems» -- the roots that name the institution
+    («Responsabilità per l'esercizio di attività pericolose» -> [«pericolo»]; «Danno cagionato da cosa in custodia»
+    -> [«custodi»]; «Usucapione dei beni immobili e dei diritti reali immobiliari» -> [«usucapio»])."""
+    generic = relevance_table()["generic"]
+    return [x for x in institution_stems(rubrica) if not any(x.startswith(g) or g.startswith(x) for g in generic)]
+
+
+def _cites_number(passage: str, label: str) -> bool:
+    num = str(label or "").strip().split(" ")[0]
+    m = re.match(r"^(\d+)(?:-([a-z]+))?$", num)
+    if not m:
+        return False
+    n = re.escape(m.group(1)) + (rf"(?:\s*-\s*|\s+|){re.escape(m.group(2))}" if m.group(2) else "")
+    return bool(re.search(rf"\bart(?:icol[oi]|t)?\.?\s*{n}(?![\w-])|(?<![\w/.-]){n}\s*(?:c\.\s?[pc]\.|cod\.|del\s+codice)",
+                          passage or "", re.IGNORECASE))
+
+
+def passage_names_institution(passage: str, label: str, rubrica: str) -> Optional[bool]:
+    """v79.14.1 (item 8): the passage's sentence names the record's institution (data/ruling_relevance.json) -- its
+    article by number («612-bis», «612 bis»), the rubrica's first non-generic root (relevance_stems: the institution's
+    name), rubrica_stems_min of its other non-generic roots each met by a different word, or one of the record's own
+    words (aliases: its other names, its defining element's nouns; «a b» needs both); None when there is nothing to
+    test it on (no root, no alias)."""
+    table = relevance_table()
+    aliases = table["aliases"].get(str(label or "").strip()) or []
+    stems_ = relevance_stems(rubrica)
+    if not stems_ and not aliases:
+        return None
+    words = re.findall(r"[a-zàèéìòù]{3,}", (passage or "").lower())
+    hit = lambda stem: any(w.startswith(stem) for w in words)
+    if _cites_number(passage, label) or any(all(hit(x) for x in a.split()) for a in aliases):
+        return True
+    if stems_ and hit(stems_[0]):
+        return True
+    met = {next((i for i, w in enumerate(words) if w.startswith(x)), None) for x in stems_}
+    met.discard(None)
+    return len(stems_) >= table["rubrica_stems_min"] and len(met) >= table["rubrica_stems_min"]
 
 
 def sentence_filter(sentence: str, elements: Sequence[Dict[str, Any]]) -> str:
@@ -1271,6 +1366,18 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                                                                      names_institution(r["passage"], rubrica))]
             log["articles"][k]["filters"]["penal_on_civil"] += len(off)
             graded[k] = [r for r in graded[k] if r not in off]
+    # v79.14.1 (item 8): a quoted passage that never names the record's institution (passage_names_institution) is no
+    # ruling on the record -- dropped with its ruling, from §5 and from the orientation; counted
+    irrelevant: List[Dict[str, str]] = []
+    for k in list(graded):
+        rubrica = str((records.get(k) or {}).get("rubrica") or "")
+        off = [r for r in graded[k] if r.get("passage") and passage_names_institution(r["passage"], k, rubrica) is False]
+        if off:
+            log["articles"][k]["filters"]["off_institution"] += len(off)
+            irrelevant += [{"article": k, "estremi": r.get("estremi") or "", "passage": str(r["passage"])[:160]}
+                           for r in off]
+            graded[k] = [r for r in graded[k] if r not in off]
+    log["passage_irrelevant_dropped"] = irrelevant
     kept = round_robin({k: sorted(graded[k], key=lambda r: (not r.get("passage"), _order_key(r)))[:PER_ARTICLE]
                         for k in records if k in graded}, PER_ANSWER)
     log["date_nd"] = sum(1 for r in kept if r.get("date") is None)     # v79.12.5 (item 9): printed «data n.d.»

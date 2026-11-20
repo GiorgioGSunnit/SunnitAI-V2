@@ -1008,7 +1008,11 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides),
                "modules_active": dict(fam_ctx.get("modules_active") or {}),        # v79.12.1: each with its signal
                # v79.12.5 (item 10): the counterparty's qualification -- professional, and the word that made it
-               "professional": bool(fam_ctx.get("professional")), "qualifier": str(fam_ctx.get("qualifier") or "")}
+               "professional": bool(fam_ctx.get("professional")), "qualifier": str(fam_ctx.get("qualifier") or ""),
+               # v79.14.1 (item 3): the administrative act against the client (its words) and the modules refused
+               # for lack of it
+               "admin_act": list(fam_ctx.get("admin_act_words") or []),
+               "modules_refused_no_act": list(fam_ctx.get("modules_refused_no_act") or [])}
         if special_overrides:
             _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
         # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
@@ -4817,15 +4821,19 @@ def status_sentence(label: str, rec: Dict[str, Any], state: Dict[str, Any], prov
     """v62: §2's one status sentence of an article -- none for an article whose requisites are not counted
     (issue_records.counted: c.p. Libro I, procedural, general, definitional); for a threat, the defence's reading
     (issue_records.threat_status), never «applicabile, N su N»; else the record's verdict and count (ARTICLE_STATUS)."""
-    from . import issue_records
+    from . import issue_records, lawyer_method
     reqs = rec.get("requisites") or []
     if not reqs or issue_records.applied(label, rec) or method_mode(state):     # v70: §4's table, never «N su M»
         return None
     if rec.get("side") == issue_records.THREAT:
         return issue_records.threat_status(rec, penal_posture(state))
+    verdict = rec.get("verdict") or issue_records.verdict(rec)
+    if lawyer_method.enabled():     # v79.14.1 (item 8): the method's other prose paths (the step-aside, a turn the
+        if isinstance(state, dict):     # method does not write) -- the verdict alone, never «N su M»; counted
+            state["count_sentences_source"] = int(state.get("count_sentences_source") or 0) + 1
+        return C.fill(C.ARTICLE_STATUS_VERDICT, verdict=verdict)
     count = proved if proved is not None else sum(1 for r in reqs if r.get("status") == PROVATO)
-    return C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec), proved=str(count),
-                  total=str(len(reqs)))
+    return C.fill(C.ARTICLE_STATUS, verdict=verdict, proved=str(count), total=str(len(reqs)))
 
 
 def threat_elements_rule(records: Dict[str, Dict[str, Any]], threats: Sequence[str]) -> str:
@@ -5589,6 +5597,23 @@ def _assumed_party(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[
     facts = _facts(analysis)
     dead = set(deceased(facts, case_text(state)))         # v60d: the deceased is never the client
     parties = [p for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name") and p["name"] not in dead]
+    try:                        # v79.14.1 (item 1): the intake's side first -- never the counterparty «a carico» when
+        _, side = intake_side(state, analysis)      # the intake reads the client as the claimant
+    except Exception:           # noqa: BLE001
+        side = ""
+    if side in ("accused", "victim"):
+        from . import intake as intake_mod
+        threatening = intake_mod.threat_parties(case_text(state), "")
+        sides = [(p, party_side(p, threatening)) for p in parties]
+        mine = [p for p, x in sides if x == side]
+        if mine:
+            return mine[0]
+        # never a party read on the other side: the old order among the others (a carico, controparte), else one with
+        # no side read, else none (the derived role, no party assumed)
+        parties = [p for p, x in sides if x not in ("accused", "victim")]
+        if len(parties) != len(sides):
+            return next((p for p in parties if _CHARGED_RE.search(str(p.get("role") or ""))), None) or \
+                (parties[0] if parties else None)
     return next((p for p in parties if _CHARGED_RE.search(str(p.get("role") or ""))), None) or \
         next((p for p in parties if _COUNTERPARTY_RE.search(str(p.get("role") or ""))), None)      # v60s (7)
 
@@ -5697,6 +5722,8 @@ def settle_framed(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[T
         would = (str((_assumed_party(state, analysis) or {}).get("name") or "") if asked else
                  (_client_name(analysis) if single_mode(state) else ""))
         others = case_frame.counterparty_names(case_frame.held(state))
+        if asked and not would:     # v79.14.1: item 1's assumption (the party on the role's side) found none -- the
+            would = _client_name(analysis)      # extraction's client is what would stand: refused if a controparte
         if would and any(case_frame.same_party(would, x) for x in others):
             # a party the frame lists as controparte is never the client -- neither assumed nor read from the facts
             case_frame.conflict(state, "cliente", "settle_client", would, "")
@@ -5757,6 +5784,207 @@ def framed_no_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> None:
         if isinstance(facts, dict) and facts.get("client_side"):
             facts["client_side"] = ""
     state["client"] = {"name": "", "how": case_frame.NO_CLIENT_HOW}
+
+
+PARTY_SIDES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
+                                "party_sides.json")
+_PARTY_SIDES: Dict[str, Any] = {}
+
+
+def party_side_words() -> Dict[str, List["re.Pattern"]]:
+    """v79.14.1 (item 1): data/party_sides.json compiled -- {accused: [rx], victim: [rx]}; empty when missing."""
+    if "d" not in _PARTY_SIDES:
+        try:
+            with open(PARTY_SIDES_FILE, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError) as exc:
+            logger.warning("interactive_flow: %s not read: %s", PARTY_SIDES_FILE, exc)
+            raw = {}
+        _PARTY_SIDES["d"] = {k: [re.compile(p, re.IGNORECASE) for p in raw.get(k) or []] for k in ("accused", "victim")}
+    return _PARTY_SIDES["d"]
+
+
+def party_side(party: Dict[str, Any], threatening: Sequence[str] = ()) -> str:
+    """v79.14.1 (item 1): a party's side -- accused | victim | terzo | "": a party threatening to sue while demanding
+    (intake.threat_parties) is the claiming side; else its role word's (intake.side_of: imputato, persona offesa,
+    attore, convenuto …), else data/party_sides.json's words (debitore, creditore …); "" when nothing says."""
+    name = _low(party.get("name"))
+    if name and any(_low(t) and (_low(t) in name or name in _low(t)) for t in threatening or ()):
+        return "victim"
+    side = _party_side(party)
+    if side:
+        return side
+    role = str(party.get("role") or "")
+    hits = [k for k, rxs in party_side_words().items() if any(rx.search(role) for rx in rxs)]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _parties_live(state: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    facts = _facts(analysis)
+    dead = set(deceased(facts, case_text(state)))
+    return [p for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name") and p["name"] not in dead]
+
+
+def intake_side(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str, str]:
+    """v79.14.1 (item 1): (the intake's resolved role, its side) -- derived_role (the intake's, else resolve's from the
+    analysis); ("", "") when none. v79.14.1: under the frame (CASE_FRAME) its verified role -- a verified «sconosciuto»
+    reads no side (the honesty line: neither side's wording)."""
+    from . import case_frame, intake as intake_mod
+    if case_frame.role_unknown_held(state):
+        return "", ""
+    role = derived_role(state, analysis)
+    return role, intake_mod.side_of(role)
+
+
+def case_frame_client(state: Dict[str, Any]) -> str:
+    """v79.14.1: the client the verified case frame binds (CASE_FRAME on, its «cliente» verified); "" otherwise -- then
+    item 1's rules (apply_intake_client, client_on_intake_side, plan_client) are the fallback."""
+    from . import case_frame
+    try:
+        return str(case_frame.bound(state, "cliente") or "")
+    except Exception:           # noqa: BLE001 -- unreadable: no frame client
+        return ""
+
+
+def client_on_intake_side(state: Dict[str, Any], analysis: Dict[str, Any], client: str, assumption: str = ""
+                          ) -> Optional[Tuple[str, str]]:
+    """v79.14.1 (item 1): the method's client on the intake's side. The client the answer settled (or the one the facts
+    name) read on the other side (party_side: its role word, its own threat to sue) while nobody stated it -- the
+    counterparty taken as client (a first read or a frame naming the counterparty as the assisted party, the assumed
+    party «a carico» while the intake reads the claimant, the party_threat path) -- is replaced by the party on the
+    intake's side, when the facts hold one: (client, the assumption line naming it). The user's own client (stated or
+    answered) wins: the request itself says otherwise, logged. None when nothing changes. Logged (role_decision);
+    state["role_check"] keeps what was read. v79.14.1: the fallback under the frame (CASE_FRAME) -- a client the
+    verified frame binds is never moved (the move it would make is logged frame_conflict «client_on_intake_side» and
+    loses; the frame's client is no user statement), and the party it moves to is never one the frame lists as
+    controparte."""
+    from . import case_frame, intake as intake_mod, party_names
+    role, side = intake_side(state, analysis)
+    current = client or client_of(state)
+    framed = case_frame_client(state)
+    stated_by_user = bool((state.get("answered") or {}).get("parte_assistita")) and not framed
+    check = {"client": current, "intake_role": role, "intake_side": side, "client_side": "", "moved": False,
+             "stated_by_user": stated_by_user, "frame_client": framed}
+    state["role_check"] = check
+    if not current or side not in ("accused", "victim"):
+        return None
+    case = case_text(state)
+    threatening = intake_mod.threat_parties(case, "")
+    parties = _parties_live(state, analysis)
+    mine = next((p for p in parties if _low(p["name"]) == _low(current)), None) or {"name": current, "role": ""}
+    check["client_side"] = party_side(mine, threatening)
+    if not check["client_side"] or check["client_side"] == side or check["client_side"] not in ("accused", "victim"):
+        return None
+    if stated_by_user:
+        _log("role_decision", {"won": ROLE_FROM_REQUEST, "client": current, "client_side": check["client_side"],
+                               "intake_role": role, "why": "la richiesta nomina il cliente"})
+        return None
+    against = case_frame.counterparty_names(case_frame.held(state))
+    other = [p for p in parties if _low(p["name"]) != _low(current) and party_side(p, threatening) == side
+             and not any(case_frame.same_party(p["name"], x) for x in against)]
+    if not other:
+        _log("role_decision", {"won": ROLE_FROM_FRAME if framed else ROLE_FROM_INTAKE, "client": current,
+                               "client_side": check["client_side"], "intake_role": role,
+                               "why": "nessuna parte dal lato dell'intake tra i fatti"})
+        return None
+    new = str(other[0]["name"])
+    if framed:                  # v79.14.1: the frame's client stands -- this rule's move logged, it loses
+        case_frame.conflict(state, "cliente", "client_on_intake_side", new, framed)
+        _log("role_decision", {"won": ROLE_FROM_FRAME, "client": current, "refused": new, "intake_role": role,
+                               "why": "il cliente del quadro del caso (verificato) prevale"})
+        return None
+    case_ = str(analysis.get(CASE_KEY) or "")
+    shown_old, shown_new = party_names.label(current, case_), party_names.label(new, case_)
+    analysis["parte_assistita"] = new
+    if isinstance(state.get("analysis"), dict):
+        state["analysis"]["parte_assistita"] = new
+    line = assumption.replace(shown_old, shown_new) if assumption and shown_old in assumption else assumption
+    check.update({"client": new, "client_side": side, "moved": True, "from": current})
+    _log("role_decision", {"won": ROLE_FROM_INTAKE, "client_before": current, "client": new, "intake_role": role,
+                           "why": f"«{current}» è dal lato opposto al ruolo risolto ({role}): "
+                                  f"il cliente è «{new}»"})
+    persist_client(state, new, line or "assunta")
+    return new, line
+
+
+def _same_name(a: Any, b: Any) -> bool:
+    a, b = _low(a), _low(b)
+    return bool(a) and bool(b) and (a == b or a in b or b in a or a.split()[0] == b.split()[0])
+
+
+def plan_client(state: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.14.1 (item 1): with no client settled by this answer, the client the facts name (client_of) is the plan's
+    -- a plan whose model wrote another party as the assisted one (the counterparty) is corrected, logged
+    (role_decision). The plan. v79.14.1: the fallback -- never called when the frame binds the client (frame_plan)."""
+    known = client_of(state)
+    said = str(plan.get("parte_assistita") or "")
+    if not known or not said or _same_name(known, said):
+        return plan
+    _log("role_decision", {"won": ROLE_FROM_INTAKE, "client_before": said, "client": known,
+                           "why": "il piano nominava un'altra parte come assistita: vale il cliente dei fatti"})
+    return {**plan, "parte_assistita": known}
+
+
+def plan_party(state: Dict[str, Any], plan: Dict[str, Any], client: str) -> Dict[str, Any]:
+    """The plan's assisted party: v60 (D) the client settled (stated, answered or assumed); else v79.14.1 (item 1,
+    plan_client) the client the facts name over the plan's model-written party -- the fallback, never consulted when
+    the verified frame binds the client (case_frame_client); then v79.14.0 (CASE_FRAME, frame_plan) the frame's client
+    and position. state["method_client"]: the party the method writes for (role_flip reads it)."""
+    if client:
+        plan = {**plan, "parte_assistita": client}
+    elif not case_frame_client(state):
+        plan = plan_client(state, plan)
+    if state.get("case_frame"):
+        plan = _isolated("frame_plan", lambda: frame_plan(state, plan), plan) or plan
+    state["method_client"] = str(plan.get("parte_assistita") or "")
+    return plan
+
+
+ROLE_FLIP_ROLE, ROLE_FLIP_COUNTERPARTY = "ruolo", "controparte"      # v79.14.1: role_flip's shared reasons
+
+
+def role_flip_reasons(state: Dict[str, Any], posture: Dict[str, Any]) -> Tuple[List[str], int]:
+    """v79.14.1 (item 1): (the role_flip reasons, role_request_wins) -- each a distinct flip, so the same flip read by
+    two definitions is counted once (case_frame.audit unions its own with these): «ruolo» the method's role differing
+    from the intake's resolved role (the posture's «intake_role»: the frame's under CASE_FRAME); «ruolo:<client>»
+    with several clients a client's method role differing from the intake's (a role the request itself states for
+    it aside: role_request_wins, allowed); «controparte» the counterparty taken as client -- the method writing for
+    another party than the one settled on the intake's side, or the client read on the side opposite to the intake's
+    while nobody (neither the user nor the verified frame) stated it."""
+    reasons: List[str] = []
+    intake_role = str(posture.get("intake_role") or posture.get("role") or "")
+    if str(posture.get("role") or "") != intake_role:
+        reasons.append(ROLE_FLIP_ROLE)
+    request_wins = 0
+    from . import intake as intake_mod
+    for m in state.get("method_roles") or []:
+        ref = str(m.get("intake_role") or "")
+        if m.get("from") == ROLE_FROM_REQUEST:
+            request_wins += int(m.get("role") != ref)
+        elif ref in ("", intake_mod.UNKNOWN) or m.get("role") == ref:
+            continue            # nothing to disagree with (no resolved role), or the same role
+        elif ROLE_FLIP_ROLE in reasons and m.get("role") == posture.get("role"):
+            continue            # v79.14.1 (review): the posture's own flip, carried to this client -- the same flip, once
+        else:
+            reasons.append(f"{ROLE_FLIP_ROLE}:{m.get('client')}")
+    check = state.get("role_check") or {}
+    if state.get("method_client") and check.get("client") and not state.get("method_roles") and \
+            not _same_name(state["method_client"], check["client"]):
+        reasons.append(ROLE_FLIP_COUNTERPARTY)      # the method writes for another party than the one settled
+    if check.get("client_side") and check.get("intake_side") in ("accused", "victim") and \
+            check["client_side"] in ("accused", "victim") and check["client_side"] != check["intake_side"] \
+            and not check.get("stated_by_user") and not check.get("frame_client"):
+        reasons.append(ROLE_FLIP_COUNTERPARTY)
+    return list(dict.fromkeys(reasons)), request_wins
+
+
+def role_counted(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, int]:
+    """v79.14.1 (item 1): role_flip -- the distinct flips role_flip_reasons reads (must be 0); role_request_wins -- a
+    client's role the request itself states, differing from the intake's (allowed, counted); role_client_moved."""
+    reasons, request_wins = role_flip_reasons(state, posture)
+    check = state.get("role_check") or {}
+    return {"role_flip": len(reasons), "role_request_wins": request_wins,
+            "role_client_moved": int(bool(check.get("moved")))}
 
 
 def intake_labels(state: Dict[str, Any], case: str = "") -> Tuple[str, str]:
@@ -5887,6 +6115,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.pop("method_refused", None)       # v75: each answer decides it again
     state.pop("method_refused_lines", None)     # v79.10.1 (A1): likewise
     state.pop("method_refused_clients", None)   # v79.10.1 (A1, review): likewise
+    for key in ("method_roles", "role_check", "method_client", "role_flip_reasons"):     # v79.14.1 (item 1): each
+        # answer reads them anew
+        state.pop(key, None)
+    state.pop("count_sentences_source", None)   # v79.14.1 (item 8): the count sentences this answer dropped at source
     lang = state.get("lang") or "it"
     analysis = _restored_analysis(state["analysis"])
     topics = [state["topics"][n - 1] for n in numbers if 0 < n <= len(state.get("topics") or [])]
@@ -5898,6 +6130,11 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.setdefault("timings", {})["answer_grading_s"] = round(time.time() - t_grade, 1)
     mark("settle_client")
     client, assumption = _isolated("settle_client", lambda: settle_client(state, analysis), ("", "")) or ("", "")   # D
+    # v79.14.1 (item 1): the client on the intake's side -- never the counterparty (a party the case reads on the other
+    # side: its role word, its own threat to sue) unless the user named it (logged: which wins and why)
+    moved = _isolated("client_side_check", lambda: client_on_intake_side(state, analysis, client, assumption), None)
+    if moved:
+        client, assumption = moved
     if client:                  # v60e: the client's lines for the writer, the chosen topics as they are
         _isolated("reside", lambda: reside(state, client, reorder=False))
         persist_client(state, client, assumption)                           # v60f (B8)
@@ -6010,10 +6247,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     for key in (ptw.PLAN_ISSUES_KEY, ptw.PLAN_ANGLE_KEY):
         analysis.pop(key, None)
     plan, analysis_p = ptw.for_the_plan(plan, analysis)
-    if client:                  # v60 (D): the client settled (stated, answered or assumed) is the plan's
-        plan = {**plan, "parte_assistita": client}
-    if state.get("case_frame"):  # v79.14.0 (CASE_FRAME): the plan's client and position the frame's
-        plan = _isolated("frame_plan", lambda: frame_plan(state, plan), plan) or plan
+    plan = plan_party(state, plan, client)      # v60 (D), v79.14.1 (item 1), v79.14.0 (CASE_FRAME)
     if posture.get("entry"):    # v62: the main line's act and goal from the posture (the default cell: today's plan)
         plan = posture_mod.apply_plan(plan, posture, rites)     # v79.10.3 (C1): the riti the charge admits
         _log("plan_posture", {"atto": plan.get("atto"), "obiettivo": plan.get("obiettivo")})
@@ -6295,11 +6529,20 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     # v79.12.7 (item 7): the last text step -- no element code, stance mark, internal note or headless citation left by
     # a path that bypassed compose's checks (the head, the answers, the step-aside prose) or by a later step
     method_ctxs = [c for _, c, _ in method_clients] if method_clients else ([method_ctx] if method_ctx else [])
+    # v79.14.1 (item 8): never the «requisiti provati N su M» count in prose under the method -- the step-aside prose,
+    # the writer's own sentences, any path; what is removed and what is left (must be 0) counted
+    draft = _isolated("count_sentences_out", lambda: count_sentences_out(state, draft), draft) or draft
     draft = _isolated("text_residue", lambda: text_residue(state, draft, method_ctxs), draft) or draft
     if fit_on:                  # v79.13.0: a removed norm never in the delivered answer, whatever path printed it
         draft = _isolated("fit_removed_out", lambda: fit_removed_out(state, draft), draft) or draft
     _isolated("names_counted", lambda: names_counted(state, draft))         # v79.10.5 (E2): names left in passages
     _isolated("text_counted", lambda: text_counted(state, draft))           # v79.12.5 (items 8, 9)
+    _isolated("objections_counted", lambda: objections_counted(state, draft, method_ctxs))     # v79.14.1 (item 6)
+    # v79.14.1 (item 3): no c.p.a. article in a case with no administrative act against the client, whatever path
+    # printed it; the amministrativo admissions counted
+    draft = _isolated("admin_act_out", lambda: admin_act_out(state, draft, method_ctxs), draft) or draft
+    # v79.14.1 (items 1, 2): role_flip (must be 0) and the honesty line on a code institution (must be 0)
+    _isolated("role_corpus_counted", lambda: role_corpus_counted(state, draft, method_ctxs, posture))
     for n in numbers:
         state.setdefault("answers", {})[str(n)] = {"version": state.get("version"), "chars": len(draft)}
     mark("citations")
@@ -6457,6 +6700,60 @@ def adversaries(case: str, a: str, b: str) -> bool:
     return False
 
 
+ROLE_FROM_INTAKE, ROLE_FROM_REQUEST = "intake", "richiesta"
+ROLE_FROM_FRAME = "quadro"         # v79.14.1: the verified case frame decided (CASE_FRAME)
+
+
+def role_for_client(state: Dict[str, Any], posture: Dict[str, Any], client: Dict[str, Any], case: str = ""
+                    ) -> Tuple[str, str]:
+    """v79.14.1 (item 1): (the role the method uses for one of several clients, who decided it) -- the role the request
+    itself states for this client (intake._current_role, intake._said_of on its name in the request: «Caio si è
+    costituito parte civile», «Tizio, imputato») -- «richiesta»; else the intake's resolved role (the posture's) --
+    «intake», whatever the first read's role word says (a model's word never overrides the intake). Logged
+    (role_decision) when the read's word differed. v79.14.1: under the frame (CASE_FRAME) the client the verified
+    frame binds takes the frame's verified role -- «quadro»; what this rule would give instead is logged frame_conflict
+    («role_for_client») and loses; the other clients' roles by this rule (the fallback)."""
+    from . import case_frame, intake as intake_mod
+    name = str(client.get("name") or "")
+    intake_role = str(posture.get("role") or "")
+    text = str(state.get("request") or "") or case or case_text(state)
+    stated_role = ""
+    if name:
+        stated_role = intake_mod._current_role(name, text)[0] or intake_mod._said_of(name, text)[0]
+    read_role = intake_mod._role_of_words(str(client.get("role") or "")) if client.get("role") else ""
+    if stated_role and stated_role in intake_mod.ROLES:
+        role, won, why = stated_role, ROLE_FROM_REQUEST, "la richiesta dichiara il ruolo del cliente"
+    elif intake_role and intake_role != intake_mod.UNKNOWN:
+        role, won, why = intake_role, ROLE_FROM_INTAKE, "il ruolo risolto dall'intake"
+    elif case_frame.bound(state, "ruolo") == intake_mod.UNKNOWN:
+        # v79.14.1 (review): the verified frame reads the role «sconosciuto» -- no client takes a side's wording (79.14.0)
+        role, won, why = intake_mod.UNKNOWN, ROLE_FROM_FRAME, "il quadro del caso (verificato) non decide il ruolo"
+    else:           # no intake role: the read's word, as before (nothing to disagree with)
+        role, won, why = (read_role if read_role in intake_mod.ROLES else intake_role), ROLE_FROM_INTAKE, \
+            "nessun ruolo dall'intake: la parola della prima lettura"
+    framed_client, framed_role = case_frame_client(state), case_frame.bound(state, "ruolo")
+    if framed_client and framed_role and name and case_frame.same_value("cliente", name, framed_client):
+        if role and role != framed_role:
+            case_frame.conflict(state, "ruolo", "role_for_client", role, framed_role)
+        role, won, why = str(framed_role), ROLE_FROM_FRAME, "il ruolo del quadro del caso (verificato)"
+    if read_role and read_role != role or stated_role or won == ROLE_FROM_FRAME and read_role:
+        _log("role_decision", {"client": name, "role": role, "won": won, "why": why, "intake_role": intake_role,
+                               "read_role": read_role, "request_role": stated_role})
+    return role, won
+
+
+def method_role(state: Dict[str, Any], posture: Dict[str, Any], client: Dict[str, Any], case: str = ""
+                ) -> Dict[str, Any]:
+    """v79.14.1 (item 1): one client's entry of state["method_roles"] -- {client, role, intake_role, from}: its role and
+    who decided it (role_for_client), and the role it is checked against (role_flip_reasons). v79.14.1 (review): that
+    reference is the frame's for the client the verified frame binds (or the frame's verified «sconosciuto»), the
+    intake's resolved role (the posture's «intake_role») for the others -- never the posture's role itself, which a
+    later step may have flipped (that flip is the posture's «ruolo» reason, counted once)."""
+    role, won = role_for_client(state, posture, client, case)
+    ref = role if won == ROLE_FROM_FRAME else str(posture.get("intake_role") or posture.get("role") or "")
+    return {"client": str(client.get("name") or ""), "role": role, "intake_role": ref, "from": won}
+
+
 def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any],
                           topics: Sequence[Dict[str, Any]], refs: Sequence[tuple], rows: Sequence[Dict[str, Any]],
                           case: str, clients: Sequence[Dict[str, str]]) -> List[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
@@ -6473,13 +6770,19 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
     counts: Dict[str, Any] = {}
     shadows: Dict[str, Any] = {}
     articles: List[str] = []
+    method_roles: List[Dict[str, Any]] = []
+    state["method_roles"] = method_roles            # v79.14.1 (item 1): each client's method role, the counter's
     for c in clients:
         view = {**state, "records": copy.deepcopy(state.get("records") or {}),
                 "client_scope": {"name": c["name"], "others": [x for x in names if x != c["name"]]},
                 "case_id": f"{state.get('case_id') or 'caso'}_{re.sub(r'[^A-Za-z0-9]+', '_', c['name'])}"}
         view.pop("schema_shadow", None)     # v79.11: the client's own shadow admission only (method_inputs sets it)
-        role = intake_mod._role_of_words(c.get("role") or "") if c.get("role") else ""
-        posture_c = {**posture, **({"role": role} if role and role in intake_mod.ROLES else {})}
+        # v79.14.1 (item 1): the client's role is the intake's resolved role (the posture's) unless the request itself
+        # states this client's role -- never the first read's word alone (role_for_client: logged, which wins and why)
+        entry = method_role(state, posture, c, case)
+        role, won = entry["role"], entry["from"]
+        posture_c = {**posture, "role": role, "role_from": won}
+        method_roles.append(entry)
         posture_mod.mark_sides(view, posture_c)
         ctx, mplan = method_inputs(view, posture_c, {**plan, "parte_assistita": c["name"]}, topics, refs, rows, case,
                                    shared_record=record, with_objections=False)
@@ -6665,10 +6968,149 @@ _TO_VERIFY_RE = re.compile(r"\bda\s+verificare\b", re.IGNORECASE)
 _DATE_ND = "(data n.d.)"
 
 
+def role_corpus_counted(state: Dict[str, Any], draft: str, method_ctxs: Sequence[Dict[str, Any]] = (),
+                        posture: Optional[Dict[str, Any]] = None) -> None:
+    """v79.14.1: the delivered answer's counters -- (item 1) role_flip, role_request_wins, role_client_moved
+    (role_counted; with several clients each client's party read on the intake's side too); (item 2) corpus_line_code:
+    the honesty line «Il corpus non contiene ancora informazioni sufficienti su …» printed on a code institution
+    (its
+    governing law a code: lawyer_method.corpus_line_on_code), must be 0."""
+    from . import intake as intake_mod, lawyer_method
+    counters = state.setdefault("block_counters", {})
+    got = role_counted(state, posture or state.get("posture") or {})
+    reasons, _ = role_flip_reasons(state, posture or state.get("posture") or {})
+    roles = state.get("method_roles") or []
+    if roles:                   # several clients: each one's party on the intake's side, unless the request names it
+        analysis = _restored_analysis(state["analysis"]) if state.get("analysis") else {}
+        _, side = intake_side(state, analysis)
+        threatening = intake_mod.threat_parties(case_text(state), "")
+        parties = _parties_live(state, analysis)
+        for m in roles:
+            party = next((p for p in parties if _low(p["name"]) == _low(m.get("client"))), None)
+            mine = party_side(party, threatening) if party else ""
+            if side in ("accused", "victim") and mine in ("accused", "victim") and mine != side and \
+                    m.get("from") not in (ROLE_FROM_REQUEST, ROLE_FROM_FRAME):
+                reasons.append(f"{ROLE_FLIP_COUNTERPARTY}:{m.get('client')}")
+    reasons = list(dict.fromkeys(reasons))
+    state["role_flip_reasons"] = reasons        # v79.14.1: case_frame.audit's role_flip unions its own with these
+    got["role_flip"] = len(reasons)
+    counters.update(got)
+    ctx0 = next((c for c in method_ctxs or [] if isinstance(c, dict)), {})
+    view = {"institutions": ctx0.get("institutions") if ctx0 else read_institutions(state.get("read") or {}),
+            "records": ctx0.get("records") or state.get("records") or {}}
+    counters["corpus_line_code"] = len(lawyer_method.corpus_line_on_code(draft, view))
+    counters["corpus_line"] = max(int(counters.get("corpus_line") or 0),
+                                  len(lawyer_method._CORPUS_LINE_RE.findall(draft or "")))
+    if got["role_flip"] or counters["corpus_line_code"]:
+        _log("role_corpus_counted", {**got, "reasons": reasons, "corpus_line_code": counters["corpus_line_code"],
+                                     "role_check": state.get("role_check"), "method_roles": roles})
+
+
+def admin_act_words(state: Dict[str, Any]) -> List[str]:
+    """v79.14.1 (item 3): the administrative act against the client the case states -- the retrieval's family gate read
+    (state["family_gate"]["admin_act"]), else read now on the case's words and the first read's institution names."""
+    from . import family_gate
+    fam = state.get("family_gate") or {}
+    if "admin_act" in fam:
+        return list(fam.get("admin_act") or [])
+    return family_gate.administrative_act(family_gate.act_text(case_text(state), read_institutions(state.get("read")
+                                                                                                    or {})))
+
+
+def admin_act_out(state: Dict[str, Any], draft: str, method_ctxs: Sequence[Dict[str, Any]] = ()) -> str:
+    """v79.14.1 (item 3): with no administrative act against the client (admin_act_words), a sentence citing a c.p.a.
+    article the user did not name is dropped from the delivered answer (counted: act_last_pass_stripped -- a path that
+    bypassed the family gate and the scope check when not 0). Counters: amministrativo_refused_no_act -- the admissions
+    refused for lack of the act (the modules, the family gate's rows, the scope check's articles, this pass's
+    sentences); amministrativo_without_act -- what is still admitted without it (the amministrativo module active by
+    the case's words or the read, a c.p.a. or amministrativo-family record the user did not name, a c.p.a. article
+    cited in the answer): must be 0. The draft."""
+    from . import citations, family_gate, lawyer_method
+    counters = state.setdefault("block_counters", {})
+    fam = state.get("family_gate") or {}
+    act = admin_act_words(state)
+    refused = len(fam.get("modules_refused_no_act") or [])
+    refused += sum(1 for x in fam.get("dropped") or [] if x.get("why") == family_gate.NO_ACT_WHY)
+    refused += sum(len(c.get("act_scope_refused") or []) for c in method_ctxs or [] if isinstance(c, dict))
+    if act:
+        counters["amministrativo_refused_no_act"] = refused
+        counters["amministrativo_without_act"] = 0
+        counters["act_last_pass_stripped"] = 0
+        return draft
+    case = case_text(state)
+    named = {_label(k) for k in user_named(state)}
+    view = {"case": case, "admin_act_words": []}
+
+    def gated(text: str) -> List[str]:
+        labels = [citations.label(r) for r in citations.article_refs(text)]
+        return sorted(lawyer_method.act_gated_labels(view, labels) - named)
+    stripped: List[str] = []
+
+    def review(sentence: str) -> str:
+        hit = gated(sentence)
+        if hit:
+            stripped.append(f"{', '.join(hit)}: {sentence[:120]}")
+            return ""
+        return sentence
+    out = lawyer_method._by_sentence(draft, review) if gated(draft) else draft
+    counters["act_last_pass_stripped"] = len(stripped)
+    refused += len(stripped)
+    left = gated(out)
+    records = [x for x in state.get("records") or {} if x not in named and (
+        family_gate.act_gated_code(str(x).partition(" ")[2])
+        or family_gate.classify(str(x).partition(" ")[2])[0] in family_gate.act_table()["families"])]
+    active = dict((counters.get("modules_active") or fam.get("modules_active") or {}))
+    modules = [m for m in lawyer_method.act_modules() if m in active and not str(active[m]).startswith("articolo")]
+    counters["amministrativo_refused_no_act"] = refused
+    counters["amministrativo_without_act"] = len(left) + len(records) + len(modules)
+    if stripped or left or records or modules:
+        _log("admin_act_out", {"stripped": stripped[:10], "left": left, "records": records, "modules": modules})
+    return out
+
+
+def count_sentences_out(state: Dict[str, Any], draft: str) -> str:
+    """v79.14.1 (item 8): under the lawyer's method (LAWYER_METHOD) the delivered prose never holds the «requisiti
+    provati N su M» count, whatever path printed it -- the step-aside prose (status_sentence prints the verdict alone
+    there, counted at source as count_sentences_source), a writer's own sentence, a later step: a parenthetical count
+    is cut, a sentence still holding one removed (lawyer_method.count_out). Counters count_sentences_removed (at source
+    and here) and count_sentences_left (lawyer_method.count_left on what is delivered: must be 0). With the method off
+    the v62 status sentence stays (the legacy prose)."""
+    from . import lawyer_method
+    counters = state.setdefault("block_counters", {})
+    if not lawyer_method.enabled():
+        counters["count_sentences_removed"] = counters["count_sentences_left"] = 0
+        return draft
+    found: List[str] = []
+    out = lawyer_method.count_out(draft, found)
+    counters["count_sentences_removed"] = int(state.get("count_sentences_source") or 0) + len(found)
+    counters["count_sentences_left"] = len(lawyer_method.count_left(out))
+    if found or counters["count_sentences_left"]:
+        _log("count_sentences_out", {"removed": found[:10], "source": state.get("count_sentences_source") or 0,
+                                     "left": counters["count_sentences_left"]})
+    return out
+
+
+def objections_counted(state: Dict[str, Any], draft: str, contexts: Sequence[Dict[str, Any]] = ()) -> None:
+    """v79.14.1 (item 6): with every element of the main record «da provare», §7 is one model-written objection on the
+    strongest element, grounded as every rule statement (objection_grounded), or the line saying none is
+    (objection_none) -- per composed client; objection_template_repeated: the per-element «da provare» template printed
+    beyond the first in a §7, or at all in the all-open one, in the delivered answer (lawyer_method.template_repeats:
+    must be 0)."""
+    from . import lawyer_method
+    counters = state.setdefault("block_counters", {})
+    counters["objection_grounded"] = sum(int(c.get("objection_grounded") or 0) for c in contexts or [])
+    counters["objection_none"] = sum(int(c.get("objection_none") or 0) for c in contexts or [])
+    counters["objection_template_repeated"] = lawyer_method.template_repeats(draft)
+    if counters["objection_template_repeated"]:
+        _log("objection_template_repeated", {"n": counters["objection_template_repeated"]})
+
+
 def text_counted(state: Dict[str, Any], draft: str) -> None:
     """v79.12.5 (item 8): the counters see_point (the «v. punto N» references) and to_verify (the «da verificare») per
     answer; (item 9) rulings_printed (the rulings' estremi printed) and rulings_date_nd (those printed «data n.d.»),
-    so the nightly reads «data n.d.» against the rulings printed, never alone."""
+    so the nightly reads «data n.d.» against the rulings printed, never alone. v79.14.1 (item 8):
+    rulings_passage_irrelevant_dropped (the rulings whose quoted passage never names the record's institution, dropped
+    from §5: rulings.passage_names_institution)."""
     from . import rulings
     counters = state.setdefault("block_counters", {})
     counters["see_point"] = len(_SEE_POINT_RE.findall(draft or ""))
@@ -6676,6 +7118,10 @@ def text_counted(state: Dict[str, Any], draft: str) -> None:
     printed = rulings.estremi_printed(draft or "")
     counters["rulings_printed"] = len(printed)
     counters["rulings_date_nd"] = sum(1 for x in printed if x.endswith(_DATE_ND))
+    # v79.14.1 (item 8): the rulings whose quoted passage never names the record's institution, dropped from §5
+    record = (state.get("rulings_record") or {}) if rulings.enabled() else {}
+    counters["rulings_passage_irrelevant_dropped"] = len((record.get("log") or {}).get("passage_irrelevant_dropped")
+                                                         or [])
 
 
 def cenni_article_texts(grounds: Dict[str, List[Dict[str, Any]]]) -> Dict[str, str]:
@@ -8828,6 +9274,35 @@ def apply_stated(state: Dict[str, Any], said: Dict[str, str], renumber: Sequence
     _log("stated", {"client": name, "angle": angle, "angle_topics": hits})
 
 
+def apply_intake_client(state: Dict[str, Any], said: Dict[str, str]) -> str:
+    """v79.14.1 (item 1): the client the intake's rules read in the request (intake.client_rule: «il mio cliente X»,
+    «assunte le vesti del legale di X», «il legale di X») and the user's words did not state (stated) -- the client
+    over the extraction's, which may name the counterparty as the assisted party (apply_stated; logged role_decision).
+    "" when nothing changes. v79.14.1: the fallback under the frame (CASE_FRAME) -- a client the verified frame binds is
+    said's already (bound_said: nothing to do); a name the frame lists as controparte is never applied (logged
+    frame_conflict «apply_intake_client», it loses)."""
+    from . import case_frame, intake as intake_mod
+    if said.get("client") or (state.get("answered") or {}).get("parte_assistita") or case_frame_client(state):
+        return ""
+    got = state.get("intake") or {}
+    name = str((got.get("client") or {}).get("name") or "").strip()
+    if not name or not name[:1].isupper() or name.lower() in ("il", "la", "lo") or name == intake_mod.UNKNOWN:
+        return ""                   # a name, never a role word
+    if any(case_frame.same_party(name, x) for x in case_frame.counterparty_names(case_frame.held(state))):
+        case_frame.conflict(state, "cliente", "apply_intake_client", name, "")
+        return ""
+
+    analysis = _restored_analysis(state["analysis"]) if state.get("analysis") else {}
+    before = _client_name(analysis) if analysis else ""
+    if before and (_low(name) in _low(before) or _low(before) in _low(name)):
+        return ""
+    _log("role_decision", {"won": ROLE_FROM_INTAKE, "client_before": before, "client": name,
+                           "why": "il cliente che la richiesta nomina (regole dell'intake), "
+                                  "non quello dell'estrazione"})
+    apply_stated(state, {"client": name, "client_role": "", "angle": "", "date": ""})
+    return name
+
+
 def take_intake(state: Dict[str, Any], intake: Optional[Dict[str, Any]], message: str, request: str = "") -> None:
     """v61: the request's intake in the state (state["intake"], every later stage reads it) -- the API's, else read here
     (intake.request_intake: the request the message when the case is an upload), its default role and rito filled from
@@ -8934,6 +9409,7 @@ def start(message: str, lang: str = "it", request: str = "", intake: Optional[Di
     _isolated("intake", lambda: take_intake(state, intake, message, request))
     said = bound_said(state, stated(request or message))        # v79.14.0: the frame's client, when it holds one
     _isolated("stated", lambda: apply_stated(state, said))
+    _isolated("intake_client", lambda: apply_intake_client(state, said))     # v79.14.1 (item 1)
     reply, field = round1(state)
     state["timings"]["round1_s"] = round(time.time() - t0, 1)
     field["seconds"] = state["timings"]["round1_s"]
@@ -9232,6 +9708,7 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     _isolated("intake", lambda: take_intake(state, intake, message, request))
     said = bound_said(state, stated(request or message))        # v79.14.0: the frame's client, when it holds one
     _isolated("stated", lambda: apply_stated(state, said))
+    _isolated("intake_client", lambda: apply_intake_client(state, said))     # v79.14.1 (item 1)
     if not (state.get("answered") or {}).get("parte_assistita"):
         _isolated("prepare_side", lambda: prepare_side(state))       # the assumed client's lines order the topics
     numbers = covered_topics(state)

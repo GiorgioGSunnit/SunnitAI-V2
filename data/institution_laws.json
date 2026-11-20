@@ -1,0 +1,311 @@
+{
+  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. Code's draft list, for the lawyer's review; edit here.",
+  "institutions": [
+    {
+      "name": "contratto di viaggio",
+      "law": "d.lgs. 79/2011",
+      "patterns": [
+        "\\bcontratt\\w*\\s+di\\s+viaggio",
+        "\\bpacchett\\w*\\s+turistic",
+        "\\bvacanza\\s+rovinata\\b",
+        "\\bdanno\\s+da\\s+vacanza",
+        "\\bcodice\\s+del\\s+turismo"
+      ]
+    },
+    {
+      "name": "proprietà industriale",
+      "law": "d.lgs. 30/2005",
+      "patterns": [
+        "\\bbrevett",
+        "\\bmarchi?\\s+(?:registrat|d['’]\\s*impresa)",
+        "\\bcontraffazione\\s+(?:del|di)\\s+(?:marchio|brevetto)",
+        "\\bproprietà\\s+industriale",
+        "\\bdisegni\\s+e\\s+modelli"
+      ]
+    },
+    {
+      "name": "diritto d'autore",
+      "law": "L. 633/1941",
+      "patterns": [
+        "\\bdiritto\\s+d['’]\\s*autore",
+        "\\bopere\\s+dell['’]\\s*ingegno",
+        "\\bplagio\\b"
+      ]
+    },
+    {
+      "name": "protezione dei dati personali",
+      "law": "Reg. UE 2016/679",
+      "patterns": [
+        "\\bprotezione\\s+dei\\s+dati",
+        "\\b(?:trattament\\w*|titolare\\s+del\\s+trattamento|garante\\s+(?:della|per\\s+la)\\s+(?:privacy|protezione))\\b[^.;]{0,30}?\\bdati\\s+personali|\\bdati\\s+personali\\b[^.;]{0,30}?\\b(?:trattat|trattament|comunicat\\w*\\s+a\\s+terzi|diffus\\w*\\s+senza\\s+consenso)",
+        "\\b(?:codice|normativa|disciplina|violazione)\\s+(?:della|sulla|in\\s+materia\\s+di)\\s+privacy\\b",
+        "\\bgdpr\\b",
+        "\\btrattamento\\s+(?:illecito\\s+)?dei\\s+dati",
+        "\\bdiritto\\s+all['’]\\s*oblio\\b"
+      ]
+    },
+    {
+      "name": "crisi d'impresa",
+      "law": "d.lgs. 14/2019",
+      "patterns": [
+        "\\bcrisi\\s+d['’]\\s*impresa",
+        "\\bliquidazione\\s+giudiziale",
+        "\\b(?:dichiarazione|sentenza|istanza|procedura|stato)\\s+di\\s+fallimento\\b|\\bfallimento\\s+(?:della|del|dell['’])\\s*(?:societ\\w*|impresa|ditta|imprenditor\\w*|debitor\\w*|srl|s\\.r\\.l\\.|spa)|\\bfallimentar\\w*",
+        "\\b(?:societ[àa]|impresa|ditta|imprenditor\\w*|debitor\\w*)\\s+fallit[oa]\\b|\\b(?:il|del|al|dal)\\s+fallito\\b|\\bcuratore\\s+(?:del\\s+fallimento|fallimentare)",
+        "\\bbancarott",
+        "\\bconcordato\\s+preventivo",
+        "\\bsovraindebitament"
+      ]
+    },
+    {
+      "name": "responsabilità sanitaria",
+      "law": "L. 24/2017",
+      "patterns": [
+        "\\bresponsabilit\\w*\\s+(?:medica|sanitaria|del\\s+medico|dell['’]\\s*esercente\\s+la\\s+professione\\s+sanitaria|della\\s+struttura\\s+(?:sanitaria|ospedaliera))",
+        "\\bmalpractice\\b",
+        "\\blegge\\s+gelli"
+      ]
+    },
+    {
+      "name": "contratti pubblici",
+      "law": "d.lgs. 36/2023",
+      "patterns": [
+        "\\bappalt\\w*\\s+pubblic",
+        "\\bappalt\\w*\\s+di\\s+(?:opere|lavori|servizi|forniture)\\s+pubblic",
+        "\\bcodice\\s+dei\\s+contratti\\s+pubblici",
+        "\\bgara\\s+(?:d['’]\\s*appalto|pubblica)\\b"
+      ]
+    },
+    {
+      "name": "responsabilità degli enti",
+      "law": "d.lgs. 231/2001",
+      "patterns": [
+        "\\bresponsabilit\\w*\\s+amministrativ\\w*\\s+(?:degli|delle)\\s+(?:enti|persone\\s+giuridiche|societ)",
+        "\\bmodell\\w*\\s+(?:di\\s+)?organizzazione(?:,|\\s+e)\\s+(?:di\\s+)?gestione",
+        "\\b231\\s*/\\s*2001\\b"
+      ]
+    },
+    {
+      "name": "testo unico bancario",
+      "law": "d.lgs. 385/1993",
+      "patterns": [
+        "\\btrasparenza\\s+bancaria",
+        "\\btesto\\s+unico\\s+bancario",
+        "\\banatocism\\w*\\s+bancari",
+        "\\bcredito\\s+ai\\s+consumatori"
+      ]
+    },
+    {
+      "name": "assicurazione obbligatoria r.c. auto",
+      "law": "d.lgs. 209/2005",
+      "patterns": [
+        "\\br\\.?\\s*c\\.?\\s*auto\\b",
+        "\\bassicurazione\\s+obbligatoria",
+        "\\bcodice\\s+delle\\s+assicurazioni",
+        "\\bfondo\\s+di\\s+garanzia\\s+per\\s+le\\s+vittime\\s+della\\s+strada",
+        "\\brisarcimento\\s+diretto\\b"
+      ]
+    },
+    {
+      "name": "circolazione stradale",
+      "law": "d.lgs. 285/1992",
+      "patterns": [
+        "\\bcodice\\s+della\\s+strada",
+        "\\bcircolazione\\s+stradale",
+        "\\bpatente\\s+di\\s+guida",
+        "\\bsospensione\\s+della\\s+patente",
+        "\\bguida\\s+in\\s+stato\\s+di\\s+(?:ebbrezza|alterazione)",
+        "\\bguida\\s+sotto\\s+l['’]\\s*(?:effetto|influenza)",
+        "\\bguida\\s+senza\\s+patente"
+      ]
+    },
+    {
+      "name": "stupefacenti",
+      "law": "d.P.R. 309/1990",
+      "patterns": [
+        "\\bstupefacent",
+        "\\bspaccio\\b"
+      ]
+    },
+    {
+      "name": "mediazione civile",
+      "law": "d.lgs. 28/2010",
+      "patterns": [
+        "\\bmediazione\\s+(?:civile|obbligatoria|finalizzata)"
+      ]
+    },
+    {
+      "name": "legittima difesa",
+      "law": "c.p.",
+      "patterns": [
+        "\\blegittima\\s+difesa\\b",
+        "\\bdifesa\\s+legittima\\b",
+        "\\beccesso\\s+colposo\\b"
+      ]
+    },
+    {
+      "name": "stato di necessità",
+      "law": "c.p.",
+      "patterns": [
+        "\\bstato\\s+di\\s+necessit"
+      ]
+    },
+    {
+      "name": "scriminanti",
+      "law": "c.p.",
+      "patterns": [
+        "\\bscriminant",
+        "\\bcause\\s+di\\s+giustificazione\\b",
+        "\\bconsenso\\s+dell['’]\\s*avente\\s+diritto\\b",
+        "\\besercizio\\s+di\\s+un\\s+diritto\\b",
+        "\\badempimento\\s+di\\s+un\\s+dovere\\b"
+      ]
+    },
+    {
+      "name": "delitti contro la persona",
+      "law": "c.p.",
+      "patterns": [
+        "\\bomicidi",
+        "\\blesion\\w*\\s+personal",
+        "\\bpercoss",
+        "\\brissa\\b",
+        "\\bminacci",
+        "\\bstalking\\b|\\batti\\s+persecutori",
+        "\\bmaltrattament",
+        "\\bviolenza\\s+(?:sessuale|privata)",
+        "\\bsequestro\\s+di\\s+persona",
+        "\\bdiffamazion",
+        "\\babbandono\\s+di\\s+persone",
+        "\\bomissione\\s+di\\s+soccorso",
+        "\\binterferenz\\w*\\s+illecit\\w*\\s+nella\\s+vita\\s+privata",
+        "\\bsostituzione\\s+di\\s+persona\\b"
+      ]
+    },
+    {
+      "name": "delitti contro il patrimonio",
+      "law": "c.p.",
+      "patterns": [
+        "\\bfurt",
+        "\\brapin",
+        "\\bestorsion",
+        "\\btruff",
+        "\\bappropriazione\\s+indebita",
+        "\\bricettazion",
+        "\\briciclaggi",
+        "\\bdanneggiament",
+        "\\busura\\b",
+        "\\binsolvenza\\s+fraudolenta",
+        "\\bfrode\\s+informatica"
+      ]
+    },
+    {
+      "name": "delitti contro la pubblica amministrazione",
+      "law": "c.p.",
+      "patterns": [
+        "\\bpeculato",
+        "\\bconcussion",
+        "\\bcorruzion",
+        "\\babuso\\s+d['’]\\s*ufficio",
+        "\\bresistenza\\s+a\\s+(?:un\\s+)?pubblico\\s+ufficiale",
+        "\\boltraggio",
+        "\\bfalso\\s+ideologic",
+        "\\bfalsit[àa]\\s+(?:materiale|ideologica|in\\s+atto)"
+      ]
+    },
+    {
+      "name": "parte generale del reato",
+      "law": "c.p.",
+      "patterns": [
+        "\\btentativ",
+        "\\bconcorso\\s+(?:di\\s+persone|nel\\s+reato|formale|materiale)",
+        "\\bdolo\\b",
+        "\\bcolpa\\s+(?:generica|specifica|cosciente)",
+        "\\bnesso\\s+(?:di\\s+)?causal",
+        "\\bimputabilit",
+        "\\bcircostanz\\w*\\s+(?:aggravant|attenuant)",
+        "\\bprescrizione\\s+del\\s+reato",
+        "\\bdesistenza",
+        "\\brecesso\\s+attivo"
+      ]
+    },
+    {
+      "name": "procedura penale",
+      "law": "c.p.p.",
+      "patterns": [
+        "\\bquerel",
+        "\\bmisur\\w*\\s+cautelar",
+        "\\briesame\\b",
+        "\\bpatteggiament",
+        "\\brito\\s+abbreviat",
+        "\\bmessa\\s+alla\\s+prova\\b",
+        "\\barchiviazion",
+        "\\bcostituzione\\s+di\\s+parte\\s+civile\\b",
+        "\\bincidente\\s+probatorio"
+      ]
+    },
+    {
+      "name": "obbligazioni e contratti",
+      "law": "c.c.",
+      "patterns": [
+        "\\binadempiment",
+        "\\brisoluzione\\s+(?:del\\s+contratto|per\\s+inadempimento)",
+        "\\bnullit[àa]\\s+del\\s+contratto",
+        "\\bannullabilit|\\bannullamento\\s+del\\s+contratto",
+        "\\brescission",
+        "\\bcaparra",
+        "\\bclausola\\s+penale",
+        "\\bresponsabilit\\w*\\s+(?:contrattual|precontrattual|extracontrattual)",
+        "\\bfatto\\s+illecito",
+        "\\brisarcimento\\s+del\\s+danno",
+        "\\bingiustificato\\s+arricchimento",
+        "\\bindebito",
+        "\\bmandato\\b",
+        "\\bfideiussion",
+        "\\btransazion",
+        "\\bdonazion",
+        "\\bcontratto\\s+preliminare|\\bpreliminare\\s+di\\s+(?:vendita|compravendita)",
+        "\\bvizi\\s+(?:della\\s+cosa|occulti|redibitori)|\\bgaranzia\\s+per\\s+i\\s+vizi",
+        "\\bprescrizione\\b",
+        "\\bdecadenza\\b",
+        "\\bfallimento\\s+delle\\s+trattative|\\brottura\\s+(?:ingiustificata\\s+)?delle\\s+trattative|\\btrattative\\s+precontrattual",
+        "\\banatocism"
+      ]
+    },
+    {
+      "name": "diritti reali e famiglia",
+      "law": "c.c.",
+      "patterns": [
+        "\\bpropriet",
+        "\\busufrutt",
+        "\\bimmissioni\\b",
+        "\\bdistanze\\s+(?:legali|tra\\s+(?:le\\s+)?costruzioni)",
+        "\\bcomunione\\b",
+        "\\bcondomin",
+        "\\bfiliazion",
+        "\\bresponsabilit[àa]\\s+genitoriale",
+        "\\bdivisione\\b",
+        "\\bsuccession",
+        "\\btestament",
+        "\\blegittim[ai]\\b(?!\\s+difesa)",
+        "\\bimpresa\\s+familiare",
+        "\\bsociet[àa]\\s+(?:semplice|in\\s+nome\\s+collettivo|in\\s+accomandita|a\\s+responsabilit|per\\s+azioni)"
+      ]
+    },
+    {
+      "name": "processo civile",
+      "law": "c.p.c.",
+      "patterns": [
+        "\\bdecreto\\s+ingiuntiv",
+        "\\bopposizione\\s+(?:a|al)\\s+(?:decreto|precetto|esecuzione)",
+        "\\bpignorament",
+        "\\bprecetto\\b",
+        "\\baccertamento\\s+tecnico\\s+preventivo",
+        "\\bprocedimento\\s+cautelare|\\bprovvedimento\\s+d['’]\\s*urgenza|\\bart\\.?\\s*700\\b",
+        "\\bsfratt",
+        "\\bcompetenza\\s+(?:territoriale|per\\s+valore)",
+        "\\bappello\\b",
+        "\\bricorso\\s+per\\s+cassazione"
+      ]
+    }
+  ]
+}

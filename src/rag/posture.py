@@ -96,27 +96,26 @@ def of(state: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
     """The answer's posture (see the module's doc). Never raises: an unreadable intake is no intake."""
     from . import intake as intake_mod, interactive_flow
     raw = (state or {}).get("intake") or {}
-    resolved = intake_mod.resolve(raw, analysis or {}) if raw else None
+    case = str((analysis or {}).get(interactive_flow.CASE_KEY) or (state or {}).get("text") or "")
+    seen = {**(analysis or {}), interactive_flow.CASE_KEY: case}       # v79.14.1 (item 1): resolve reads the same case
+    resolved = intake_mod.resolve(raw, seen) if raw else None
     if resolved is None:            # no intake (an old state, the replay): the existing logic's rito and role only
-        resolved = intake_mod.resolve({"rito": UNKNOWN, "role": UNKNOWN, "stage": "", "confidence": {}},
-                                      analysis or {}) or {}
+        resolved = intake_mod.resolve({"rito": UNKNOWN, "role": UNKNOWN, "stage": "", "confidence": {}}, seen) or {}
     rito = str(resolved.get("rito") or UNKNOWN)
     if rito == UNKNOWN:
         families = interactive_flow.frame_families(analysis or {})
         rito = families[0] if families and families[0] in ("civile", "penale", "amministrativo") else UNKNOWN
+    # v79.14.1 (item 1): the method's role IS the intake's resolved role -- v79.10.2 (B1)'s reading (a model's or a
+    # default's «attore» on a case that shows the client resisting is the defending role) now lives in intake.resolve
     role = str(resolved.get("role") or UNKNOWN)
     stage = str(resolved.get("stage") or "") or UNKNOWN
-    case = str((analysis or {}).get(interactive_flow.CASE_KEY) or (state or {}).get("text") or "")
     read = str((raw or {}).get("rito") or "")
     resist = str(resolved.get("resisting") or "") if role == "convenuto" else ""
-    if role == "attore" and family(rito) == "civile" and (resolved.get("confidence") or {}).get("role") != "rule":
-        # v79.10.2 (B1): the party resisting a demand is never the claimant -- a model's or a default's «attore» on a
-        # case (the precisazioni too) that shows the client resisting is the defending role
-        resist = resist or intake_mod.resisting(case, str((resolved.get("client") or {}).get("name") or ""))
-        if resist:
-            role = "convenuto"
     from . import case_frame
-    if case_frame.held(state) is not None:      # v79.14.0 (CASE_FRAME): the frame's rito, role and stage -- never
+    # v79.14.0 (CASE_FRAME): the frame's rito, role and stage -- never resolve's own (it lost: its v79.14.1 resisting
+    # rule included, logged frame_conflict «intake.resolve»); the resolved role is the fallback for a role the frame
+    # left empty or that failed verification
+    if case_frame.held(state) is not None:
         for c in resolved.get("frame_conflicts") or []:         # resolve's own (it lost): kept in the state
             case_frame.conflict(state, c.get("field"), c.get("step"), c.get("proposed"), c.get("frame"))
         rito = case_frame.defer(state, "rito", "posture.of", rito)     # this step's own (logged, it loses)
@@ -126,7 +125,11 @@ def of(state: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
         read = case_frame.bound(state, "rito") or read
     out = {"rito": rito, "family": family(rito), "role": role, "stage": stage, "resisting": resist,
            "querela_stated": querela_stated(case), "prior_decisions": list(resolved.get("prior_decisions") or []),
-           "from_intake": bool(raw), "intake_rito": read if read != UNKNOWN else ""}      # v75: the tables' key
+           "from_intake": bool(raw), "intake_rito": read if read != UNKNOWN else "",      # v75: the tables' key
+           # v79.14.1 (item 1): the intake's resolved role and client, and why -- the role_flip counter reads them
+           "intake_role": role, "role_why": str(resolved.get("role_why") or (resolved.get("why") or {}).get("role")
+                                                or ""),
+           "intake_client": str((resolved.get("client") or {}).get("name") or "")}
     out["entry"] = entry_for(rito, role, stage)
     return out
 

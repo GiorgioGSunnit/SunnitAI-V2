@@ -116,18 +116,29 @@ def families() -> Dict[str, Dict[str, Any]]:
     return _LAWS.get("families") or {}
 
 
-def family_signal(family: str, text: str) -> List[str]:
+def family_signal(family: str, text: str, act: bool = True) -> List[str]:
     """v79.10 (A4): the words of the text that hold the family's signal -- one strong expression's match, else the
-    weak expressions' matches when at least weak_min different ones match; [] otherwise (or no such family)."""
+    weak expressions' matches when at least weak_min different ones match; [] otherwise (or no such family). v79.14.1
+    (item 3): a family that needs the administrative act (data/administrative_act.json «families»: amministrativo) only
+    with one in the same text (family_gate.administrative_act) -- «Comune», «difformità edilizie», «permesso di
+    costruire» alone never; act False: the signal as before (what a refusal for lack of the act counts)."""
     spec = families().get(family)
     if not spec or not text:
         return []
+    got: List[str] = []
     for r in spec["strong"]:
         m = r.search(text)
         if m:
-            return [m.group(0)]
-    weak = [m.group(0) for m in (r.search(text) for r in spec["weak"]) if m]
-    return weak if len(weak) >= spec["weak_min"] else []
+            got = [m.group(0)]
+            break
+    if not got:
+        weak = [m.group(0) for m in (r.search(text) for r in spec["weak"]) if m]
+        got = weak if len(weak) >= spec["weak_min"] else []
+    if got and act:
+        from . import family_gate
+        if family in family_gate.act_table()["families"] and not family_gate.administrative_act(text):
+            return []
+    return got
 
 
 def law_of(code: Any, name_only: bool = False, exact_entries: bool = True) -> Optional[Dict[str, Any]]:
