@@ -497,11 +497,18 @@ def test_a_charge_that_is_no_fitted_norm_is_not_re_asked_and_still_leads():
 
 @pytest.mark.parametrize("reply,status", [(RuntimeError("connection refused"), "failed"), ("non è JSON", "malformed"),
                                           ("[1, 2]", "malformed")])
-def test_a_failed_call_or_no_json_object_gives_nothing(reply, status):
+def test_a_failed_call_or_no_json_object_gives_the_fallback_line(reply, status):
+    """v79.16.2 (item 3): a failed step runs the fallbacks on no reply -- here the frame's charge (640 c.p.) leads, every
+    element «da_provare»; nothing of the model's."""
     model = _Model(reply)
     res = A.analyse(_penal(), call=model)
-    assert res["status"] == status and res["analysis"] is None and len(model.seen) == 1
+    assert res["status"] == status and len(model.seen) == 1
     assert res["counters"]["analysis_failed"] == 1 and res["counters"]["analysis_calls"] == 1
+    assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE and res["analysis"]["linea_subordinata"] is None
+    assert res["analysis"]["linea_principale"]["articolo"] == "640 c.p." and res["analysis"]["rejected"] == []
+    assert {e["esito"] for e in res["analysis"]["elementi"]["640 c.p."]} == {"da_provare"}
+    assert res["counters"]["analysis_frame_charge_missing"] == 1
+    assert res["counters"]["analysis_fallback_skipped_reason"] == A.SKIP_FRAME_CHARGE
 
 
 def test_the_deadline_cuts_the_call_and_nothing_is_printed(monkeypatch):
@@ -511,7 +518,7 @@ def test_the_deadline_cuts_the_call_and_nothing_is_printed(monkeypatch):
     t0 = time.time()
     res = A.analyse(_penal(), call=model)
     assert time.time() - t0 < 0.9
-    assert res["status"] == "timeout" and res["analysis"] is None
+    assert res["status"] == "timeout" and res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE     # v79.16.2
     assert res["counters"]["analysis_timeouts"] == 1 and res["counters"]["analysis_failed"] == 1
 
 
@@ -527,7 +534,8 @@ def test_a_failed_re_ask_keeps_the_first_replys_verification_with_its_fallbacks(
 
 def test_the_conftest_refuses_the_default_model_call():
     res = A.analyse(_penal())
-    assert res["status"] == "failed" and res["analysis"] is None and "no real model call" in res["error"]
+    assert res["status"] == "failed" and "no real model call" in res["error"]
+    assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE        # v79.16.2: the fallbacks ran
 
 
 def test_no_norm_or_no_sentence_sends_nothing():

@@ -280,7 +280,8 @@ def _events(monkeypatch):
     ("no_named_charge", A.SKIP_NO_NAMED_CHARGE, 0),
     ("no_rubrica_match", A.SKIP_NO_RUBRICA_MATCH, 0),
     ("fired", "", 1),
-    ("failed", A.SKIP_STEP_FAILED, 0),
+    ("failed", A.SKIP_FRAME_CHARGE, 0),             # v79.16.2 (item 3): a failed step runs the fallbacks on no reply
+    ("failed_fired", "", 1),
     ("no_input", A.SKIP_NO_INPUT, 0)])
 def test_the_reason_the_rubrica_fallback_did_not_run(case, reason, fired, monkeypatch, sealed):
     events = _events(monkeypatch)
@@ -291,6 +292,7 @@ def test_the_reason_the_rubrica_fallback_did_not_run(case, reason, fired, monkey
         "no_rubrica_match": (_no_charge("truffa ai danni di Giulia Neri", "vendita online"), [BAD_LINE, BAD_LINE]),
         "fired": (_no_charge("truffa"), [BAD_LINE, BAD_LINE]),
         "failed": (T._penal(), [RuntimeError("down")]),
+        "failed_fired": (_no_charge("truffa"), [RuntimeError("down")]),
         "no_input": (T._penal(norms=[]), []),
     }[case]
     res = A.analyse(inp, call=_Model(*replies))
@@ -302,13 +304,15 @@ def test_the_reason_the_rubrica_fallback_did_not_run(case, reason, fired, monkey
                                                                            "fallback_skipped_reason"]
     if res["analysis"]:
         assert res["analysis"]["fallback_skipped_reason"] == reason
-    if case == "frame_charge":
+    if case in ("frame_charge", "failed"):
         assert c["analysis_frame_charge_missing"] == 1
         assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE
     if case in ("no_named_charge", "no_rubrica_match"):
         assert c["analysis_line_undetermined"] == 1
-    if case == "fired":
+    if case in ("fired", "failed_fired"):
         assert res["analysis"]["linea_principale"]["stato"] == A.FALLBACK_LINE
+    if case.startswith("failed"):
+        assert res["status"] == "failed" and c["analysis_failed"] == 1 and c["analysis_calls"] == 1
 
 
 def test_the_reason_survives_the_numeric_sum_and_a_failed_input(monkeypatch, sealed):

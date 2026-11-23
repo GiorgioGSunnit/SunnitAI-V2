@@ -113,7 +113,8 @@
     "elements": "Elementi dello schema",
     "periods": "Testo (periodi numerati)",
     "questions": "QUESITI DELL'UTENTE",
-    "none": "(nessuno)"
+    "none": "(nessuno)",
+    "line_rank": "Preferenza per la linea (prima il fit si verificato, poi dipende verificato, poi non verificato)"
   },
   "remedy_mark": "rimedio o parte generale: mai una linea",
   "reask": [

@@ -145,16 +145,21 @@ def test_the_prompt_shows_each_articles_fit_and_perche_the_system_text_unchanged
 
 
 def test_the_line_tier_verified_si_then_verified_dipende_then_unverified_never_no():
-    assert A.line_tier(_penal_fit({"640 c.p.": ("si", True), "641 c.p.": ("si", False)})) == (A.TIER_SI, ["640 c.p."])
-    assert A.line_tier(_penal_fit({"640 c.p.": ("dipende", True), "641 c.p.": ("si", False)})) == (A.TIER_DIPENDE, ["640 c.p."])
+    # v79.16.2 (item 2): the whole list in preference order (the best tier first), never a «no»
+    assert A.line_tier(_penal_fit({"640 c.p.": ("si", True), "641 c.p.": ("si", False)})) == (A.TIER_SI, ["640 c.p.", "641 c.p."])
+    assert A.line_tier(_penal_fit({"641 c.p.": ("si", True), "640 c.p.": ("si", False)})) == (A.TIER_SI, ["641 c.p.", "640 c.p."])
+    assert A.line_tier(_penal_fit({"640 c.p.": ("dipende", True), "641 c.p.": ("si", False)})) == \
+        (A.TIER_DIPENDE, ["640 c.p.", "641 c.p."])
     assert A.line_tier(_penal_fit({"640 c.p.": ("si", False), "641 c.p.": ("dipende", False)})) == \
         (A.TIER_UNVERIFIED, ["640 c.p.", "641 c.p."])
     assert A.line_tier(_penal_fit({"640 c.p.": ("no", True), "641 c.p.": ("no", False)})) == (A.TIER_UNVERIFIED, [])
+    assert A.line_tier(_penal_fit({"640 c.p.": ("no", True), "641 c.p.": ("si", True)})) == (A.TIER_SI, ["641 c.p."])
+    assert A.line_tier(_penal_fit({"640 c.p.": ("si", True)})) == (A.TIER_SI, ["640 c.p.", "641 c.p."])    # 641 unjudged: last
     tier, allowed = A.line_tier(T._penal())
     assert tier == A.TIER_ALL and allowed == ["640 c.p.", "641 c.p."]        # no judgment at all (the fit off)
 
 
-def test_a_line_on_a_fit_no_or_on_an_unverified_norm_beside_a_verified_si_is_rejected_and_counted():
+def test_a_line_on_a_fit_no_is_rejected_an_unverified_one_beside_a_verified_si_is_kept_and_counted():
     inp = _penal_fit({"640 c.p.": ("si", True), "641 c.p.": ("no", True)})
     model = T._Model(T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"])),
                      T._reply(T._line("640 c.p.", T.E640[0], "Tesi.", ["S3"], ["A640cp.1"])))
@@ -164,12 +169,16 @@ def test_a_line_on_a_fit_no_or_on_an_unverified_norm_beside_a_verified_si_is_rej
     assert res["analysis"]["linea_principale"]["fit"] == "si" and res["analysis"]["linea_principale"]["fit_verified"]
     assert "art. 640 c.p." in model.seen[1]["messages"][3].content and "641" not in \
         model.seen[1]["messages"][3].content.split("Articoli ammessi")[1].split("Correggi")[0]
+    # v79.16.2 (item 2): an unverified norm beside a verified one is a weaker preference, never a rejection
     inp = _penal_fit({"640 c.p.": ("si", True), "641 c.p.": ("si", False)})
-    res = A.analyse(inp, call=T._Model(T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"])),
-                                       T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"]))))
-    assert res["rejected"][0]["why"].startswith("art. 641 c.p.: fit si non verificato, mentre esiste un fit verificato: "
-                                                "ammessi art. 640 c.p.")
-    assert res["counters"]["line_from_unverified"] == 0 and res["counters"]["analysis_line_rejected"] == 2
+    model = T._Model(T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"])))
+    res = A.analyse(inp, call=model)
+    assert res["rejected"] == [] and res["counters"]["analysis_line_rejected"] == 0 and len(model.seen) == 1
+    assert res["analysis"]["linea_principale"]["articolo"] == "641 c.p."
+    assert res["counters"]["line_from_unverified"] == 1 and res["counters"]["line_from_fit_si"] == 0
+    inp = _penal_fit({"640 c.p.": ("si", True)})                       # 641 never judged: unverified, still a line
+    res = A.analyse(inp, call=T._Model(T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"]))))
+    assert res["rejected"] == [] and res["counters"]["line_from_unverified"] == 1
     inp = _penal_fit({"640 c.p.": ("si", False), "641 c.p.": ("dipende", True)})
     res = A.analyse(inp, call=T._Model(T._reply(T._line("641 c.p.", T.E641[0], "Tesi.", ["S2"], ["A641cp.1"]))))
     assert res["analysis"]["linea_principale"]["articolo"] == "641 c.p." and res["counters"]["line_from_fit_dipende"] == 1
@@ -223,7 +232,9 @@ def test_pertinence_shares_a_content_lemma_stopwords_and_party_names_apart():
     assert A._lemmas("appropriato appropria inadempiente inadempimento", set()) == {"appro", "inade"}
 
 
-def test_a_provato_or_escluso_on_a_fact_sharing_no_lemma_is_da_provare_logged_and_counted(monkeypatch):
+def test_a_provato_or_escluso_on_a_fact_sharing_no_lemma_stands_logged_and_counted(monkeypatch):
+    """v79.16.2 (item 1): the pertinence check counts and logs, never downgrades (legal element words never occur in
+    plain facts: «si presenta come intermediario autorizzato» is proof of «artifizi o raggiri»)."""
     from src.rag import verbose_logger
     events = []
     monkeypatch.setattr(verbose_logger, "vlog", lambda e, d=None, ms=None: events.append((e, d)))
@@ -233,10 +244,10 @@ def test_a_provato_or_escluso_on_a_fact_sharing_no_lemma_is_da_provare_logged_an
         T._el("640 c.p.", T.E640[2], "provato", ["S2"])]))        # S2 carries «danno» and «profitto»: stands
     res = A.analyse(T._penal(), call=model)
     els = {e["elemento"]: e for e in res["analysis"]["elementi"]["640 c.p."]}
-    assert els[T.E640[0]]["esito"] == "da_provare" and els[T.E640[0]]["declassato"] == "nessun fatto citato pertinente"
+    assert els[T.E640[0]]["esito"] == "provato" and "declassato" not in els[T.E640[0]]
     assert els[T.E640[0]]["non_pertinente"] == {"esito_modello": "provato", "fatti": [T.PENAL_SENTENCES[0]]}
-    assert els[T.E640[1]]["esito"] == "da_provare" and els[T.E640[1]]["non_pertinente"]["esito_modello"] == "escluso"
-    assert els[T.E640[2]]["esito"] == "provato"
+    assert els[T.E640[1]]["esito"] == "escluso" and els[T.E640[1]]["non_pertinente"]["esito_modello"] == "escluso"
+    assert els[T.E640[2]]["esito"] == "provato" and "non_pertinente" not in els[T.E640[2]]
     assert res["counters"]["analysis_provato_no_pertinence"] == 2
     line = next(d for e, d in events if e == "analysis_step")
     assert [(x["eid"], x["esito_modello"]) for x in line["no_pertinence"]] == [("A640cp:E1", "provato"), ("A640cp:E2", "escluso")]
@@ -294,3 +305,60 @@ def test_the_new_counters_are_declared():
                  "analysis_provato_no_pertinence"):
         assert name in A.COUNTERS, name
     assert "procedural_patterns" in A.config() and "pertinence_stopwords" in A.config()
+
+
+# --- v79.16.2 (hotfix): two rules back to log-only; the fallbacks on a failed step ----------------------------------------
+
+def test_the_article_block_tells_the_preference_order_and_the_allowed_list_is_tagged_in_that_order():
+    inp = _penal_fit({"640 c.p.": ("si", False), "641 c.p.": ("dipende", True)})
+    human = A.build_messages(inp)[1].content
+    rank = A.config()["labels"]["line_rank"]
+    assert rank.startswith("Preferenza per la linea (prima il fit si verificato")
+    assert f"ARTICOLO: 641 c.p.\nRubrica: Insolvenza fraudolenta\nfit: dipende (verificato) — perché di 641 c.p.\n{rank}: 1/2\n" \
+        in human
+    assert f"fit: si — perché di 640 c.p.\n{rank}: 2/2\n" in human
+    assert rank not in human.split("ARTICOLO: 62-bis c.p.")[1]                     # the remedy set: no rank
+    assert A.prompt_hash() == "472423ea32d3"                                       # the system text unchanged
+    assert rank not in A.build_messages(T._penal())[1].content                     # the fit off: no order
+    assert A.allowed_text(inp) == ("- A641cp (art. 641 c.p.): A641cp:E1, A641cp:E2 [fit dipende verificato]\n"
+                                   "- A640cp (art. 640 c.p.): A640cp:E1, A640cp:E2, A640cp:E3 [fit si non verificato]")
+    assert "[fit non giudicato]" in A.allowed_text(_penal_fit({"640 c.p.": ("si", True)}))
+    assert "[" not in A.allowed_text(T._penal())
+
+
+def test_a_failed_step_runs_the_fallbacks_on_no_reply_and_logs_the_reason(monkeypatch):
+    from src.rag import verbose_logger
+    events = []
+    monkeypatch.setattr(verbose_logger, "vlog", lambda e, d=None, ms=None: events.append((e, d)))
+    checked = A.empty_checked(T._penal())
+    assert checked["lines"] == {"linea_principale": None, "linea_subordinata": None} and checked["charge_missing"]
+    assert not A.empty_checked(_penal_fit({"640 c.p.": ("si", True)}))["charge_missing"]      # no charge in the frame
+    res = A.analyse(_penal_fit({"640 c.p.": ("si", True)}), call=T._Model(RuntimeError("down")))
+    assert res["status"] == "failed" and res["counters"]["analysis_failed"] == 1
+    assert res["analysis"]["linea_principale"]["stato"] == A.UNDETERMINED        # no charge, no name: nothing to lead
+    assert res["counters"]["analysis_fallback_skipped_reason"] == A.SKIP_NO_NAMED_CHARGE
+    assert res["counters"]["analysis_line_undetermined"] == 1 and res["counters"]["line_from_unverified"] == 0
+    line = next(d for e, d in events if e == "analysis_step")
+    assert line["status"] == "failed" and line["fallback_skipped_reason"] == A.SKIP_NO_NAMED_CHARGE
+    assert line["lines"][0]["stato"] == A.UNDETERMINED
+    v = A.view(res, _penal_fit({"640 c.p.": ("si", True)}))
+    assert v["analysis"]["linea_principale"]["stato"] == A.UNDETERMINED and v["status"] == "failed"
+    frame = dict(T.PENAL_FRAME, addebito_o_domanda={"articolo": None, "descrizione": "truffa", "frase": "«x»"})
+    inp = A.make_input(frame, T.PENAL_NORMS, T._sents(T.PENAL_SENTENCES, sistema=(9,)), [], client="Paolo Sarti",
+                       client_roles=["imputato"])
+    res = A.analyse(inp, call=T._Model("non è JSON"))
+    assert res["status"] == "malformed" and res["analysis"]["linea_principale"]["stato"] == A.FALLBACK_LINE
+    assert res["analysis"]["linea_principale"]["articolo"] == "640 c.p." and res["counters"]["analysis_line_fallback_rubrica"] == 1
+    assert res["counters"]["analysis_fallback_skipped_reason"] == ""
+    assert A.view(res, inp)["analysis"]["linea_principale"]["stato"] == A.FALLBACK_LINE
+
+
+def test_the_dedup_never_splits_a_sentence_after_a_code_abbreviation():
+    assert A._dedup_sentences("Linea principale: art. 646 c.p. (addebito del quadro, linea non verificata).") == \
+        ["Linea principale: art. 646 c.p. (addebito del quadro, linea non verificata)."]
+    assert A._dedup_sentences("Prima frase. Seconda frase (con inciso). Terza.") == \
+        ["Prima frase.", "Seconda frase (con inciso).", "Terza."]
+    assert A._dedup_sentences("Si applica l'art. 1385 c.c. Il resto segue.") == ["Si applica l'art. 1385 c.c. Il resto segue."]
+    parts, dropped = A.dedup_sections([("qa", "La linea principale è: art. 646 c.p. (addebito del quadro, linea non verificata)."),
+                                       ("s1", "Linea principale: art. 646 c.p. (addebito del quadro, linea non verificata).")])
+    assert dropped == 0 and parts[1][1].endswith("(addebito del quadro, linea non verificata).")

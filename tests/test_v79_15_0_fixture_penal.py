@@ -196,9 +196,10 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert "legacy_disagrees_line" in c and "legacy_disagrees_esito" in c
 
 
-def test_a_failed_step_prints_the_undetermined_line_never_the_old_engines(monkeypatch, tmp_path):
-    """The analysis call failing (the model raising): status failed, §1 «da determinare (linea non verificata)», no
-    element table, no count, §6 and §9 the undetermined line -- the old engine's line logged only."""
+def test_a_failed_step_prints_the_frames_charge_as_an_unverified_line_never_the_old_engines(monkeypatch, tmp_path):
+    """The analysis call failing (the model raising): status failed; v79.16.2 (item 3): the fallbacks run on no reply --
+    the frame's charge (646 c.p.) leads as «addebito del quadro, linea non verificata», every element «da provare»,
+    the counts 0 su 4 / 4 su 4; the old engine's tesi never printed, its line logged only."""
     import types
 
     def broken(parsed, attempt):
@@ -210,11 +211,13 @@ def test_a_failed_step_prints_the_undetermined_line_never_the_old_engines(monkey
     state, answer, by = run["state"], run["answer"], run["by"]
     c = state["block_counters"]
     assert by["analysis_step"][0][0]["status"] == "failed" and c["analysis_failed"] == 1 and c["analysis_calls"] == 1
-    assert H.section(answer, "sintesi") == "Linea principale: da determinare (linea non verificata)."
-    assert H.esito_column(answer) == [] and "Nessuna linea verificata" in H.section(answer, "norme")
-    assert not re.search(r"\b\d+ su \d+\b", answer)
-    assert "da determinare (linea non verificata)" in H.section(answer, "soluzioni")
-    assert H.section(answer, "conclusioni") == "**Linea principale**: da determinare (linea non verificata)."
+    assert c["analysis_frame_charge_missing"] == 1 and c["analysis_fallback_skipped_reason"] == "frame_charge_used"
+    assert H.section(answer, "sintesi") == "Linea principale: art. 646 c.p. (addebito del quadro, linea non verificata)."
+    assert [x.split(" | ")[::2] for x in H.esito_column(answer)] == [["646 c.p.", "da provare"]] * 4
+    assert set(re.findall(r"\b\d+ su \d+\b", answer)) == {"0 su 4", "4 su 4"}
+    assert "| Linea principale | art. 646 c.p. (addebito del quadro, linea non verificata) | — | — | — |" in \
+        H.section(answer, "soluzioni")
+    assert "**Linea principale**: art. 646 c.p. (addebito del quadro, linea non verificata)." in H.section(answer, "conclusioni")
     legacy = by["legacy_plan"][0][0]
-    assert legacy["legacy_disagrees_line"] == 1 and legacy["linea_principale"]["tesi"] not in answer
+    assert legacy["linea_principale"]["tesi"] not in answer
     assert "L'accusa deve provare" not in answer and "Esito probabile" not in answer

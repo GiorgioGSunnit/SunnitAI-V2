@@ -523,6 +523,29 @@ selected by the verified frame's rito (`lawyer_method.rito_blocks`: the civil bl
 ones never in a civil or labour one, a «Termini» line by its code; counter `sections_rito_blocks_dropped`); the
 procedural facts of the charge article are read from every row of the answer, not the chosen refs' rows alone.
 
+## 5k. v79.16.2 (24 Nov 2026, hotfix): two 79.16.1 rules back to log-only; the fallbacks on a failed step
+
+No new flag; under `ANALYSIS_STEP`. Server evidence on 79.16.1: 640 c.p. elements proved by facts such as «si presenta
+come intermediario autorizzato» were downgraded to «da provare» by the pertinence lemma check (legal element words never
+occur in plain facts); a penal case that led on 646 c.p. in 79.16.0 printed «da determinare» because the unverified 646
+was refused beside a verified article and the re-ask timed out. (1) Pertinence (`analysis_step.pertinent`) never changes a
+verdict: the esito stays as the model gave it after provenance; the check is computed, counted
+(`analysis_provato_no_pertinence`) and logged in the step's line (`no_pertinence`, the element and the cited facts).
+(2) The fit tier is a preference, never a gate: `line_tier` lists every allowed article in the order verified «si» →
+verified «dipende» → unverified or unjudged «si» / «dipende» (never a «no», never a remedy); the article block of the
+prompt tells the model each norm's rank («Preferenza per la linea (prima il fit si verificato, poi dipende verificato, poi
+non verificato): 1/2» -- the human message; the system text unchanged, hash 472423ea32d3) and the re-ask's allowed list is
+in that order, each article tagged («[fit si verificato]», «[fit si non verificato]», «[fit non giudicato]»); `_verify_line`
+refuses a fit «no» and a procedural element only; a chosen line on an unverified or unjudged norm counts
+`line_from_unverified` = 1 and nothing else. (3) A first call that failed, timed out or answered no JSON object runs
+`finish` on no reply (`empty_checked`): the frame's charge (`addebito del quadro, linea non verificata`), else the rubrica
+fallback, else «da determinare», in that order, on every path; `analysis_fallback_skipped_reason` says which
+(frame_charge_used, "" when the rubrica fallback ran, no_named_charge, no_rubrica_match; step_failed only for an input
+that cannot be read); the step's status stays failed / timeout / malformed and `analysis_failed` = 1, the view and the
+rendering read the fallback line. The section dedup (`dedup_sections`) no longer splits a sentence after a code or article
+abbreviation («art. 646 c.p. (addebito del quadro, …)» is one sentence): 79.16.0 dropped §1's label as the Q&A line's
+duplicate.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

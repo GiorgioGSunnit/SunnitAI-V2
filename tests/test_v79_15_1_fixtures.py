@@ -560,7 +560,7 @@ def test_a_claimants_line_is_constitutive_and_the_allegation_is_the_objection(mo
     assert c["analysis_calls"] == 2 and c["analysis_line_exception"] == 1 and c["analysis_line_rejected"] == 1
     assert "(schema)" in step["rejected"][0]["why"]
     reask = run["model"].calls[1]["last"]
-    assert "- A1667cc (art. 1667 c.c.): A1667cc:E1\n" in reask and "Il cliente agisce come attore" in reask
+    assert "- A1667cc (art. 1667 c.c.): A1667cc:E1" in reask and "Il cliente agisce come attore" in reask
     assert {(x["eid"], x["fonte"]) for x in step["exceptions"]} == {("A1667cc:E2", "schema"), ("A1667cc:E3", "schema")}
     assert step["lines"][0]["eid"] == "A1667cc:E1" and step["lines"][0]["articolo"] == "1667 c.c."
     assert [r["articolo"] for r in step["rejected"]] == ["1667 c.c."]          # v79.15.2: «1667cc» read

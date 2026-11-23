@@ -196,10 +196,14 @@ def test_the_frames_charge_article_comes_before_the_rubrica_fallback():
     assert c["analysis_frame_charge_missing"] == 1 and c["analysis_line_fallback_rubrica"] == 0
 
 
-def test_a_failed_first_call_gives_nothing_not_the_rubrica_line():
+def test_a_failed_first_call_gives_the_rubrica_line():
+    """v79.16.2 (item 3): the rubrica fallback runs on a failed step too, before «da determinare»."""
     frame = _no_charge(T.PENAL_FRAME, addebito_o_domanda={"articolo": None, "descrizione": "truffa", "frase": "«x»"})
     res = A.analyse(T._penal(frame=frame), call=_Model(RuntimeError("down")))
-    assert res["status"] == "failed" and res["analysis"] is None
+    assert res["status"] == "failed" and res["analysis"]["linea_principale"]["stato"] == A.FALLBACK_LINE
+    assert res["analysis"]["linea_principale"]["articolo"] == "640 c.p."
+    assert res["counters"]["analysis_line_fallback_rubrica"] == 1 and res["counters"]["analysis_failed"] == 1
+    assert res["counters"]["analysis_fallback_skipped_reason"] == ""
 
 
 def test_the_older_frames_central_issues_count_only_when_grounded_in_the_case():
