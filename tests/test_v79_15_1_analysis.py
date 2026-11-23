@@ -158,7 +158,7 @@ def test_after_a_failed_re_ask_the_frames_named_charge_finds_its_article_by_rubr
     assert "| Linea principale | art. 640 c.p. | — | Truffa: elementi da provare dall'accusa | — |" in \
         A.solutions_text(v)
     assert "**Art. 640 c.p.** — Truffa" in A.norms_tables(v) and "da provare 3 su 3" in A.norms_tables(v)
-    assert A.conclusions_text(v).startswith("**Linea principale**: art. 640 c.p. — Truffa: elementi da provare")
+    assert A.conclusions_text(v).splitlines()[1].startswith("**Linea principale**: art. 640 c.p. — Truffa: elementi da provare")   # v79.16.0 (D2): the counts open §9
 
 
 def test_the_civil_fallback_tesi_and_the_istituto_as_the_named_claim():

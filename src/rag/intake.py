@@ -423,6 +423,10 @@ def quesiti(message: str) -> List[Tuple[int, str]]:
     («a)»), dashed or bulleted items; without markers, the lead-in's «;»-separated clauses (two at least), else its
     one clause up to the sentence's end. v69: with no lead-in, two or more question sentences -- each one, in order
     (question_sentences)."""
+    if _items_on():                     # v79.16.0 (C1): the user's numbered items whole, never cut at an inner «?»
+        items = question_items_at(message)
+        if items:
+            return items
     if not _QUESITI_LEAD_RE.search(message or ""):
         return question_sentences(message)
     out: List[Tuple[int, str]] = []
@@ -461,7 +465,12 @@ _ASK_PHRASE_RE = re.compile(r"\b(?:chied(?:o|iamo)\s+(?:se|quale|quali|come|quan
 def questions(message: str) -> List[str]:
     """v79.6 (item 1): every explicit question of the request, in order -- a sentence ending in «?», or one phrased as
     a request («chiedo se …», «vorrei sapere …», «quale … sia …», «è possibile …») --, one or more. v79.10.2 (B2): a
-    question written as a task counts too (task_question: «Illustra …», «valuti …», «valutando se …», «indichi …»)."""
+    question written as a task counts too (task_question: «Illustra …», «valuti …», «valutando se …», «indichi …»).
+    v79.16.0 (C1, ANALYSIS_STEP): the user's numbered items (question_items) first -- one item, one question, whole."""
+    if _items_on():
+        items = question_items(message)
+        if items:
+            return items
     out: List[str] = []
     for sentence in sentences(message or ""):
         text = _flat(sentence).strip()
@@ -478,6 +487,63 @@ def questions(message: str) -> List[str]:
             if task:
                 out.append(task)
     return list(dict.fromkeys(x[:user_limits.cap(QUESITO_CHARS)] for x in out))
+
+
+# v79.16.0 (C1, ANALYSIS_STEP): the questions are the user's numbered items («1.», «2)» …, each whole, however many «?»
+# it holds) or, with none, one per line after a «Quesiti» / «Domande» lead-in -- never an item cut at an inner «?»
+# (79.15.3 answered «A quali condizioni?» and «Con quali limiti?» as questions of their own, twice and out of order).
+_NUMBERED_MARK_RE = re.compile(r"(?:(?<=^)|(?<=[\n:;.?!]))[ \t]*(\d{1,2})[.)][ \t]+")
+ITEM_CHARS = 600
+
+
+def _items_on() -> bool:
+    from .feature_flags import enabled
+    return enabled("ANALYSIS_STEP")
+
+
+def _is_question_item(text: str) -> bool:
+    return "?" in text or bool(_ASK_PHRASE_RE.search(text)) or bool(task_question(text))
+
+
+def question_items_at(message: str) -> List[Tuple[int, str]]:
+    """[(position, item)]: the message's numbered items that are questions, whole and in order (a paragraph break or
+    the next number ends one); none, the lines after a «Quesiti» / «Domande» lead-in, one each (a blank line ends
+    the list). [] when the text lists neither."""
+    text = message or ""
+    out: List[Tuple[int, str]] = []
+    marks = list(_NUMBERED_MARK_RE.finditer(text))
+    for j, m in enumerate(marks):
+        end = marks[j + 1].start() if j + 1 < len(marks) else len(text)
+        body = text[m.end():end]
+        cut = re.search(r"\n\s*\n", body)
+        if cut:
+            body = body[:cut.start()]
+        item = _flat(body).strip(" ;,").strip()
+        if len(item.split()) >= 2 and _is_question_item(item):
+            out.append((m.end(), item[:user_limits.cap(ITEM_CHARS)]))
+    if out:
+        return out
+    for lead in _QUESITI_LEAD_RE.finditer(text):
+        tail = text[lead.end():]
+        at = lead.end()
+        for line in tail.split("\n"):
+            item = _flat(line).strip(" ;,").strip()
+            if not item:
+                if out:
+                    break
+                at += len(line) + 1
+                continue
+            if len(item.split()) >= 2:
+                out.append((at + max(line.find(item[:20]), 0), item[:user_limits.cap(ITEM_CHARS)]))
+            at += len(line) + 1
+        if out:
+            break
+    return out
+
+
+def question_items(message: str) -> List[str]:
+    """The items of question_items_at, texts only, each once."""
+    return list(dict.fromkeys(x for _, x in question_items_at(message)))
 
 
 # v79.10.2 (B2): a question written as a task addressed to the lawyer -- the second person's imperative («illustra»,

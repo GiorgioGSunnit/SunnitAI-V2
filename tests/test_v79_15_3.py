@@ -132,7 +132,7 @@ def test_section_1_6_9_print_the_codes_tesi_and_the_model_tesi_goes_to_the_log(m
     assert A.summary_text(v) == f"Linea principale: art. 640 c.p. — {want}."
     assert "elemento in gioco" not in A.summary_text(v)                 # the element named by the tesi itself
     assert f"| Linea principale | art. 640 c.p. | con artifizi o raggiri | {want} |" in A.solutions_text(v)
-    assert A.conclusions_text(v).startswith(f"**Linea principale**: art. 640 c.p. — {want}.")
+    assert A.conclusions_text(v).splitlines()[1].startswith(f"**Linea principale**: art. 640 c.p. — {want}.")   # v79.16.0 (D2): the counts open §9
     assert A.answer_strategy(v) == [f"La linea principale è: art. 640 c.p. — {want}."]
     for text in (A.summary_text(v), A.solutions_text(v), A.conclusions_text(v), A.answer_strategy(v)[0]):
         assert "Un testo del modello" not in text

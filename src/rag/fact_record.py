@@ -357,4 +357,27 @@ def facts(state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     record = (state or {}).get("fact_record")
     if not enabled() or not isinstance(record, dict) or record.get("version") != VERSION:
         return []
+    if record.get("status") != "ok":     # v79.16.0 (A1): a partial record never drives the sentences -- the rule's
+        return []                        # split instead (interactive_flow.case_sentences: fact_record_fallback = 1)
     return [f for f in record.get("facts") or [] if isinstance(f, dict) and f.get("tipo") == FACT and f.get("text")]
+
+
+def fallback(state: Optional[Dict[str, Any]]) -> bool:
+    """v79.16.0 (A1): with the flag on, the rule's split stands in for the record -- no record, or one not «ok»."""
+    if not enabled():
+        return False
+    record = (state or {}).get("fact_record")
+    return not isinstance(record, dict) or record.get("version") != VERSION or record.get("status") != "ok"
+
+
+def uncertain_items(state: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """v79.16.0 (A3): §10's items from the record -- a fact the text states as a hypothesis («ipotizzato») and a
+    stretch the model left out, read back by the rule («regola»): [{"kind": ipotesi | non_letto, "text"}], in the
+    text's order; [] with no record in use."""
+    out: List[Dict[str, str]] = []
+    for f in facts(state):
+        if f.get("stato") == "ipotizzato":
+            out.append({"kind": "ipotesi", "text": str(f["text"])})
+        elif f.get("source") == RULE:
+            out.append({"kind": "non_letto", "text": str(f["text"])})
+    return out

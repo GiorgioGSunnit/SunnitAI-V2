@@ -186,7 +186,7 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert sol.count("| Linea ") == 2 and "art. 646 c.p." in sol        # the head and the leading line
     assert "Contenimento" not in answer and "mmettere la condotta" not in answer
     concl = H.section(answer, "conclusioni")
-    assert concl.startswith("**Linea principale**: art. 646 c.p.") and "Esito probabile" not in answer
+    assert concl.splitlines()[1].startswith("**Linea principale**: art. 646 c.p.") and "Esito probabile" not in answer  # v79.16.0 (D2)
     # the Q&A: the verified statement printed; the unverified 62-bis one dropped wherever the Q&A carried it
     assert "**Affermazioni di diritto verificate**" in answer and "riduce sempre la pena di un terzo" not in answer
     # the old engine: logged, compared, printed nowhere

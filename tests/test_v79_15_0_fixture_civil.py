@@ -220,7 +220,8 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     # §6 / §9 the verified line only
     sol = H.section(answer, "soluzioni")
     assert "art. 1385 c.c." in sol and "1453" not in sol and "2043" not in sol
-    assert H.section(answer, "conclusioni").startswith("**Linea principale**: art. 1385 c.c.")
+    assert H.section(answer, "conclusioni").startswith("**Esiti dell'art. 1385 c.c.**")      # v79.16.0 (D2): the counts open §9
+    assert H.section(answer, "conclusioni").splitlines()[1].startswith("**Linea principale**: art. 1385 c.c.")
     # the Q&A: the unverified statements of 1453 and 2043 c.c. removed, the verified 1385 c.c. one printed
     # v79.15.1 (item 4): the unverified 1385 c.c. statement is replaced by its verified one, no longer dropped
     assert c["qa_sentences_dropped"] + c["qa_sentences_replaced"] >= 1

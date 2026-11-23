@@ -779,6 +779,11 @@ def cap_anchors(rows: Sequence[Dict[str, Any]], rule_topics: Sequence[Dict[str, 
     return list(dict.fromkeys(out))
 
 
+def _label_of_row(row: Dict[str, Any]) -> str:
+    ref = row.get("_article") or ()
+    return f"{ref[0]} {ref[1]}" if len(ref) >= 2 else ""
+
+
 def grading_keep(rows: Sequence[Dict[str, Any]], case: str, anchors: Sequence[str], first_read: Sequence[str]
                  ) -> List[str]:
     """v60o: the labels round 1 grades first, past the prefilter -- the candidates the user's text names, then the
@@ -903,6 +908,21 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                     _isolated("first_read_texts", lambda: article_text.fill_texts(session, added, store_))
                 article_rows = list(article_rows) + added
                 search_log = {**search_log, "new": len(added), "s": round(time.time() - t_search, 1)}
+        from .nodes import retrieval as retrieval_module
+        if case_first and retrieval_module.question_retrieval_enabled():     # v79.16.0 (B): the questions searched
+            stage_meter.mark("quesiti_search")
+            queries = list(analysis.get("quesiti_queries") or [])
+            q_rows, q_log = _isolated("quesiti_search", lambda: retrieval_module.retrieve_for_quesiti(
+                session, documents, queries, store=store_), ([], {"queries": len(queries), "per_quesito": []})) \
+                or ([], {"queries": len(queries), "per_quesito": []})
+            article_rows, q_added, q_labels = retrieval_module.merge_quesito_rows(article_rows, q_rows, _key)
+            if q_added:
+                _isolated("quesiti_texts", lambda: article_text.fill_texts(session, q_added, store_))
+            must += q_labels            # graded past the cap, as the first read's hits
+            q_log = {**q_log, "added": [_label_of_row(r) for r in q_added], "labels": q_labels,
+                     "by_quesito": retrieval_module.quesito_labels(article_rows)}
+            out["quesiti_retrieval"] = q_log
+            _log("retrieval_quesiti", q_log)
         links = topic_step.GraphLinks(session, documents)
         anchor_keep: List[str] = []
         if case_first:          # v60n: the fired rules' and tables' anchors -- candidates, graded like any other
@@ -1603,6 +1623,10 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
     with meter.active(), _case_branches_early(text, request):
         meter.mark("analysis")
         analysis = dg._analyse_case_for_pipeline(text, lang, request)
+        from .nodes import retrieval as retrieval_module       # v79.16.0 (B): the questions searched too
+        if retrieval_module.question_retrieval_enabled():
+            analysis["quesiti_queries"] = _isolated("quesiti_queries", lambda: retrieval_module.quesito_queries(
+                list(((frame or {}).get("frame") or {}).get("quesiti") or []), dg._case_text(text, request)), []) or []
         _isolated("relative_periods", lambda: relative_periods(analysis, text, request))      # v60g (6)
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
         found = _analysed_and_retrieved(text, request, lang, analysis, t0, meter, pending)
@@ -1656,6 +1680,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
         "analysis": _jsonable({**{k: v for k, v in analysis.items() if k != "topics"},
                                CASE_KEY: dg._case_text(text, request)}),
         "topics": _jsonable(found["topics"]), "others": _jsonable(found.get("others") or []),
+        "quesiti_retrieval": _jsonable(found.get("quesiti_retrieval") or {}),     # v79.16.0 (B): per question
         "units": _jsonable(found.get("units") or {}),            # v60r (2): each article's Sezione / Capo
         "rows": [_compact_row(r) for r in found["topic_rows"]],
         "ranked": list(found.get("ranked") or []),                         # v79 (D2)
@@ -3221,6 +3246,8 @@ def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
             if b.get("kind") == "quesito"]                  # v75: the ask is never a fact
     sents = issue_records.sentences(dg._case_text(state.get("text") or "", state.get("request") or ""),
                                     state.get("additions") or [], assumed[:10], asks, fact_record.facts(state))
+    if fact_record.fallback(state):     # v79.16.0 (A1): the record absent or not «ok» -- the rule's split, counted
+        state.setdefault("block_counters", {})["fact_record_fallback"] = 1
     mark_sides(sents, state)
     return sents
 
@@ -5074,7 +5101,8 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
           "già scritto sopra il paragrafo: non ripeterlo e non contraddirlo. Solo le norme dell'elenco: le altre norme "
           "dell'argomento hanno già il loro titolo e non vanno commentate.") + shape + no_rulings,
          material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts),
-                  method_notes(state), rulings_writer_block(state)), budget["norms"]),
+                  method_notes(state), rulings_writer_block(state), str(state.get("verified_context") or "")),
+         budget["norms"]),                      # v79.16.0 (D1): the verified context block, every writer call's
         (ANSWER_TITLES[2],
          f"SEZIONE: Obiezioni e repliche. Per ciascuna delle OBIEZIONI DELLA CONTROPARTE DA TRATTARE, nell'ordine e senza "
          f"aggiungerne: solo la replica di {who}, in due-tre frasi, sui fatti del caso e sulle norme fornite, aperta dal "
@@ -6444,6 +6472,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         mark("analysis_step")
         from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
         verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
+        # v79.16.0 (D1): the one verified context block every writer call receives (the §4 job, each quesito's)
+        state["verified_context"] = _isolated("verified_context", lambda: analysis_step.context_block(
+            verified, client_of(state), quesiti_articles(state), fact_record_facts(state)), "") or ""
+        quesiti_counters(state)         # v79.16.0 (B3): fit_kept_from_quesiti; (C1): qa_questions_detected
     method_ctx: Optional[Dict[str, Any]] = None
     method_plan: Dict[str, Any] = {}
     method_clients = None
@@ -6590,8 +6622,12 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []
         compose_log: Dict[str, Any] = {}
         texts_of_cenni = cenni_article_texts(grounds or {})     # v79.12.7 (item 7): a cenno's rule on its article
+
+        def reask(question: str, law: str) -> str:      # v79.16.0 (C2): one more writer call for an emptied answer
+            return reask_question(state, plan, question, law, lang, named, documents, rows + tool_rows, case, context)
         for c in ([c for _, c, _ in method_clients] if method_clients else [method_ctx]):
             c["cenni_texts"] = texts_of_cenni
+            c["reask"] = reask
         if method_clients:                      # v79.6 (item 2): one §1 per client, the differing sections per client
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose_clients(
                 answer_ledger.sections_of(draft), method_clients, rest, compose_log), draft) or draft
@@ -6624,7 +6660,11 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         counters["articles_out_of_scope"] = sum(int(c.get("articles_out_of_scope") or 0) for c in composed)
         # v79.12.7 (item 7): the cenni's rule statements removed and left (must be 0); the sections printing the main
         # line more than once (must be 0)
-        for key in ("cenni_rules_removed", "cenni_rules_unsourced", "main_line_repeated"):
+        for key in ("cenni_rules_removed", "cenni_rules_unsourced", "main_line_repeated",
+                    # v79.16.0: the Q&A re-ask and the insufficient line (C2), the sentences dropped as already
+                    # printed (D3), the rulings outside the lines' and the quesiti's articles (D3)
+                    "qa_answer_reasked", "qa_answer_insufficient", "sections_dedup_dropped",
+                    "rulings_off_line_dropped"):
             counters[key] = sum(int(c.get(key) or 0) for c in composed)
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
         # v79.10.6 (E1): §1's summary too, wherever a thesis text could replace the charge
@@ -7740,6 +7780,90 @@ def analysis_flag() -> bool:
     return analysis_step.enabled()
 
 
+# --- v79.16.0: the questions' articles (B), the record's facts (A), the re-ask (C2) ----------------------------------------
+
+def quesiti_articles(state: Dict[str, Any]) -> Dict[str, List[str]]:
+    """{question: the labels its search brought that the answer still holds (a record after the fit)} -- the
+    retrieval's «by_quesito» (QUESTION_RETRIEVAL) matched to the questions asked, in their order; {} with none."""
+    got = state.get("quesiti_retrieval") or {}
+    by_n = {int(k): list(v) for k, v in (got.get("by_quesito") or {}).items()} if got else {}
+    if not by_n:
+        return {}
+    queries = list((state.get("analysis") or {}).get("quesiti_queries") or [])
+    records = state.get("records") or {}
+    out: Dict[str, List[str]] = {}
+    for n, question in enumerate(queries, 1):
+        labels = [x for x in by_n.get(n) or [] if x in records and not (records.get(x) or {}).get("dropped")]
+        if labels:
+            out[str(question)] = labels
+    return out
+
+
+def quesito_articles_for(state: Dict[str, Any], question: str) -> List[str]:
+    """The labels the question's own search brought (quesiti_articles), matched by text (lawyer_method.same_line)."""
+    from . import lawyer_method
+    for q, labels in quesiti_articles(state).items():
+        if q == question or lawyer_method.same_line(q, question):
+            return list(labels)
+    return []
+
+
+def quesito_articles_block(state: Dict[str, Any], question: str) -> str:
+    """The «ARTICOLI DEL QUESITO» block of a question's writer call: its labels with their rubriche, "" with none."""
+    labels = quesito_articles_for(state, question)
+    if not labels:
+        return ""
+    records = state.get("records") or {}
+    named = [f"art. {x}" + (f" ({_plain_text(records[x].get('rubrica'))})" if (records.get(x) or {}).get("rubrica")
+                           else "") for x in labels]
+    return "ARTICOLI DEL QUESITO (recuperati per questa domanda; rispondi prima con questi):\n" + "\n".join(
+        f"- {x}" for x in named)
+
+
+def _plain_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def fact_record_facts(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The record's facts in use (fact_record.facts: FACT_RECORD on, the record «ok»), [] otherwise."""
+    from . import fact_record
+    try:
+        return fact_record.facts(state)
+    except Exception:           # noqa: BLE001
+        return []
+
+
+def quesiti_counters(state: Dict[str, Any]) -> None:
+    """v79.16.0: block_counters retrieval_quesiti_queries, retrieval_quesiti_added (the labels the questions brought
+    in), fit_kept_from_quesiti (those still held after the fit) and qa_questions_detected (the questions asked)."""
+    counters = state.setdefault("block_counters", {})
+    got = state.get("quesiti_retrieval") or {}
+    if got:
+        counters["retrieval_quesiti_queries"] = int(got.get("queries") or 0)
+        counters["retrieval_quesiti_added"] = list(got.get("added") or [])
+        records = state.get("records") or {}
+        counters["fit_kept_from_quesiti"] = len([x for x in got.get("added") or []
+                                                 if x in records and not (records.get(x) or {}).get("dropped")])
+    counters["qa_questions_detected"] = len(asked_questions(state))
+
+
+def reask_question(state: Dict[str, Any], plan: Dict[str, Any], question: str, law: str, lang: str, named,
+                   documents, rows, case: str, context) -> str:
+    """v79.16.0 (C2): one writer call for one question whose reviewed answer kept fewer than two sentences -- the
+    verified affermazioni and the question's own articles (law) as the only law context; "" on any failure."""
+    from . import plan_then_write as ptw, writer_rules
+    title = quesito_title(question)
+    instruction = writer_rules.QUESITO_INSTRUCTION.format(question=question) + writer_rules.REASK_RULE
+    material = "\n\n".join(x for x in (f"CASO:\n{case}", str(state.get("verified_context") or ""), law) if x)  # (D1)
+    try:
+        got = ptw.write_sections(plan, [(f"0:{title}", instruction, material, QUESITO_TOKENS)], lang, named,
+                                 documents, list(rows), case, context=context, sections_note="")
+    except Exception as exc:        # noqa: BLE001 -- the re-ask failing: the insufficient line
+        _log("qa_reask_failed", {"question": question[:160], "error": f"{type(exc).__name__}: {exc}"[:200]})
+        return ""
+    return str(dict(got or []).get(f"0:{title}") or "")
+
+
 def analysis_step_run(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """v79.15.0 (build B, ANALYSIS_STEP): the verified analysis step on the answer's state (analysis_step.run: the held
     frame's verified fields, the records left after applicability_fit, the sentences, the questions) -- its result in
@@ -8407,8 +8531,10 @@ def requested_jobs(state: Dict[str, Any], blocks: Sequence[Dict[str, Any]],
     for i, b in enumerate(blocks):
         if b.get("kind") == "quesito" and b.get("subject"):
             title = quesito_title(str(b["subject"]))
+            own = quesito_articles_block(state, str(b["subject"]))        # v79.16.0 (B2): its quesito articles first
+            parts = [f"CASO:\n{case}", own, str(state.get("verified_context") or ""), quesito_material]  # (D1)
             jobs.append((f"{i}:{title}", writer_rules.QUESITO_INSTRUCTION.format(question=b["subject"]),
-                         f"CASO:\n{case}" + (f"\n\n{quesito_material}" if quesito_material else ""), QUESITO_TOKENS))
+                         "\n\n".join(x for x in parts if x), QUESITO_TOKENS))
             continue
         if b.get("kind") == "cenni" and b.get("subject"):
             subject = str(b["subject"])
@@ -8646,7 +8772,8 @@ def named_retry(state: Dict[str, Any], label: str, texts: Optional[Dict[str, str
     text = " ".join(str((texts or {}).get(label) or "").split())[:NAMED_TEXT_CHARS]
     material = protected_sources.with_rule("\n\n".join(p for p in (
         f"CASO:\n{case_text(state)}", facts, scheda, f"NORME NELL'ORDINE DEI PARAGRAFI:\n1. art. {label}",
-        f"TESTI DELLE NORME:\n[art. {label}]\n{text}" if text else "") if p))
+        f"TESTI DELLE NORME:\n[art. {label}]\n{text}" if text else "",
+        str(state.get("verified_context") or "")) if p))          # v79.16.0 (D1): every writer call's context block
     instruction = (writer_rules.NORMS_INSTRUCTION_REFERENCES if single_mode(state) else writer_rules.NORMS_INSTRUCTION) \
         + (C.fill(writer_rules.NAMED_RETRY_NOTE, article=f"art. {label}") or "")
     written = dict(write([(ANSWER_TITLES[1], instruction, material, NAMED_RETRY_TOKENS)]) or [])

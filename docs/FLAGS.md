@@ -468,6 +468,35 @@ unconditional checks as above.
 | `FACT_RECORD` | false | `src/rag/fact_record.py:enabled` (`FLAG`) | The fact record of the main user query: a temporary JSON built once per case beside round 1 (`fact_record.start` in `interactive_flow.analyse_case`), kept in the state as «fact_record». The model returns the text's elements in order, each with the exact words it is made of, its kind (fatto / richiesta / istruzione / estraneo) and, for a fact, its status and who alleges it; the code verifies (a quote not in the text is dropped; a fact's certainty is the more cautious of the model's and the rule's; a speaker must be in the text; what the model leaves out comes back by the rule). `issue_records.sentences(facts=)` numbers the record's facts S1.. in place of the rule's split, uncut and with no ceiling on their number; requests, instructions and extraneous text (a pasted earlier answer) are never a sentence. A failed or late step: no record, the rule's sentences as with the flag off. Prompt and numbers: `data/fact_record.json` (deadline 60 s, pieces of about 2,000 characters read in parallel). Logged «fact_record». Off: nothing is called, the output is unchanged. |
 | `USER_TEXT_UNCAPPED` | false | `src/rag/user_limits.py:enabled` (`FLAG`) | A test switch: the fixed cuts on the user's own text are lifted (`user_limits.cap` / `most` at each site: the case text 12,000 characters, the numbered sentences 260 characters and 80 in number, the grader's 2,000, the distill's and the candidate choice's 6,000, the fact issues' 8,000, the opposing-arguments check's 4,000, the plan patches' 6,000, the rulings link's 1,500, the writer's quoted sentences 160, a question's 300, the frame's 40,000, §2's 220). Not lifted: the text sent to the embedding model (4,000), §2's number of facts, any cut on text the model or the code wrote. With it on a very long case can overflow a call's context: the helper retries with a smaller answer budget or the step fails and is logged. Off: every cut as before. |
 
+## 5i. v79.16.0 (23 Nov 2026): the fact record drives every stage; questions drive retrieval; Q&A assembly; one opinion
+
+| Name | Default | Read in | What it does |
+|---|---|---|---|
+| `QUESTION_RETRIEVAL` | false | `src/rag/nodes/retrieval.py:question_retrieval_enabled` (`QUESTION_RETRIEVAL_FLAG`) | B: each verified quesito of the case frame (none: each numbered question of the user's text, `intake.question_items`) is one more retrieval query through the retriever the fact queries use (`defensive_generation._fusion_text_search`, the same index and k), its rows fetched as any candidate's and merged into the candidate set with origin «quesito:n» (`retrieve_for_quesiti`, `merge_quesito_rows`, called from `interactive_flow._retrieve` after the first read's search, graded past the cap as its hits are). They pass the gates, the grading and the applicability fit unchanged; an article a quesito alone brought is offered first to that question's writer call (`interactive_flow.quesito_articles_block`). Counters `retrieval_quesiti_queries`, `retrieval_quesiti_added` (labels), `fit_kept_from_quesiti`; log line «retrieval_quesiti» with each quesito's top-3. The fact-driven queries, their ranking and k untouched. We set it true in `.env.v45`. |
+
+Under the existing flags: `FACT_RECORD` now gates A -- with the record «ok» every consumer of the case's sentences reads
+its facts (the analysis step's input keeps each sentence's F-id and speaker; `analysis_step.record_provenance`: a
+«provato» stands on a fact stated accertato, or alleged by the client, or alleged by the other party against its own
+interest, else contestato naming the party -- counters `analysis_provenance_from_record` / `analysis_provenance_fallback`,
+the text heuristic only without the record; `fact_record_fallback` = 1 when the record is absent or partial and the
+rule's split stands in; §2 from the record (`analysis_step.record_facts_split`: certi / ipotizzabili by the record's
+stato, «Fatti mancanti» the verified lines' open and contested elements, never «Nessun elemento resta da provare» while
+the tables hold one); §10 the same open elements and the record's uncertain items (`fact_record.uncertain_items`), §4's
+prose not scanned; the F-ids in the «analysis_step» log line (`facts_cited`), the facts' text on the page).
+`ANALYSIS_STEP` now also gates C and D -- C1: the questions are the user's numbered items whole (`intake.question_items`,
+read first by `intake.questions` / `quesiti`, the frame's verified quesiti mapped to the whole item; counter
+`qa_questions_detected`); C2: a writer's answer the review leaves under two sentences is re-asked once with the verified
+affermazioni and the quesito's articles as its only law (`interactive_flow.reask_question`, `writer_rules.REASK_RULE`),
+still empty: «Il corpus non contiene informazioni sufficienti per rispondere a questo quesito.» (counters
+`qa_answer_reasked`, `qa_answer_insufficient`); C3: a replacement statement must cite an article the answer itself cited
+(`ProseReview(cited_scope=…)`, else dropped); D1: every writer call carries the one verified context block
+(`analysis_step.context_block`, `state["verified_context"]`); D2: code bridges open §3, §5, §6, §9 (`question_bridge`,
+`rulings_bridge`, `SOLUTIONS_BRIDGE`, the §4 counts first in `conclusions_text`); D3: a sentence printed once across the
+answers and §1..§10 (`dedup_sections`, counter `sections_dedup_dropped`), §5 only on the lines', the quesiti's and the
+remedies' articles (`rulings_view`, counter `rulings_off_line_dropped`); D4: no §4 prose on a remedy article
+(`remedy_prose_out`). Measurement only: `line_table_weaker` = 1 when the subordinate line holds more provato elements
+than the leading one.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

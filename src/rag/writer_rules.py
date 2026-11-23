@@ -127,6 +127,11 @@ QUESITO_INSTRUCTION = ("SEZIONE: {question} Rispondi a questa domanda, in uno-tr
                        "verificato. Cita le norme come riferimento («art. N codice»), senza riportarne il testo; non "
                        "citare pronunce; non ripetere la domanda.")
 
+# v79.16.0 (C2): the re-ask of one question whose reviewed answer kept fewer than two sentences -- the verified
+# affermazioni di diritto and the question's own articles are the only law it may state
+REASK_RULE = (" Usa SOLO le AFFERMAZIONI DI DIRITTO VERIFICATE e gli ARTICOLI DEL QUESITO riportati sotto: nessun'altra "
+              "regola di diritto. Se non bastano, scrivi che il materiale non consente di rispondere.")
+
 # v62 (my draft): §1 and the conclusions -- the charge or the claim is what the client contests, never asserted
 THREAT_ASSERT_RULE = (" Le norme {articles} sono l'addebito o la domanda contro {who}: presentale come da contestare, "
                       "mai come applicabili.")

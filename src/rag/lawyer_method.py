@@ -443,13 +443,38 @@ def facts_split(sentences: Sequence[Dict[str, Any]], records: Dict[str, Dict[str
             "mancanti": mancanti[:FACTS_MAX["mancanti"]]}
 
 
+def _record_facts(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from . import fact_record
+    try:
+        return fact_record.facts(state)
+    except Exception:           # noqa: BLE001
+        return []
+
+
+def _record_uncertain(state: Dict[str, Any]) -> List[Dict[str, str]]:
+    from . import fact_record
+    try:
+        return fact_record.uncertain_items(state)
+    except Exception:           # noqa: BLE001
+        return []
+
+
+def _quesiti_articles(state: Dict[str, Any]) -> Dict[str, List[str]]:
+    from . import interactive_flow
+    try:
+        return interactive_flow.quesiti_articles(state)
+    except Exception:           # noqa: BLE001
+        return {}
+
+
 def facts_section(split: Dict[str, List[Any]]) -> str:
     out = ["**Fatti certi**", ""]
     out += [f"- {x}" for x in split.get("certi") or []] or ["- Nessun fatto narrato come certo."]
     out += ["", "**Fatti ipotizzabili**", ""]
     out += [f"- {x['text']} ({x['how']})" for x in split.get("ipotizzabili") or []] or ["- Nessuno."]
     out += ["", "**Fatti mancanti**", ""]
-    out += [f"- {x['fatto']} — cambierebbe: {x['cambierebbe']}." for x in split.get("mancanti") or []] or [
+    out += [f"- {x['fatto']}, {x['esito']} — {x['apre']}." if x.get("apre") else     # v79.16.0 (A3): the verified
+            f"- {x['fatto']} — cambierebbe: {x['cambierebbe']}." for x in split.get("mancanti") or []] or [   # elements
         "- Nessun elemento resta da provare sui fatti narrati."]
     return "\n".join(out)
 
@@ -6250,6 +6275,34 @@ def orientations_section(plan: Dict[str, Any], rulings: Sequence[Any], log: Opti
     return "\n".join(lines) if lines else NO_POINTS_LINE
 
 
+def rulings_view(ctx: Dict[str, Any], allowed: Sequence[str], dropped: Optional[List[str]] = None) -> Dict[str, Any]:
+    """v79.16.0 (D3): the ctx with its rulings record read through a view holding only the rulings, orientations and
+    landmarks on an allowed article (the lines', the quesiti's, the remedies'); the others' articles into dropped."""
+    rec = ctx.get("rulings_record")
+    if not rec or not allowed:
+        return ctx
+    on = lambda label: any(_same_label(x, str(label or "")) for x in allowed)       # noqa: E731
+    gone = [str(r.get("article")) for r in rec.get("kept") or [] if not on(r.get("article"))] + \
+        [str(o.get("article")) for o in rec.get("orientations") or [] if not on(o.get("article"))] + \
+        [str(k) for k in rec.get("landmarks") or {} if not on(k)]
+    if dropped is not None:
+        dropped += gone
+    view = {**rec, "kept": [r for r in rec.get("kept") or [] if on(r.get("article"))],
+            "orientations": [o for o in rec.get("orientations") or [] if on(o.get("article"))],
+            "landmarks": {k: v for k, v in (rec.get("landmarks") or {}).items() if on(k)}}
+    return {**ctx, "rulings_record": view}
+
+
+def with_bridge(text: str, bridge: str, head: str = "") -> str:
+    """v79.16.0 (D2): the section opened by the code's bridge sentence -- in place of its bold head line when the
+    text starts with it, else before the text."""
+    if not bridge:
+        return text
+    if head and text.startswith(head):
+        return bridge + text[len(head):]
+    return f"{bridge}\n\n{text}" if text else bridge
+
+
 def orientations_text(ctx: Dict[str, Any], plan: Dict[str, Any], rulings: Sequence[Any], log: Optional[List[str]] = None,
                       points: Optional[List[str]] = None, excluded: Sequence[str] = (),
                       dropped: Optional[List[str]] = None) -> str:
@@ -6734,6 +6787,8 @@ def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, 
 
 ANSWERS_TITLE = "**Risposte ai quesiti**"
 NO_SOURCE_ANSWER = "Non risulta dagli atti né dalle norme esaminate."        # the PO's words (v79.8.6)
+# v79.16.0 (C2): a writer's answer the review emptied, re-asked once and still empty -- the only case this line prints
+INSUFFICIENT_ANSWER = "Il corpus non contiene informazioni sufficienti per rispondere a questo quesito."
 ANSWER_SENTENCES = (2, 4)
 _PROCEDURAL_Q_RE = re.compile(r"\b(?:rit[oi]|procedur\w*|procediment\w*|termin[ei]|entro\s+quando|scadenz\w*|tempi\b|"
                               r"impugn\w*|ricors\w*|appell\w*|competen\w*|giudice|tribunale|querela|udienz\w*|"
@@ -6764,6 +6819,42 @@ def procedural_answer(question: str, procedure: str) -> List[str]:
     pool = _first_sentences(procedure, 60)
     hits = [x for x in pool if want & _q_words(x)]
     return hits[:ANSWER_SENTENCES[1]]
+
+
+def _reviewed_answer(written: str, verified: Dict[str, Any], scope: Dict[str, Any], events: List[Dict[str, Any]],
+                     checked: Callable[[str], str]) -> List[str]:
+    """v79.15.1 (item 4): the writer's sentences through ProseReview (v79.16.0, C3: a replacement statement only on an
+    article the answer itself cites), then the answer-wide checks; a sentence they removed takes its anaphoric
+    follower with it. At most ANSWER_SENTENCES[1]."""
+    from . import analysis_step
+    review = analysis_step.ProseReview(verified, scope, analysis_step.SITE_QA, events,
+                                       cited_scope=analysis_step._cited(written))
+    mine = [y for y in (review(x) for x in _first_sentences(written, 60)) if y]
+    done = _first_sentences(checked(" ".join(mine)), 60)
+    gone = analysis_step.orphans(mine, done)
+    events += [analysis_step.dependent_event(analysis_step.SITE_QA, done[j]) for j in sorted(gone)]
+    return [x for j, x in enumerate(done) if j not in gone][:ANSWER_SENTENCES[1]]
+
+
+def _reask(ctx: Dict[str, Any], question: str, verified: Dict[str, Any]) -> str:
+    """v79.16.0 (C2): one more writer call for the question (ctx["reask"](question, law) -> text; none: ""), its law
+    context the verified affermazioni and the question's own articles only; counted (qa_answer_reasked)."""
+    from . import analysis_step
+    ask = ctx.get("reask")
+    if not callable(ask):
+        return ""
+    labels = next((v for k, v in (ctx.get("quesiti_articles") or {}).items() if k == question or same_line(k, question)),
+                  [])
+    rubriche = verified.get("rubriche") or {}
+    own = ("ARTICOLI DEL QUESITO:\n" + "\n".join(
+        f"- art. {x}" + (f" ({_plain(rubriche[x])})" if rubriche.get(x) else "") for x in labels)) if labels else ""
+    law = "\n\n".join(x for x in (analysis_step.statements_block(verified), own) if x)
+    ctx["qa_answer_reasked"] = int(ctx.get("qa_answer_reasked") or 0) + 1
+    try:
+        return str(ask(question, law) or "")
+    except Exception as exc:        # noqa: BLE001 -- a failed re-ask: the insufficient line
+        _log("qa_reask_failed", {"question": str(question)[:160], "error": f"{type(exc).__name__}: {exc}"[:200]})
+        return ""
 
 
 def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], procedure: str,
@@ -6807,12 +6898,15 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
     for i, q in enumerate(asked, 1):
         written = next((x for t, x in by_title.items() if same_line(t, q) or _plain(t) == _plain(q)), "")
         if written and verified is not None:    # v79.15.1 (item 4): the writer's sentences reviewed first -- a rule
-            review = analysis_step.ProseReview(verified, scope, analysis_step.SITE_QA, events)   # replaced before the
-            mine = [y for y in (review(x) for x in _first_sentences(written, 60)) if y]     # checks could delete it --
-            done = _first_sentences(checked(" ".join(mine)), 60)        # then the answer-wide checks; a sentence they
-            gone = analysis_step.orphans(mine, done)                    # removed takes its anaphoric follower with it
-            events += [analysis_step.dependent_event(analysis_step.SITE_QA, done[j]) for j in sorted(gone)]
-            got, kind = [x for j, x in enumerate(done) if j not in gone][:ANSWER_SENTENCES[1]], "writer"
+            got, kind = _reviewed_answer(written, verified, scope, events, checked), "writer"    # replaced before the
+            if len(got) < ANSWER_SENTENCES[0]:  # v79.16.0 (C2): fewer than two left -- the writer asked once more,
+                again = _reask(ctx, q, verified)                        # the verified affermazioni and the quesito's
+                if again:                                               # articles its only law; its review's events
+                    reask_events = ctx.setdefault("qa_reask_review", [])    # apart (the 79.15 counters unchanged)
+                    got = _reviewed_answer(again, verified, scope, reask_events, checked) or got
+            if not got:
+                got, kind = [INSUFFICIENT_ANSWER], "insufficiente"
+                ctx["qa_answer_insufficient"] = int(ctx.get("qa_answer_insufficient") or 0) + 1
         elif written:
             got, kind = _first_sentences(checked(written), ANSWER_SENTENCES[1]), "writer"
         elif _PROCEDURAL_Q_RE.search(q):
@@ -7056,6 +7150,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                                                     if by_title.get(t)), ""), excluded, dropped_log),
                                              {} if verified is not None else ctx.get("charged_prose") or {},
                                              charged_log), analysis_step.SITE_NORMS)
+    remedy_log: List[str] = []
+    if verified is not None and norms:      # v79.16.0 (D4): no prose on a remedy / general-part article in §4
+        norms = tracked("remedy_prose", norms, analysis_step.remedy_prose_out(norms, verified, remedy_log))
+    log["remedy_prose_dropped"] = remedy_log
     quesiti = [(t, x) for t, x in others if t.endswith("?")]
     normative = [(t, x) for t, x in others if not t.endswith("?")]
     norms_parts = [norms] if norms else []
@@ -7211,18 +7309,39 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     if verified is None:                # v79.15.0 (build B): §1 the verified analysis's only
         summary = "\n\n".join(x for x in (summary, (ctx.get("penal_route") or {}).get("summary"),     # v79.8 (E3)
                                            missing_laws_line(ctx)) if x)                             # v79.9 (B2)
+    record_facts = list(ctx.get("fact_record_facts") or []) if verified is not None else []   # v79.16.0 (A3)
+    if record_facts:                    # §2 from the record: certi / ipotizzabili by its stato, mancanti the verified
+        facts_text = facts_section(analysis_step.record_facts_split(      # lines' open and contested elements
+            record_facts, verified, narrative=lambda t: narrative({"text": t, "source": "caso"}), limits=FACTS_MAX))
+    else:
+        facts_text = facts_section(analysis_step.open_facts(verified, ctx.get("facts") or {}, records)
+                                   if verified is not None else ctx.get("facts") or {})      # v79.15.0 (build B)
+    question_text = NO_CLAIM_QUESTION.format(client=client or "la parte assistita", materia=action_subject(ctx)) \
+        if kind and not plan.get("questione_giuridica") else \
+        question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "", log)   # v79.10.5
+    if verified is not None:            # v79.16.0 (D2): §3 opens with the code's bridge from the verified line
+        question_text = "\n\n".join(x for x in (analysis_step.question_bridge(verified), question_text) if x)
+    if verified is not None:            # v79.16.0 (D3): §5 only on the lines', the quesiti's and the remedies' articles
+        quesiti_labels = [x for labels in (ctx.get("quesiti_articles") or {}).values() for x in labels]
+        allowed = analysis_step.allowed_ruling_articles(verified, quesiti_labels)
+        off_line: List[str] = []
+        orientations = orientations_text(rulings_view(ctx, allowed, off_line), plan, rulings, rulings_out,
+                                         orientation_points, excluded, dropped_log)
+        ctx["rulings_off_line_dropped"] = len(off_line)
+        log["rulings_off_line_dropped"] = off_line
+        orientations = with_bridge(orientations, analysis_step.rulings_bridge(verified),
+                                   rulings_mod.SECTION_TITLES["rulings"])                   # v79.16.0 (D2)
+    else:
+        orientations = orientations_text(ctx, plan, rulings, rulings_out, orientation_points, excluded,
+                                         dropped_log)                                       # v79.14.3 (item 4)
     keyed = [
         ("sintesi", summary),
-        ("fatti", facts_section(analysis_step.open_facts(verified, ctx.get("facts") or {}, records)
-                                if verified is not None else ctx.get("facts") or {})),      # v79.15.0 (build B)
-        ("questione", NO_CLAIM_QUESTION.format(client=client or "la parte assistita", materia=action_subject(ctx))
-         if kind and not plan.get("questione_giuridica") else    # v79.12.5 (item 2): no article to frame it on
-         question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
-                          log)),                                                         # v79.10.5 (E1)
+        ("fatti", facts_text),
+        ("questione", question_text),
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
-        ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points, excluded,
-                                           dropped_log)),                                # v79.14.3 (item 4)
-        ("soluzioni", analysis_step.solutions_text(verified) if verified is not None else   # v79.15.0 (build B)
+        ("orientamenti", orientations),
+        ("soluzioni", f"{analysis_step.SOLUTIONS_BRIDGE}\n\n{analysis_step.solutions_text(verified)}"
+         if verified is not None else                                                   # v79.15.0 (build B); D2
          no_claim_solutions(ctx, kind) if kind else solutions_section(
             sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
@@ -7280,21 +7399,30 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     exempt = title("orientamenti")
     # v75b: §10 holds only the open questions -- the uncertainties the text marked (whole sentences), the dates the
     # ratione temporis needs, the case's questions still unanswered; an orientamento to verify stays in §5
-    collected, points = collect_points([(title(k), x) for k, x in keyed if title(k) != exempt],
-                                       list(ctx.get("points") or []))
+    # v79.16.0 (A3): with the record, §10 opens with the verified lines' open elements and the record's uncertain
+    # items, code-written; §4's prose is not scanned for points (no prose restated from §4)
+    skipped = {exempt} | ({title("norme")} if record_facts else set())
+    head_points = analysis_step.verify_points(verified, ctx.get("record_uncertain") or []) if record_facts else []
+    collected, points = collect_points([(title(k), x) for k, x in keyed if title(k) not in skipped],
+                                       head_points + list(ctx.get("points") or []))
     for q in ctx.get("open_questions") or []:
         if not any(same_point(q, p) for p in points):
             points.append(q)
     texts = dict(collected)
-    body = [(title(k), x if title(k) == exempt else texts[title(k)]) for k, x in keyed]
+    body = [(title(k), x if title(k) in skipped else texts[title(k)]) for k, x in keyed]
     body.append((title("verificare"), points_section(points)))
     log.update({"points": len(points), "main_thesis": sols[main]["tesi"][:160], "esito": a.get("esito"),
                 "obiettivo": a.get("obiettivo")})
-    _log("compose", log)
-    joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
     answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure,
                                             [] if kind else sols, main, a,      # v79.12.5 (item 2): no line
                                             client, checked, log, verified=verified)    # v79.6 (item 1): before §1
+    if verified is not None:            # v79.16.0 (D3): a sentence printed once -- the answers first, then §1..§10
+        deduped, dropped_n = analysis_step.dedup_sections([("risposte", answers)] + body)
+        answers, body = deduped[0][1], deduped[1:]
+        ctx["sections_dedup_dropped"] = dropped_n
+        log["sections_dedup_dropped"] = dropped_n
+    _log("compose", log)
+    joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
     if verified is not None:            # v79.15.1 (item 4): the review's counters over §4, §7 and the Q&A
         ctx.update(analysis_step.prose_counters(prose_events))
         log["prose_review"] = prose_events
@@ -7655,6 +7783,10 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "family_overrides": list((state.get("family_gate") or {}).get("overrides") or []),   # v79.10 (A5, review)
            # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
            "certain_text": certain,
+           # v79.16.0: the record's facts (A3: §2 from them) and uncertain items (A3: §10), the quesiti's articles
+           # (B2, D1, D3) -- [] / {} with the flags off
+           "fact_record_facts": _record_facts(state), "record_uncertain": _record_uncertain(state),
+           "quesiti_articles": _quesiti_articles(state),
            "events": fact_events(state),
            "family_words": family_words(state, case),                        # v79.9 (C1)
            "charge": dict(state.get("charge") or {}),                         # v79.10.5 (E1): held, by its rule

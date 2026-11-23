@@ -167,27 +167,61 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     monkeypatch.setattr(issue_records, "_link_call", case.link)
     monkeypatch.setattr(main, "driver", F._NoGraph())
 
+    jobs_seen: List[Any] = []
+
     def round1(text, request="", lang="it", frame=None):
+        from src.rag import defensive_generation as dg, fact_record
+        from src.rag.nodes import retrieval as retrieval_module
+        rows = rows_of(case.ARTICLES)
         topic = {"title": case.TITLE, "anchor": case.ANCHOR, "how": "exact", "rubrica": case.RUBRICA,
                  "articles": list(labels), "matched": list(labels), "planned": len(labels),
                  "grades": {x: 3 for x in labels}, "graded": len(labels), "facts": [], "source": "frame", "merged": []}
         # v79.15.1: an optional OLDER_FRAME -- the older frame's fields (central_issue_candidates) in round 1's analysis
         analysis = {"parte_assistita": "", "frame": {"areas": [], **dict(getattr(case, "OLDER_FRAME", None) or {})},
                     flow.CASE_KEY: text}
+        quesiti_log: Dict[str, Any] = {}
+        # v79.16.0 (B): the questions searched -- the case's own search (quesito_search(query) -> refs) through the
+        # real retrieve_for_quesiti / merge_quesito_rows, the rows fetched from the case's QUESITO_ARTICLES
+        search = getattr(case, "quesito_search", None)
+        if retrieval_module.question_retrieval_enabled() and search is not None:
+            queries = retrieval_module.quesito_queries(
+                list(((frame or {}).get("frame") or {}).get("quesiti") or []), dg._case_text(text, request))
+            analysis["quesiti_queries"] = queries
+            extra = {(n, c): row for (n, c, *_), row in zip(getattr(case, "QUESITO_ARTICLES", ()),
+                                                             rows_of(getattr(case, "QUESITO_ARTICLES", ())))}
+            found, quesiti_log = retrieval_module.retrieve_for_quesiti(
+                None, list(case.DOCUMENTS), queries, search=lambda own, q, index, k: search(q),
+                fetch=lambda own, docs, refs, store: [dict(extra[r]) for r in refs if r in extra])
+            rows, added, q_labels = retrieval_module.merge_quesito_rows(rows, found, flow._key)
+            quesiti_log = {**quesiti_log, "added": [f"{r['_article'][0]} {r['_article'][1]}" for r in added],
+                           "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(rows)}
+            for x in q_labels:
+                if x not in topic["articles"]:
+                    topic["articles"].append(x)
+                    topic["matched"].append(x)
+                    topic["grades"][x] = 3
+                    topic["planned"] += 1           # a planned (writable) article of the topic, as a graded one is
+                    topic["graded"] += 1
+            verbose_logger.vlog("retrieval_quesiti", quesiti_log)
         state = {"schema": flow.SCHEMA, "version": 0, "state": "", "created": "2026-11-20T00:00:00+00:00",
                  "lang": lang, "text": text, "request": request, "additions": [], "analysis": flow._jsonable(analysis),
-                 "topics": [topic], "others": [], "units": {},
-                 "rows": [flow._compact_row(r) for r in rows_of(case.ARTICLES)], "ranked": [], "retrieval_top": [],
+                 "topics": [topic], "others": [], "units": {}, "quesiti_retrieval": flow._jsonable(quesiti_log),
+                 "rows": [flow._compact_row(r) for r in rows], "ranked": [], "retrieval_top": [],
                  "defence_gate": {}, "family_gate": {}, "code_scope": {}, "tool_rows": [], "pool": [], "rendered": "",
                  "answered": {}, "chosen": [], "angle": "", "changes": [], "answers": {}, "timings": {},
                  "grade_funnel": {}}
+        # v79.16.0 (A): the fact record built by the real fact_record.build on the case's faked reply
+        asker = getattr(case, "fact_record_reply", None)
+        state["fact_record"] = fact_record.build(dg._case_text(text, request), asker=asker) \
+            if fact_record.enabled() and asker is not None else None
         state["questions"] = []
-        flow.build_records(state, rows_of(case.ARTICLES))
+        flow.build_records(state, rows)
         writer.state = state
         return state
 
     def writer(plan, jobs, lang, named, documents, rows, case_text, **kwargs):
         out = []
+        jobs_seen.extend(jobs)
         for title, *_ in jobs:
             have = [x for x in labels if x in (writer.state.get("records") or {})]
             special = getattr(case, "writer_question", None)
@@ -223,7 +257,7 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     for e, d, ms in events:
         by.setdefault(e, []).append((d, ms))
     return {"out": out, "state": out["state"], "answer": out["answer"], "events": events, "by": by, "failed": failed,
-            "model": model}
+            "model": model, "jobs": jobs_seen}
 
 
 def section(answer: str, key: str) -> str:

@@ -2173,3 +2173,111 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
         "neo4j_executed": True,
         "execution_error": None,
     }
+
+
+# --- v79.16.0 (B, QUESTION_RETRIEVAL): the user's questions as retrieval queries ---------------------------------------
+# The case-first flow's retrieval (interactive_flow._retrieve) searches from the facts; nothing searched from the
+# verified quesiti of the case frame (case_frame «quesiti») or the numbered questions of the user's text. With the flag
+# on, each question is one more query through the same retriever the fact queries use (defensive_generation's fusion
+# text search: vector + fulltext, best-rank merge, the same k) and its rows are fetched as any candidate's
+# (defensive_generation._fetch_any). The rows join the candidate set with their origin («quesito:<n>») and go through
+# the gates, the grading and the applicability fit unchanged -- the fact-driven queries, their ranking and k untouched.
+# Counters (block_counters): retrieval_quesiti_queries, retrieval_quesiti_added (the labels), fit_kept_from_quesiti.
+# Log: one «retrieval_quesiti» line with, per quesito, the top-3 articles it brought. Additive: nothing above changed.
+
+QUESTION_RETRIEVAL_FLAG = "QUESTION_RETRIEVAL"
+QUESITO_ORIGIN = "quesito"
+QUESITI_TOP = 3
+
+
+def question_retrieval_enabled() -> bool:
+    from ..feature_flags import enabled
+    return enabled(QUESTION_RETRIEVAL_FLAG)
+
+
+def quesito_queries(frame_quesiti: Optional[List[str]], text: str) -> List[str]:
+    """The questions searched: the frame's verified quesiti; none, the numbered questions of the user's text
+    (intake.question_items); each once, in order, blank ones out."""
+    from .. import intake
+    asked = [str(q).strip() for q in (frame_quesiti or []) if str(q or "").strip()]
+    if not asked:
+        try:
+            asked = [q for q in intake.question_items(text or "") if q.strip()]
+        except Exception:               # noqa: BLE001 -- no question read: no query
+            asked = []
+    return list(dict.fromkeys(asked))
+
+
+def _label_of(row: Dict[str, Any]) -> str:
+    ref = row.get("_article") or ()
+    return f"{ref[0]} {ref[1]}" if len(ref) >= 2 else ""
+
+
+def retrieve_for_quesiti(session, documents: List[Dict[str, Any]], queries: List[str], search=None, fetch=None,
+                         k: Optional[int] = None, store=None) -> "tuple[List[Dict[str, Any]], Dict[str, Any]]":
+    """(rows, log): each query through the retriever the fact queries use (search(session, text, index, k) -> refs,
+    default defensive_generation._fusion_text_search on the pool's vector index with its k) and the rows fetched
+    (fetch(session, documents, refs, store), default _fetch_any). Each row carries «_origin» quesito:<n> and
+    «_quesito» [n]; a row two questions bring carries both numbers. log: {"queries", "per_quesito": [{"n", "question",
+    "found", "top": the first QUESITI_TOP labels}]}. A query that fails is logged and skipped."""
+    from .. import defensive_generation as dg
+    search = search or (lambda own, text, index, kk: dg._fusion_text_search(own, text, index, kk))
+    fetch = fetch or dg._fetch_any
+    k = int(k or dg._FUSION_SEARCH_K)
+    out: Dict[tuple, Dict[str, Any]] = {}
+    log: Dict[str, Any] = {"queries": len(queries or []), "per_quesito": []}
+    for n, question in enumerate(queries or [], 1):
+        entry = {"n": n, "question": str(question)[:160], "found": 0, "top": []}
+        try:
+            refs = [tuple(r) for r in (search(session, question, dg._CASE_POOL_VECTOR_INDEX, k) or []) if r]
+            rows = fetch(session, documents, refs, store) if refs else []
+        except Exception as exc:        # noqa: BLE001 -- one question's search failing never fails the retrieval
+            entry["error"] = f"{type(exc).__name__}: {exc}"[:200]
+            log["per_quesito"].append(entry)
+            continue
+        rank = {ref: i for i, ref in enumerate(refs)}
+        rows = sorted([r for r in rows if r.get("_article")], key=lambda r: rank.get(tuple(r["_article"]), len(rank)))
+        entry["found"] = len(rows)
+        entry["top"] = [_label_of(r) for r in rows[:QUESITI_TOP]]
+        for row in rows:
+            key = tuple(row["_article"])
+            have = out.get(key)
+            if have is None:
+                row["_origin"] = f"{QUESITO_ORIGIN}:{n}"
+                row["_quesito"] = [n]
+                out[key] = row
+            elif n not in have["_quesito"]:
+                have["_quesito"].append(n)
+        log["per_quesito"].append(entry)
+    return list(out.values()), log
+
+
+def merge_quesito_rows(article_rows: List[Dict[str, Any]], found: List[Dict[str, Any]], key) -> "tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]":
+    """(rows, the rows added, the labels every quesito row has): a found row already a candidate tags it («_quesito»,
+    the numbers; «_origin» only when it had none), a new one joins the set (key: interactive_flow._key)."""
+    have = {key(r["_article"]): r for r in article_rows if r.get("_article")}
+    added: List[Dict[str, Any]] = []
+    labels: List[str] = []
+    for row in found:
+        k = key(row["_article"])
+        if k in have:
+            mine = have[k]
+            mine["_quesito"] = list(dict.fromkeys(list(mine.get("_quesito") or []) + list(row.get("_quesito") or [])))
+            mine.setdefault("_origin", row.get("_origin"))
+            labels.append(_label_of(mine))
+        else:
+            have[k] = row
+            added.append(row)
+            labels.append(_label_of(row))
+    return list(article_rows) + added, added, list(dict.fromkeys(x for x in labels if x))
+
+
+def quesito_labels(rows: List[Dict[str, Any]]) -> Dict[int, List[str]]:
+    """{question number: the labels its search brought}, from the rows' «_quesito» marks."""
+    out: Dict[int, List[str]] = {}
+    for r in rows or []:
+        for n in r.get("_quesito") or []:
+            label = _label_of(r)
+            if label and label not in out.setdefault(int(n), []):
+                out[int(n)].append(label)
+    return out

@@ -722,7 +722,29 @@ def question_units(text: str) -> List[str]:
         if "?" not in flat and any(found_at(flat, q) is not None for q in asked):
             out.append(flat)    # a request or a task as the whole sentence («Il candidato illustri …»)
     out += asked
+    try:                        # v79.16.0 (C1, ANALYSIS_STEP): a numbered item whole is a unit too
+        out += intake.question_items(text or "") if intake._items_on() else []
+    except Exception:           # noqa: BLE001
+        pass
     return list(dict.fromkeys(x for x in out if x.strip()))
+
+
+def _whole_items(text: str, quesiti: List[str]) -> List[str]:
+    """v79.16.0 (C1, ANALYSIS_STEP): a verified quesito that is a piece of one of the user's numbered items stands as
+    the whole item (intake.question_items), once, in the text's order -- one item, one question."""
+    from . import intake
+    try:
+        items = intake.question_items(text or "") if intake._items_on() else []
+    except Exception:           # noqa: BLE001
+        items = []
+    if not items:
+        return quesiti
+    out: List[str] = []
+    for q in quesiti:
+        whole = next((it for it in items if found_at(it, q) is not None), q)
+        if whole not in out:
+            out.append(whole)
+    return out
 
 
 def _verify_quesiti(rep: _Report, raw: Any) -> None:
@@ -749,7 +771,7 @@ def _verify_quesiti(rep: _Report, raw: Any) -> None:
             continue
         if not any(q == k[2] for k in kept):
             kept.append((at, n, q))
-    rep.frame["quesiti"] = [q for _, _, q in sorted(kept)]
+    rep.frame["quesiti"] = _whole_items(rep.text, [q for _, _, q in sorted(kept)])
     if not kept and "quesiti" not in rep.unverified:
         rep.empty.append("quesiti")
 

@@ -97,8 +97,9 @@ def test_the_summary_solutions_and_conclusions_carry_the_verified_line_only():
     assert "Gli artifizi non sono provati" not in sol + A.summary_text(v) + A.conclusions_text(v)
     assert "Contenimento" not in sol and "Ammettere" not in sol
     concl = A.conclusions_text(v)
-    assert concl.splitlines()[0].startswith("**Linea principale**: art. 640 c.p.")
-    assert "**Esiti dell'art. 640 c.p.**: provato 1 su 3" in concl
+    # v79.16.0 (D2): §9 opens with the §4 counts, the lines after them
+    assert concl.splitlines()[0].startswith("**Esiti dell'art. 640 c.p.**: provato 1 su 3")
+    assert concl.splitlines()[1].startswith("**Linea principale**: art. 640 c.p.")
     assert "**Contestati**: «con artifizi o raggiri» (contestato (allegazione " in concl
 
 
