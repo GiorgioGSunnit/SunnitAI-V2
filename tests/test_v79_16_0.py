@@ -493,6 +493,6 @@ def test_the_measurement_line_table_weaker():
 def test_the_prompts_are_unchanged():
     from src.rag import applicability as ap, writer_rules
     import hashlib
-    assert A.prompt_hash() == "472423ea32d3" and ap.prompt_hash() == "677c05970c73"    # v79.16.1: the fit's schema
+    assert A.prompt_hash() == "472423ea32d3" and ap.prompt_hash() == "c60a2f78634c"    # v79.16.1: the fit's schema
     assert hashlib.sha256(writer_rules.QUESITO_INSTRUCTION.encode()).hexdigest()[:12] == "f7d3c0f2b9a4" or True
     assert "{question}" in writer_rules.QUESITO_INSTRUCTION and writer_rules.REASK_RULE.startswith(" Usa SOLO")

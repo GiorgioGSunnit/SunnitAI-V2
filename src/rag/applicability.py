@@ -99,7 +99,9 @@ logger = logging.getLogger(__name__)
 FLAG = "APPLICABILITY_FIT"
 DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
                          "applicability.json")
-COUNTERS = ("fit_si_verified", "fit_dipende_verified",         # v79.16.1 (item 2): the verified verdicts by value
+GOVERNS_PRETESA = "pretesa"           # v79.17.0 (item 3): the governs token for the pretesa; a quesito's is «Q<n>»
+COUNTERS = ("fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",     # v79.17.0 (item 3)
+            "fit_si_verified", "fit_dipende_verified",         # v79.16.1 (item 2): the verified verdicts by value
             "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content", "fit_skipped",
             "fit_calls", "fit_failed_calls", "fit_timeouts",
             "fit_no_verified",                                     # v79.14.2 (A)
@@ -491,7 +493,8 @@ def _record(norm: Dict[str, Any], item: Optional[Dict[str, Any]] = None) -> Dict
     return {"article": norm.get("article"), "fit": None, "perche": str(item.get("perche") or item.get("perché") or ""),
             "passage": "", "comma": "", "facts": [], "condizione": "", "ambito": None, "verified": False,
             "reason": "", "added_content": False, "touches": {"elements": [], "commi": []},
-            "fact_quotes": [], "cita_fatti": [], "cita_norma": [], "ids_failed": False}
+            "fact_quotes": [], "cita_fatti": [], "cita_norma": [], "ids_failed": False,
+            "governs": None, "governs_asked": False}      # v79.17.0 (item 3): None -- nothing said
 
 
 def _canon_fit(value: Any) -> Optional[str]:
@@ -506,7 +509,31 @@ def _quantities(text: Any) -> List[str]:
     return list(dict.fromkeys(t[1] for t in _full_tokens(text) if _skey(t) in q))
 
 
-def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], case_text: str = "") -> Dict[str, Any]:
+def governs_of(value: Any, quesiti_n: int = 0) -> Tuple[Optional[List[str]], List[str]]:
+    """v79.17.0 (item 3): (the governs tokens kept, the ones dropped) of a reply's «governa» -- «pretesa» (any case) and
+    «Q<n>» with 1 <= n <= quesiti_n, each once; a bare number n is «Q<n>»; anything else dropped. A «governa» the reply
+    does not carry at all (None): (None, []) -- not stated, never «context only»."""
+    if value is None:
+        return None, []
+    items = value if isinstance(value, (list, tuple)) else ([value] if value not in ("", [], {}) else [])
+    kept, dropped = [], []
+    for x in items:
+        tok = str(x or "").strip()
+        low = tok.lower().replace(" ", "")
+        if low == GOVERNS_PRETESA:
+            tok = GOVERNS_PRETESA
+        else:
+            m = re.fullmatch(r"q?(\d{1,2})", low)
+            tok = f"Q{int(m.group(1))}" if m and 1 <= int(m.group(1)) <= quesiti_n else ""
+        if tok and tok not in kept:
+            kept.append(tok)
+        elif not tok:
+            dropped.append(str(x)[:30])
+    return kept, dropped
+
+
+def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], case_text: str = "",
+           quesiti_n: int = 0, governs_asked: bool = False) -> Dict[str, Any]:
     """One reply item checked against the norm's numbered periods and the facts: the judgment record, verified or with
     the reason it was discarded. Never raises on a malformed item. v79.15.0 (item 3): verified by ids, no string
     matcher -- a «si» cites the article's periods it rests on (cita_norma: ids of article_ids, of this article only, at
@@ -525,6 +552,9 @@ def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], cas
     if not isinstance(item, dict):
         rec["reason"] = "giudizio non è un oggetto"
         return rec
+    if governs_asked:                           # v79.17.0 (item 3): what the norm decides -- recorded, tokens checked
+        rec["governs"], rec["governs_dropped"] = governs_of(item.get("governa", item.get("governs")), quesiti_n)
+        rec["governs_asked"] = True             # governs None: the reply said nothing of it (not «context only»)
     if item.get(CONFLICT):
         rec["reason"] = f"giudizi contrastanti per la stessa norma: {', '.join(str(f) for f in item.get('fits') or [])}"
         return rec
@@ -641,8 +671,19 @@ def _norm_block(norm: Dict[str, Any], with_schema: bool) -> str:
     return block
 
 
+def pretesa_quesiti_block(pretesa: str = "", quesiti: Sequence[str] = ()) -> str:
+    """v79.17.0 (item 3): the «PRETESA» and «QUESITI» (Q1…) blocks of the fit's human message; "" with neither."""
+    parts = []
+    if str(pretesa or "").strip():
+        parts.append(f"PRETESA (ciò che è chiesto o contestato nel caso):\n{' '.join(str(pretesa).split())}")
+    qs = [" ".join(str(q).split()) for q in quesiti or [] if str(q or "").strip()]
+    if qs:
+        parts.append("QUESITI:\n" + "\n".join(f"Q{i} {q}" for i, q in enumerate(qs, 1)))
+    return "\n\n".join(parts)
+
+
 def build_messages(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str,
-                   frame_context: str = "") -> List[Any]:
+                   frame_context: str = "", pretesa: str = "", quesiti: Sequence[str] = ()) -> List[Any]:
     """[system, human] for one batch: the norms, the facts (id, label, text), the role. v79.14.0: frame_context -- the
     verified case frame as context (case_frame.fit_context, CASE_FRAME on), first in the human message; "" adds
     nothing (the message is 79.13.0's)."""
@@ -654,6 +695,9 @@ def build_messages(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, An
              + "\n\n".join(_norm_block(n, with_schema) for n in norms))
     if frame_context:
         human = f"{frame_context}\n\n{human}"
+    asked = pretesa_quesiti_block(pretesa, quesiti)       # v79.17.0 (item 3): what the verdicts' «governa» refers to
+    if asked:
+        human = f"{asked}\n\n{human}"
     return [SystemMessage(content=prompt_system()), HumanMessage(content=human)]
 
 
@@ -725,11 +769,12 @@ def _match(items: List[Any], norms: Sequence[Dict[str, Any]]) -> Dict[int, Any]:
 
 def call_batch(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str,
                call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
-               frame_context: str = "") -> Dict[str, Any]:
+               frame_context: str = "", pretesa: str = "", quesiti: Sequence[str] = ()) -> Dict[str, Any]:
     """One call: {"status": ok | failed | malformed, "seconds", "items": {norm index: item}, "error"}."""
     started = time.time()
     try:
-        reply = (call or _default_call)(build_messages(norms, facts, role, frame_context), request_kwargs())
+        reply = (call or _default_call)(build_messages(norms, facts, role, frame_context, pretesa, quesiti),
+                                        request_kwargs())
     except Exception as exc:    # noqa: BLE001 -- the batch's norms keep the current path
         return {"status": "failed", "seconds": time.time() - started, "items": {},
                 "error": f"{type(exc).__name__}: {exc}"[:300]}
@@ -748,14 +793,19 @@ def empty_counters() -> Dict[str, int]:
 
 def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str = "",
           call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
-          started: Optional[float] = None, frame_context: str = "", case_text: str = "") -> Dict[str, Any]:
+          started: Optional[float] = None, frame_context: str = "", case_text: str = "",
+          pretesa: str = "", quesiti: Sequence[str] = ()) -> Dict[str, Any]:
     """The step over the admitted candidates. norms: [{article, text, rubrica, note?, elements?, schema?}]; facts:
     [{id, text, certainty}]; role: the client's. Every norm gets a record (judgments, input order; by_article); only a
     verified one may have an effect -- the caller's. No facts: nothing is sent (every record «nessun fatto»).
     started: when the caller's step began (build B: the flow's, its inputs read) -- the deadline counts from then.
     frame_context: v79.14.0 -- the verified case frame as the calls' context (case_frame.fit_context); "" none.
-    case_text: unused since v79.15.0 (item 3: the fit verified by ids; kept for the callers)."""
+    case_text: unused since v79.15.0 (item 3: the fit verified by ids; kept for the callers). v79.17.0 (item 3):
+    pretesa (case_frame.pretesa_text) and quesiti (the numbered questions) -- given, each verdict's «governa» is read
+    (verify: rec["governs"]) and counted (fit_governs_pretesa, fit_governs_quesiti, fit_context_only)."""
     t0 = started if started is not None else time.time()
+    quesiti = [str(q) for q in quesiti or [] if str(q or "").strip()]
+    governs_asked = bool(str(pretesa or "").strip() or quesiti)
     cfg = config()
     counters = empty_counters()
     log: List[Dict[str, Any]] = []
@@ -779,7 +829,7 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
                                   thread_name_prefix="applicability")
         try:
             futures = {pool.submit(contextvars.copy_context().run, call_batch, [norms[i] for i in g], facts, role, call,
-                                   frame_context): j
+                                   frame_context, pretesa, quesiti): j
                        for j, g in enumerate(groups)}
             done, _ = _wait(list(futures), timeout=max(0.0, deadline - (time.time() - t0)))
             for fut, j in sorted(futures.items(), key=lambda kv: kv[1]):
@@ -803,7 +853,7 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
                         rec["reason"] = {"ok": "giudizio mancante nella risposta", "malformed": "risposta non JSON",
                                          "failed": "chiamata fallita", "timeout": "chiamata oltre il tempo"}[res["status"]]
                     else:
-                        rec = verify(item, norms[i], facts, case_text)
+                        rec = verify(item, norms[i], facts, case_text, len(quesiti), governs_asked)
                     records[i] = rec
         finally:
             pool.shutdown(wait=False, cancel_futures=True)     # a batch still queued never calls the model
@@ -817,6 +867,13 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
             counters["fit_no_verified"] += int(rec["fit"] == NO)           # v79.14.2 (A)
             counters["fit_si_verified"] += int(rec["fit"] == SI)           # v79.16.1 (item 2)
             counters["fit_dipende_verified"] += int(rec["fit"] == DIPENDE)
+            if governs_asked and rec["fit"] in (SI, DIPENDE) and isinstance(rec.get("governs"), list):   # v79.17.0
+                gov = rec["governs"]                                          # (item 3): what the norm decides
+                counters["fit_governs_pretesa"] += int(GOVERNS_PRETESA in gov)
+                counters["fit_governs_quesiti"] += int(any(x.startswith("Q") for x in gov))
+                counters["fit_context_only"] += int(not gov)
+                if rec.get("governs_dropped"):
+                    _log("applicability_governs_dropped", {"article": rec["article"], "dropped": rec["governs_dropped"]})
         else:
             counters["fit_unverified"] += 1
             if rec["added_content"]:
@@ -831,7 +888,8 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
     total = time.time() - t0
     result = {"prompt_hash": prompt_hash(), "judgments": records,
               "by_article": {str(r["article"]): r for r in records if r is not None},
-              "counters": counters, "timing": {"total_s": round(total, 3), "calls": calls}, "log": log}
+              "counters": counters, "timing": {"total_s": round(total, 3), "calls": calls}, "log": log,
+              "governs_asked": governs_asked, "quesiti_n": len(quesiti)}        # v79.17.0 (item 3)
     _log("applicability_fit", {"prompt_hash": result["prompt_hash"], "counters": counters,
                                "total_s": result["timing"]["total_s"], "calls": calls})
     return result
@@ -864,7 +922,8 @@ FIT_PROSE_TITLE = "Norme di cui si contesta l'applicabilità ai fatti"     # v79
 FIT_OPEN_ROW = "dipende dalla risposta a: {question}"
 FIT_OPEN_WHY = "resta da provare: dipende dalla risposta a «{question}»"
 FIT_REMOVED_TRACE = "giudicato non applicabile ai fatti (giudizio di applicabilità)"   # the nightly's ranked trace
-FLOW_COUNTERS = ("fit_si_verified", "fit_dipende_verified",                   # v79.16.1 (item 2)
+FLOW_COUNTERS = ("fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",      # v79.17.0 (item 3)
+                 "fit_si_verified", "fit_dipende_verified",                   # v79.16.1 (item 2)
                  "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
                  "fit_skipped", "fit_calls", "fit_failed_calls", "fit_timeouts", "norms_removed_by_fit",
                  "fit_kept_named", "fit_added_content_in_effects", "fit_seconds",
@@ -963,7 +1022,7 @@ def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[
             continue
         entry = {k: rec.get(k) for k in ("article", "fit", "perche", "passage", "comma", "facts", "condizione",
                                          "ambito", "touches", "added_content", "fact_quotes", "cita_fatti",
-                                         "cita_norma")}
+                                         "cita_norma", "governs")}
         label = str(rec.get("article") or "")
         if rec["fit"] == NO:
             named = es.norm_label(label) in guard or " ".join(label.lower().split()) in guard

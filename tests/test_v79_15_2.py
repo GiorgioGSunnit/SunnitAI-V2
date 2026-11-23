@@ -358,8 +358,8 @@ def test_server_penal_run_640cp_with_no_frame_article_now_verifies(monkeypatch, 
     assert step["status"] == "ok" and step["rejected"] == [] and c["analysis_calls"] == 1
     assert step["lines"][0]["articolo"] == "640 c.p." and step["lines"][0]["stato"] == A.VERIFIED
     assert c["analysis_fallback_skipped_reason"] == step["fallback_skipped_reason"] == A.SKIP_LINE_VERIFIED
-    assert H.section(run["answer"], "sintesi").startswith("Linea principale: art. 640 c.p. — L'accusa deve provare "
-                                                          "«con artifizi o raggiri» (art. 640 c.p.)")     # v79.15.3
+    assert ("Linea principale: art. 640 c.p. — L'accusa deve provare «con artifizi o raggiri» (art. 640 c.p.)"
+            in H.section(run["answer"], "sintesi"))     # v79.15.3; v79.17.0: after the pretesa line
 
 
 def test_server_civil_run_1667cc_with_no_frame_article_now_verifies(monkeypatch, tmp_path):

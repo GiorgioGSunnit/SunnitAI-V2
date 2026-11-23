@@ -109,7 +109,16 @@ FIELDS = ("parti", "cliente", "ruolo", "rito", "stadio", "addebito_o_domanda", "
 VALUE_FIELDS = {"ruolo": "ruoli", "rito": "riti", "stadio": "stadi"}
 PENAL_RITI = ("penale", "penale_gdp")
 COUNTERS = ("frame_fields_verified",) + tuple(f"frame_unverified.{f}" for f in FIELDS) + \
-    tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds")
+    tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds",
+                                                    # v79.17.0 (item 1): the pretesa verified by the model, derived by
+                                                    # the code, the one question asked instead of a guessed side
+                                                    "frame_pretesa_verified", "frame_pretesa_derived", "frame_asked_side")
+# v79.17.0 (item 1): the pretesa of every rito -- the frame's addebito_o_domanda field holds it: {tipo, contenuto, contro,
+# rito, articolo, numero, codice, descrizione (= contenuto, the older readers'), frase, citazione, fonte, derivata}
+PRETESA_FIELD = "addebito_o_domanda"
+PRETESA_TIPI = ("accusa", "domanda", "ricorso", "impugnazione", "opposizione", "istanza")
+FONTE_TESTO, FONTE_QUESITI, FONTE_LAST = "testo", "quesiti", "ultima_richiesta"
+ASK_SIDE_DEFAULT = "Per chi è reso il parere e che cosa chiede?"
 OK, FAILED, MALFORMED, TIMEOUT, NO_TEXT = "ok", "failed", "malformed", "timeout", "no_text"
 
 
@@ -629,8 +638,53 @@ def _verify_cliente(rep: _Report, raw: Any, listed: Sequence[Dict[str, Any]]) ->
     return False
 
 
-def _verify_addebito(rep: _Report, raw: Any, rito: str) -> None:
-    """The charge or claim: its frase found; its descrizione in the text's words; in a penal rito its article a penal
+def canon_tipo(value: Any) -> Optional[str]:
+    """v79.17.0: a pretesa's tipo in the schema (data «pretesa_tipi», «pretesa_sinonimi»), None off it."""
+    low = " ".join(_fold(value).split())
+    if not low:
+        return None
+    tipi = [str(x) for x in config().get("pretesa_tipi") or PRETESA_TIPI]
+    if low in tipi:
+        return low
+    syn = {str(k).lower(): str(v) for k, v in (config().get("pretesa_sinonimi") or {}).items()}
+    got = syn.get(low)
+    return got if got in tipi else None
+
+
+def derive_tipo(rito: str, ruolo: str, text: str) -> str:
+    """v79.17.0: a pretesa's tipo the code reads when the model gives none in the schema -- data «pretesa_tipo_rules»
+    on the text (opposizione, impugnazione, istanza, ricorso: the first whose pattern matches), a penal rito «accusa»,
+    a rito of «pretesa_riti_ricorso» or a ricorrente «ricorso», else «domanda»."""
+    rules = config().get("pretesa_tipo_rules") or {}
+    low = str(text or "")
+    for tipo in ("opposizione", "impugnazione", "istanza"):
+        if any(re.search(p, low, re.IGNORECASE) for p in rules.get(tipo) or []):
+            return tipo
+    if rito in PENAL_RITI:
+        return "accusa"
+    if rito in (config().get("pretesa_riti_ricorso") or []) or str(ruolo or "") in ("ricorrente",):
+        return "ricorso"
+    if any(re.search(p, low, re.IGNORECASE) for p in rules.get("ricorso") or []):
+        return "ricorso"
+    return "domanda"
+
+
+def _party_named(rep: _Report, name: Any) -> str:
+    """The party `name` as the text writes it ("" when the text names no such party): a party of the verified parti, or
+    a name found in the text."""
+    text = _flat(name)
+    if not text:
+        return ""
+    for p in rep.frame.get("parti") or []:
+        if isinstance(p, dict) and same_party(p.get("nome"), text):
+            return str(p.get("nome") or text)
+    return text if name_found(rep.text, text) else ""
+
+
+def _verify_addebito(rep: _Report, raw: Any, rito: str, ruolo: str = "") -> None:
+    """The pretesa (v79.17.0: of every rito -- the charge or the claim is one instance): its frase found; its contenuto
+    (the older «descrizione») in the text's words; its tipo in the schema (else derived from the text: derive_tipo,
+    logged, not a failure); its contro a party of the text (else dropped, logged); in a penal rito its article a penal
     provision."""
     if _blank(raw):
         rep.empty.append("addebito_o_domanda")
@@ -643,12 +697,26 @@ def _verify_addebito(rep: _Report, raw: Any, rito: str) -> None:
     if not ok:
         rep.fail("addebito_o_domanda", reason, raw)
         return
-    descr = _flat(_get(raw, "descrizione", "description"))
+    descr = _flat(_get(raw, "contenuto", "descrizione", "description"))
     if descr and ungrounded(descr, rep.text):
         rep.fail("addebito_o_domanda.descrizione",
                  f"parole non nel testo: {', '.join(ungrounded(descr, rep.text)[:6])}", raw)
         descr = ""
-    out = {"articolo": None, "numero": "", "codice": "", "descrizione": descr, "frase": _flat(frase),
+    tipo = canon_tipo(_get(raw, "tipo", "type"))
+    if tipo is None:
+        tipo = derive_tipo(rito, ruolo, rep.text)
+        if not _blank(_get(raw, "tipo", "type")):
+            entry = {"field": "addebito_o_domanda.tipo", "reason": f"tipo fuori schema {_flat(_get(raw, 'tipo'))[:40]!r}: "
+                                                                 f"derivato «{tipo}»", "value": _flat(_get(raw, "tipo"))[:80]}
+            rep.log.append(entry)
+            _log("case_frame_pretesa_tipo", entry)
+    contro = _party_named(rep, _get(raw, "contro", "against"))
+    if not contro and not _blank(_get(raw, "contro", "against")):
+        entry = {"field": "addebito_o_domanda.contro", "reason": "parte non nel testo", "value": _flat(_get(raw, "contro"))[:80]}
+        rep.log.append(entry)
+        _log("case_frame_pretesa_contro", entry)
+    out = {"tipo": tipo, "contenuto": descr, "contro": contro, "rito": rito, "fonte": FONTE_TESTO, "derivata": False,
+           "articolo": None, "numero": "", "codice": "", "descrizione": descr, "frase": _flat(frase),
            "citazione": quoted}
     article_raw = _get(raw, "articolo", "article")
     if not _blank(article_raw):
@@ -796,20 +864,156 @@ def verify(raw: Any, text: str, rito_hint: str = "") -> Dict[str, Any]:
     unknown = config().get("unknown") or "sconosciuto"
     rito = (rep.frame["rito"] or {}).get("intake") or ""
     rito = rito if rito and rito != unknown else str(rito_hint or "")     # «sconosciuto»: the fallback's rito
-    _verify_addebito(rep, get("addebito_o_domanda") if get("addebito_o_domanda") is not None else
-                     _get(raw, "addebito", "domanda"), rito)
+    ruolo = (rep.frame["ruolo"] or {}).get("valore") or ""
+    pretesa_raw = _get(raw, "pretesa")         # v79.17.0: the schema's key; the older «addebito_o_domanda» still read
+    if pretesa_raw is None:
+        pretesa_raw = get("addebito_o_domanda") if get("addebito_o_domanda") is not None else \
+            _get(raw, "addebito", "domanda")
+    _verify_addebito(rep, pretesa_raw, rito, ruolo)
     _verify_istituto(rep, get("istituto"))
     _verify_quesiti(rep, get("quesiti"))
-    return _finish(rep)
+    return derive_pretesa(_finish(rep), text, rito)
 
 
 def _finish(rep: _Report, failed: bool = False) -> Dict[str, Any]:
     verified = [f for f in FIELDS if rep.frame[f]]
     rep.counters["frame_fields_verified"] = len(verified)
     rep.counters["frame_failed"] = int(failed)
+    rep.counters["frame_pretesa_verified"] = int(PRETESA_FIELD in verified)      # v79.17.0 (item 1)
     empty = list(FIELDS) if failed else [f for f in FIELDS if f in rep.empty and f not in verified]
     return {"frame": rep.frame, "verified": verified, "unverified": rep.unverified, "empty": empty,
             "fallback": [f for f in FIELDS if f not in verified], "counters": rep.counters, "log": rep.log}
+
+
+def derive_pretesa(result: Dict[str, Any], text: str, rito: str = "") -> Dict[str, Any]:
+    """v79.17.0 (item 1): the pretesa the code derives when the model's is empty or unverified -- in order, the first
+    verified quesito (fonte «quesiti»), else the text's last request (interactive_flow.stated «angle», fonte
+    «ultima_richiesta»); its tipo derive_tipo, its contro the first controparte of the verified parti. Into the frame's
+    field with «derivata» true, listed in result["derived"]; never in result["verified"] (frame_fields_verified
+    unchanged); frame_pretesa_derived = 1. Nothing to derive from: the field stays empty."""
+    frame = result.get("frame") if isinstance(result, dict) else None
+    if not isinstance(frame, dict) or frame.get(PRETESA_FIELD):
+        return result
+    quesiti = [str(q) for q in frame.get("quesiti") or [] if _flat(q)]
+    contenuto, fonte = "", ""
+    if quesiti:
+        contenuto, fonte = _flat(quesiti[0]), FONTE_QUESITI
+    else:
+        try:
+            from .interactive_flow import stated
+            contenuto = _flat(stated(str(text or "")).get("angle"))
+        except Exception:       # noqa: BLE001 -- no last request read
+            contenuto = ""
+        fonte = FONTE_LAST if contenuto else ""
+    if not contenuto:
+        return result
+    rito_v = (frame.get("rito") or {}).get("valore") if isinstance(frame.get("rito"), dict) else ""
+    rito_v = rito_v if rito_v and rito_v != (config().get("unknown") or "sconosciuto") else str(rito or "")
+    ruolo = (frame.get("ruolo") or {}).get("valore") if isinstance(frame.get("ruolo"), dict) else ""
+    contro = next((str(p.get("nome")) for p in frame.get("parti") or []
+                   if isinstance(p, dict) and p.get("lato") == "controparte" and p.get("nome")), "")
+    frame[PRETESA_FIELD] = {"tipo": derive_tipo(rito_v, ruolo or "", text), "contenuto": contenuto, "contro": contro,
+                            "rito": rito_v, "fonte": fonte, "derivata": True, "articolo": None, "numero": "", "codice": "",
+                            "descrizione": "", "frase": "", "citazione": contenuto}    # descrizione: the older readers'
+    # (the corpus line's materia, the rubrica fallback's names) never a derived text
+    result["derived"] = list(dict.fromkeys(list(result.get("derived") or []) + [PRETESA_FIELD]))
+    result.setdefault("counters", {})["frame_pretesa_derived"] = 1
+    _log("case_frame_pretesa_derived", {"fonte": fonte, "tipo": frame[PRETESA_FIELD]["tipo"], "contenuto": contenuto[:160],
+                                         "contro": contro})
+    return result
+
+
+def pretesa(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.17.0: the frame's pretesa object ({} none): tipo, contenuto, contro, rito, articolo, fonte, derivata."""
+    got = _frame(result).get(PRETESA_FIELD)
+    return dict(got) if isinstance(got, dict) and (got.get("contenuto") or got.get("articolo") or got.get("frase")) else {}
+
+
+def _unquoted(text: Any) -> str:
+    """A pretesa's words without their guillemets or quotes and a final stop (an abbreviation's dot kept: «c.c.»)."""
+    out = _flat(text).strip().strip("«»\"“”").strip().rstrip("?! ").strip()
+    if out.endswith(".") and not re.search(r"(?<![A-Za-z])[A-Za-z]\.$", out):
+        out = out[:-1].rstrip()
+    return out
+
+
+def pretesa_text(result: Optional[Dict[str, Any]]) -> str:
+    """v79.17.0: the pretesa in one line for a prompt or a log -- «domanda: «contenuto» (art. X) contro Y»; "" none."""
+    p = pretesa(result)
+    if not p:
+        return ""
+    labels = config().get("pretesa_labels") or {}
+    what = _unquoted(p.get("contenuto")) or _unquoted(p.get("frase"))
+    parts = [f"{p.get('tipo') or 'domanda'}: «{what}»" if what else str(p.get("tipo") or "domanda")]
+    if p.get("articolo"):
+        parts.append(f"(art. {p['articolo']})")
+    if p.get("contro"):
+        parts.append(f"{labels.get('contro', 'contro')} {p['contro']}")
+    return " ".join(parts)
+
+
+def pretesa_line(result: Optional[Dict[str, Any]]) -> str:
+    """v79.17.0 (item 5): §1's first line -- «Pretesa: domanda — «…», contro X.»; a derived one adds its banner line
+    («Pretesa dedotta dai quesiti: «…».»); "" with no pretesa."""
+    p = pretesa(result)
+    if not p:
+        return ""
+    labels = config().get("pretesa_labels") or {}
+    what = _unquoted(p.get("contenuto")) or _unquoted(p.get("frase"))
+    line = f"{labels.get('line', 'Pretesa')}: {p.get('tipo') or 'domanda'}"
+    if what:
+        line += f" — «{what}»"
+    if p.get("articolo"):
+        line += f" (art. {p['articolo']})"
+    if p.get("contro"):
+        line += f", {labels.get('contro', 'contro')} {p['contro']}"
+    if not line.endswith("."):
+        line += "."
+    if p.get("derivata"):
+        banner = labels.get("banner_last" if p.get("fonte") == FONTE_LAST else "banner", "Pretesa dedotta dai quesiti")
+        line = f"{banner}: «{what}»." + "\n\n" + line
+    return line
+
+
+def side_named(result: Optional[Dict[str, Any]], text: str) -> bool:
+    """v79.17.0 (item 1): the text names the side the opinion is for -- the frame's cliente verified, or the user's
+    own words say whom they assist (interactive_flow.stated: «assisto X», a role word «il mio cliente, convenuto»)."""
+    if (_frame(result).get("cliente") or {}).get("nome"):
+        return True
+    low = str(text or "").lower()
+    if re.search(r"\b(?:il|la)\s+mi[oa]\s+(?:client|assistit)|\bmi[oa]\s+(?:client|assistit)", low):
+        return True
+    signals = [str(x) for x in config().get("client_signals") or [] if str(x or "").strip()]
+    if any(re.search(rf"\b{re.escape(s)}", low) for s in signals):     # «assisto», «difendo», «patrocino» …
+        return True
+    try:
+        from .interactive_flow import stated
+        got = stated(str(text or ""))
+        return bool(got.get("client") or got.get("client_role"))
+    except Exception:           # noqa: BLE001
+        return False
+
+
+def must_ask(result: Optional[Dict[str, Any]], text: str) -> List[str]:
+    """v79.17.0 (item 1, «ask, don't guess»): the fields missing that make the flow ask its one question and stop --
+    [] when nothing is asked: the frame absent or failed (the rules' path as before), the text naming the side
+    (side_named), or cliente, ruolo and pretesa all verified (a derived pretesa counts as missing only when the text
+    names no side either)."""
+    if not isinstance(result, dict) or not isinstance(result.get("frame"), dict) or result.get("counters", {}).get("frame_failed"):
+        return []
+    f = result["frame"]
+    missing = [k for k in ("cliente", "ruolo") if not f.get(k)]
+    p = f.get(PRETESA_FIELD)
+    if not isinstance(p, dict) or p.get("derivata") or not (p.get("contenuto") or p.get("articolo")):
+        missing.append("pretesa")
+    if not missing or side_named(result, text):
+        return []
+    return missing
+
+
+def ask_side_question() -> str:
+    """v79.17.0: the one question (data «ask_side»)."""
+    return str(config().get("ask_side") or ASK_SIDE_DEFAULT)
 
 
 # --- the call ---------------------------------------------------------------------------------------------------------
@@ -947,7 +1151,12 @@ def fit_context(result: Optional[Dict[str, Any]]) -> str:
     if f.get("addebito_o_domanda"):
         a = f["addebito_o_domanda"]
         what = "; ".join(x for x in (a.get("articolo") or "", a.get("descrizione") or "") if x) or a.get("frase")
-        lines.append(f"{labels.get('addebito_o_domanda', 'Addebito o domanda')}: {what}")
+        if not a.get("derivata"):
+            lines.append(f"{labels.get('addebito_o_domanda', 'Addebito o domanda')}: {what}")
+        if a.get("tipo"):           # v79.17.0 (item 3): the pretesa the fit judges against (a derived one said so)
+            tag = " (dedotta dai quesiti)" if a.get("derivata") and a.get("fonte") == FONTE_QUESITI else \
+                " (dedotta dall'ultima richiesta)" if a.get("derivata") else ""
+            lines.append(f"{labels.get('pretesa', 'Pretesa')}{tag}: {pretesa_text({'frame': f})}")
     if f.get("istituto"):
         lines.append(f"{labels.get('istituto', 'Istituto')}: {f['istituto']['testo']}")
     if not lines:
@@ -969,8 +1178,10 @@ def printable(result: Optional[Dict[str, Any]]) -> List[str]:
             shown = f"{v['nome']} — {v['perche']}" if v else ""
         elif k in VALUE_FIELDS:
             shown = f"{v['valore']} (intake {v['intake']}) — {v['perche']}" if v else ""
-        elif k == "addebito_o_domanda":
-            shown = (f"{v.get('articolo') or 'articolo —'}; {v.get('descrizione') or '—'} — {v['frase']}") if v else ""
+        elif k == "addebito_o_domanda":     # v79.17.0: «articolo; contenuto; tipo[; contro X] — frase» (derived: its fonte)
+            shown = (f"{v.get('articolo') or 'articolo —'}; {v.get('descrizione') or '—'}; {v.get('tipo') or 'pretesa'}"
+                     + (f"; contro {v['contro']}" if v.get("contro") else "")
+                     + (f" — {v['frase']}" if v.get("frase") else f" — derivata ({v.get('fonte') or ''})")) if v else ""
         elif k == "istituto":
             shown = f"{v['testo']} — {v['frase']}" if v else ""
         else:

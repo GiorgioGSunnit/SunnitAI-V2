@@ -5228,6 +5228,10 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
         system = system.replace(OBJECTIONS_THREE.format(who=who), OBJECTIONS_ONE.format(who=who))
         material += "\n\n" + STRONGEST_LINE.format(id=strong["id"], el=strong["text"], art=strong["article"],
                                                     why=STRONGEST_WHY[strong["why"]])
+    if isinstance(ctx.get("verified_material"), dict) and ctx["verified_material"]:    # v79.17.0 (item 4): §7's
+        from . import verified_material                     # answers from the verified material, its ids cited
+        material += "\n\n" + verified_material.block(ctx["verified_material"], verified_material.SITE_OBJECTIONS) \
+            + "\n" + verified_material.ID_RULE.strip()
     rules = writer_rules_text(ctx.get("rito") or "", ctx.get("areas") or ())
     messages = [SystemMessage(content=system + ("\n\n" + rules if rules else "")),
                 HumanMessage(content=material)]
@@ -6067,8 +6071,26 @@ def solutions_section(sols: List[Dict[str, Any]], main: int, plan: Dict[str, Any
     return "\n".join(lines + [""] + strategy)
 
 
+def record_allegations(ctx: Dict[str, Any]) -> bool:
+    """v79.17.0 (item 5): the record holds an allegation by a party other than the client (fact_record.facts: stato
+    «allegato», chi not the client)."""
+    from . import case_frame
+    client = str(ctx.get("client") or "")
+    for f in ctx.get("fact_record_facts") or []:
+        if isinstance(f, dict) and f.get("stato") == "allegato" and f.get("chi") and \
+                not (client and case_frame.same_party(client, f.get("chi"))):
+            return True
+    return False
+
+
+NO_OBJECTIONS = "Il materiale non indica obiezioni della controparte sui fatti narrati."
+# v79.17.0 (item 5, my draft): the record holds a non-client allegation but no objection stands -- never «nessuna»
+OBJECTIONS_FROM_ALLEGATIONS = ("Le allegazioni della controparte riportate al punto 2 sono il materiale delle obiezioni: "
+                               "nessuna è stata verificata come obiezione su un elemento della linea.")
+
+
 def objections_section(plan: Dict[str, Any], fallback: Sequence[Dict[str, str]] = (),
-                       verified: Sequence[Dict[str, str]] = ()) -> str:
+                       verified: Sequence[Dict[str, str]] = (), allegations: Optional[bool] = None) -> str:
     """§7. v79.15.1 (item 3, ANALYSIS_STEP): `verified` -- the verified analysis's objections
     (analysis_step.objection_items: every non-client allegation behind a «contestato» element, a claimant's exception
     elements) -- printed first and never cut; the plan's (and the fallback's) fill up to OBJECTIONS after them; the
@@ -6084,8 +6106,8 @@ def objections_section(plan: Dict[str, Any], fallback: Sequence[Dict[str, str]] 
         if f.get("obiezione") and all(f["obiezione"] != x["obiezione"] for x in items):
             items.append(f)
     items = items[:max(OBJECTIONS, len(verified or []))]
-    if not items:
-        return "Il materiale non indica obiezioni della controparte sui fatti narrati."
+    if not items:               # v79.17.0 (item 5): «nessuna obiezione» only when the record holds no allegation
+        return OBJECTIONS_FROM_ALLEGATIONS if allegations else NO_OBJECTIONS
     return "\n\n".join(f"{OBJECTION_HEAD.format(n=i)} {o['obiezione'].rstrip('.')}.\n{ANSWER_HEAD} "
                          f"{o.get('risposta') or NO_ANSWER}" for i, o in enumerate(items, 1))
 
@@ -6893,11 +6915,21 @@ def procedural_answer(question: str, procedure: str) -> List[str]:
 
 
 def _reviewed_answer(written: str, verified: Dict[str, Any], scope: Dict[str, Any], events: List[Dict[str, Any]],
-                     checked: Callable[[str], str]) -> List[str]:
+                     checked: Callable[[str], str], vm: Optional[Dict[str, Any]] = None,
+                     dropped: Optional[List[int]] = None) -> List[str]:
     """v79.15.1 (item 4): the writer's sentences through ProseReview (v79.16.0, C3: a replacement statement only on an
     article the answer itself cites), then the answer-wide checks; a sentence they removed takes its anaphoric
-    follower with it. At most ANSWER_SENTENCES[1]."""
+    follower with it. At most ANSWER_SENTENCES[1]. v79.17.0 (item 4): with the verified material (vm) the one rule
+    instead (verified_material.review_sentences: an unknown id or an article outside the fitted set drops the
+    sentence, nothing else), the ids rendered; `dropped` (a list) receives how many sentences went."""
     from . import analysis_step
+    if vm:
+        from . import verified_material
+        kept, gone = verified_material.review_sentences(written, vm, analysis_step.SITE_QA, events,
+                                                        list(scope.get("excluded") or []))
+        if dropped is not None:
+            dropped.append(gone)
+        return _first_sentences(checked(" ".join(kept)), 60)[:ANSWER_SENTENCES[1]] if kept else []
     review = analysis_step.ProseReview(verified, scope, analysis_step.SITE_QA, events,
                                        cited_scope=analysis_step._cited(written))
     mine = [y for y in (review(x) for x in _first_sentences(written, 60)) if y]
@@ -6920,6 +6952,11 @@ def _reask(ctx: Dict[str, Any], question: str, verified: Dict[str, Any]) -> str:
     own = ("ARTICOLI DEL QUESITO:\n" + "\n".join(
         f"- art. {x}" + (f" ({_plain(rubriche[x])})" if rubriche.get(x) else "") for x in labels)) if labels else ""
     law = "\n\n".join(x for x in (analysis_step.statements_block(verified), own) if x)
+    vm = ctx.get("verified_material") if isinstance(ctx.get("verified_material"), dict) else {}
+    if vm:                      # v79.17.0 (item 4): the same material, nothing else
+        from . import verified_material
+        n = next((i for i, q in enumerate(vm.get("quesiti") or [], 1) if q == question or same_line(q, question)), None)
+        law = verified_material.block(vm, analysis_step.SITE_QA, question, n)
     ctx["qa_answer_reasked"] = int(ctx.get("qa_answer_reasked") or 0) + 1
     try:
         return str(ask(question, law) or "")
@@ -6966,15 +7003,27 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
             verified, excluded_labels(ctx), [ctx.get("case") or ""] + [str(q) for q in ctx.get("asked") or []])
     items, how = [], []
     said_at = 0                 # v79.12.7 (item 7): the answer that printed the main line -- the block prints it once
+    vm = ctx.get("verified_material") if isinstance(ctx.get("verified_material"), dict) else {}
     for i, q in enumerate(asked, 1):
         written = next((x for t, x in by_title.items() if same_line(t, q) or _plain(t) == _plain(q)), "")
         if written and verified is not None:    # v79.15.1 (item 4): the writer's sentences reviewed first -- a rule
-            got, kind = _reviewed_answer(written, verified, scope, events, checked), "writer"    # replaced before the
-            if len(got) < ANSWER_SENTENCES[0]:  # v79.16.0 (C2): fewer than two left -- the writer asked once more,
-                again = _reask(ctx, q, verified)                        # the verified affermazioni and the quesito's
-                if again:                                               # articles its only law; its review's events
-                    reask_events = ctx.setdefault("qa_reask_review", [])    # apart (the 79.15 counters unchanged)
-                    got = _reviewed_answer(again, verified, scope, reask_events, checked) or got
+            gone: List[int] = []                # replaced before the
+            got, kind = _reviewed_answer(written, verified, scope, events, checked, vm, gone), "writer"
+            # v79.16.0 (C2): fewer than two left -- the writer asked once more, the verified affermazioni and the
+            # quesito's articles its only law; v79.17.0 (item 4): or two or more sentences dropped -- written once more
+            # with the same verified material; its review's events apart (the 79.15 counters unchanged)
+            if len(got) < ANSWER_SENTENCES[0] or (vm and sum(gone) >= 2):
+                again = _reask(ctx, q, verified)
+                if again:
+                    reask_events = ctx.setdefault("qa_reask_review", [])
+                    got = _reviewed_answer(again, verified, scope, reask_events, checked, vm) or got
+            if vm and got:                      # v79.17.0 (item 4): never a fragment nor an article's text as the answer
+                from . import verified_material
+                why = verified_material.fragment_or_copy(got, vm)
+                if why:
+                    _log("qa_answer_refused", {"question": str(q)[:160], "why": why, "text": " ".join(got)[:300]})
+                    ctx["qa_answer_fragment"] = int(ctx.get("qa_answer_fragment") or 0) + 1
+                    got = []
             if not got:
                 got, kind = [INSUFFICIENT_ANSWER], "insufficiente"
                 ctx["qa_answer_insufficient"] = int(ctx.get("qa_answer_insufficient") or 0) + 1
@@ -7010,9 +7059,9 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
         ctx["qa_dropped"] = [e for e in qa_dropped if e.get("esito") == analysis_step.DROPPED]
         if qa_dropped:
             _log("qa_dropped", {"removed": qa_dropped})
-        statements = analysis_step.statements_block(verified)
-        if statements:
-            block += "\n\n" + statements
+        statements = analysis_step.statements_block(verified)      # v79.17.0 (item 4): the log's only, never the body
+        if statements and log is not None:
+            log["statements_block"] = statements
     return block, strategy
 
 
@@ -7211,9 +7260,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # excluded or unfitted article's sentence dropped), then `check` (the answer-wide checks); a sentence `check`
     # removed takes its anaphoric follower with it (orphans_out). Without it, `check` alone. replace=False (§7's
     # objection itself, v79.15.1 review): a rule with no verified twin dropped, never replaced by a statement of law.
+    vm = ctx.get("verified_material") if isinstance(ctx.get("verified_material"), dict) else {}
+    from . import verified_material as vmat
+
     def reviewed(check: Callable[[str], str], text: str, site: str, replace: bool = True) -> str:
         if verified is None or not text:
             return check(text)
+        if vm:              # v79.17.0 (item 4): prose written from the verified material -- one rule (a sentence citing
+            # an article outside the fitted set or an id that does not exist is dropped), the ids rendered, then the
+            # hygiene only (no rule-statement check, no replacement, no dependent drop)
+            mine = tracked("verified_material", text, vmat.review_text(text, vm, site, prose_events, excluded)[0])
+            return tracked("prose", mine, prose(mine, rules=False))
         mine = tracked("analysis_step", text, _by_sentence(text, analysis_step.ProseReview(
             verified, ctx["prose_scope"], site, prose_events, replace=replace)))
         return tracked("analysis_step", mine, orphans_out(mine, check(mine), prose_events, site))
@@ -7423,7 +7480,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
         ("obiezioni", NO_CLAIM_OBJECTIONS if kind else all_open_section(strong, all_open_pick,
             _party_of(ctx)["side"]) if strong else objections_section(plan, fallback_objections, **(   # v79.14.1
-                {"verified": verified_objections} if verified is not None else {}))),    # (item 6); v79.15.1 (item 3)
+                {"verified": verified_objections, "allegations": record_allegations(ctx)}      # v79.17.0 (item 5)
+                if verified is not None else {}))),    # (item 6); v79.15.1 (item 3)
         ("processuali", procedure),
         # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
         ("conclusioni", "\n\n".join(conclusions) if verified is not None else
@@ -7489,9 +7547,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     body.append((title("verificare"), points_section(points)))
     log.update({"points": len(points), "main_thesis": sols[main]["tesi"][:160], "esito": a.get("esito"),
                 "obiettivo": a.get("obiettivo")})
+    light = (lambda t: tracked("prose", t, prose(t, rules=False))) if vm else checked     # v79.17.0 (item 4)
     answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure,
                                             [] if kind else sols, main, a,      # v79.12.5 (item 2): no line
-                                            client, checked, log, verified=verified)    # v79.6 (item 1): before §1
+                                            client, light, log, verified=verified)    # v79.6 (item 1): before §1
     if verified is not None:            # v79.16.0 (D3): a sentence printed once -- the answers first, then §1..§10
         deduped, dropped_n = analysis_step.dedup_sections([("risposte", answers)] + body)
         answers, body = deduped[0][1], deduped[1:]

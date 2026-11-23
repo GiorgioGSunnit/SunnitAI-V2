@@ -201,9 +201,9 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert q_log["queries"] == 1 and q_log["per_quesito"][0]["top"][0] == "74 c.p.p." and q_log["added"] == ["74 c.p.p."]
     assert c["retrieval_quesiti_added"] == ["74 c.p.p."] and c["fit_kept_from_quesiti"] == 1
     q_jobs = [j for j in run["jobs"] if "parte civile" in str(j[0])]
-    assert q_jobs and q_jobs[0][2].split("CONTESTO")[0].count("art. 74 c.p.p.") == 1
-    assert "CONTESTO VERIFICATO" in q_jobs[0][2]
-    assert "esercitata nel processo penale dal soggetto al quale il reato ha recato danno (art. 74 c.p.p.)." in items[0]
+    assert q_jobs and q_jobs[0][2].startswith("MATERIALE VERIFICATO") and "art. 74 c.p.p." in q_jobs[0][2]   # v79.17.0
+    assert "[A74cpp.1]" in q_jobs[0][2] and "Pretesa: accusa: «truffa» (art. 640 c.p.)" in q_jobs[0][2]
+    assert QA_74.split(". ")[0] in items[0]          # v79.17.0 (item 4): the writer's sentence stays, no replacement
     assert c["qa_answer_insufficient"] == 0
     # A3: §2 and §10 from the record and the verified elements
     fatti = H.section(answer, "fatti")
@@ -212,7 +212,7 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert "Nessun elemento resta da provare" not in fatti and "contestato —" in fatti
     assert "Da verificare se «" in H.section(answer, "verificare")
     # D2: the bridges; the step's log carries the F-ids
-    assert H.section(answer, "questione").startswith("La questione è se «")
+    assert H.section(answer, "questione").startswith("La questione è se l'accusa «truffa» sia fondata sull'art. 640 c.p., posto che")   # v79.17.0 (item 5)
     assert H.section(answer, "orientamenti").startswith("Pronunce sulle norme della linea: art. 640 c.p.")
     assert H.section(answer, "soluzioni").startswith("Le linee seguono gli esiti del punto 4.")
     assert by["analysis_step"][0][0]["facts_cited"]["640 c.p."]

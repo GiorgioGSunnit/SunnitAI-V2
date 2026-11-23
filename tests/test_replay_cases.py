@@ -46,7 +46,7 @@ def test_the_measurement_reads_every_stage_of_the_faked_fixtures(monkeypatch, tm
         assert "quesiti" in r["frame"]["verified"] and r["frame"]["fields"]["quesiti"]
     assert civil["analysis"]["lines"][0]["articolo"] == "1385 c.c." and civil["retrieval"]["added"] == ["2946 c.c."]
     assert civil["retrieval"]["queries"] == 3 and civil["qa"]["qa_questions_detected"] == 3
-    assert civil["qa"]["qa_answer_reasked"] == 1 and civil["qa"]["qa_answer_insufficient"] == 1
+    assert civil["qa"]["qa_answer_insufficient"] == 0        # v79.17.0: the one rule keeps the fitted sentences
     assert penal["analysis"]["lines"][0]["articolo"] == "640 c.p." and penal["retrieval"]["added"] == ["74 c.p.p."]
     assert defence["analysis"]["lines"][0]["articolo"] == "1460 c.c."
     assert defence["analysis"]["rejected"][0]["articolo"] == "1454 c.c."

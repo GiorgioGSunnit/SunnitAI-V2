@@ -73,6 +73,7 @@ NEW_CASE_CHARS = 400            # a narrative this long, in an open interaction,
 _REPLY_TOKENS = 600
 
 TOPICS_OFFERED, FRAME_RESTATED, FRAME_CONFIRMED, ANSWERED = "topics_offered", "frame_restated", "frame_confirmed", "answered"
+ASKED_SIDE = "asked_side"       # v79.17.0 (item 1): the flow asked for whom the opinion is and what is asked, and stopped
 INSTRUCTION = C.INSTRUCTION
 CONFIRM_LINE = C.CONFIRM_LINE
 ANSWER_TITLES = C.SECTION_TITLES
@@ -5040,8 +5041,9 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
     sentences with their certainty instead of the flat facts, under writer_rules' instruction and rules text; the
     parties to sue under its rule; every job its scope note (P4)."""
     from . import (defensive_generation as dg, issue_records, plan_then_write as ptw, protected_sources, render_computed,
-                   rule_quote, writer_rules)
+                   rule_quote, verified_material, writer_rules)
     records = (state.get("records") or {}) if record_mode(state) else {}
+    vm = state.get("verified_material") or {}            # v79.17.0 (item 4): §4 from the verified material alone
     who = plan.get("parte_assistita") or "la parte assistita"
     case = f"CASO:\n{case_text(state)}"
     titles = "; ".join(t["title"] for t in topics)
@@ -5117,14 +5119,16 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
          material(case, fixed, people, block("ARGOMENTO", topic_lines), lines_of_case,
                   ptw._plan_text(plan, answers=True, rulings=False), read_only), budget["lead"]),
         (ANSWER_TITLES[1],
-         (writer_rules.NORMS_INSTRUCTION_REFERENCES if references else writer_rules.NORMS_INSTRUCTION if records else
+         (writer_rules.VERIFIED_NORMS_INSTRUCTION + verified_material.ID_RULE if vm else      # v79.17.0 (item 4)
+          writer_rules.NORMS_INSTRUCTION_REFERENCES if references else writer_rules.NORMS_INSTRUCTION if records else
           f"SEZIONE: Norme applicate ai fatti. Per ciascuna norma di {RULES_TITLE}, nell'ordine, un paragrafo aperto dal "
           "numero della norma nell'elenco tra parentesi quadre su una riga nuova («[1] ...», «[2] ...»), senza titolo: la "
           "regola, riportando il comma tra «…» con il suo numero o restando dentro le sue parole, e come si applica ai "
           "fatti del caso, con il fatto che prova ciascun requisito o la prova da acquisire. Lo stato di ogni requisito è "
           "già scritto sopra il paragrafo: non ripeterlo e non contraddirlo. Solo le norme dell'elenco: le altre norme "
           "dell'argomento hanno già il loro titolo e non vanno commentate.") + shape + no_rulings,
-         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts),
+         material(verified_material.block(vm, verified_material.SITE_NORMS)) if vm else      # v79.17.0 (item 4): the
+         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts),  # material only
                   method_notes(state), rulings_writer_block(state), str(state.get("verified_context") or "")),
          budget["norms"]),                      # v79.16.0 (D1): the verified context block, every writer call's
         (ANSWER_TITLES[2],
@@ -6499,6 +6503,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         mark("analysis_step")
         from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
         verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
+        _isolated("verified_object", lambda: verified_object(state, verified))       # v79.17.0 (items 4, 5)
         # v79.16.0 (D1): the one verified context block every writer call receives (the §4 job, each quesito's)
         state["verified_context"] = _isolated("verified_context", lambda: analysis_step.context_block(
             verified, client_of(state), quesiti_articles(state), fact_record_facts(state)), "") or ""
@@ -6522,6 +6527,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         if verified is not None:        # v79.15.0 (build B): every client's sections from the verified analysis
             for c in ([c for _, c, _ in method_clients] if method_clients else [method_ctx] if method_ctx else []):
                 c["verified_analysis"] = verified
+                c["verified_material"] = state.get("verified_material") or {}       # v79.17.0 (item 4)
         if method_ctx is not None:      # v79.8 (D1): the special commi made records of their own
             state.setdefault("block_counters", {})["special_comma_records"] = len(
                 (method_ctx.get("records_view") or {}).get("special_commi") or [])
@@ -6690,7 +6696,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         for key in ("cenni_rules_removed", "cenni_rules_unsourced", "main_line_repeated",
                     # v79.16.0: the Q&A re-ask and the insufficient line (C2), the sentences dropped as already
                     # printed (D3), the rulings outside the lines' and the quesiti's articles (D3)
-                    "qa_answer_reasked", "qa_answer_insufficient", "sections_dedup_dropped",
+                    "qa_answer_reasked", "qa_answer_insufficient", "qa_answer_fragment", "sections_dedup_dropped",
                     "rulings_off_line_dropped", "sections_rito_blocks_dropped"):      # v79.16.1 (item 5)
             counters[key] = sum(int(c.get(key) or 0) for c in composed)
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
@@ -7768,6 +7774,52 @@ def fit_removed_keys(state: Dict[str, Any]) -> set:
             if isinstance(e, dict) and e.get("article")}
 
 
+def fit_pretesa_quesiti(state: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """v79.17.0 (item 3): (the pretesa in one line, the numbered quesiti) the fit judges against -- the held frame's
+    pretesa (case_frame.pretesa_text; verified or derived), the frame's verified quesiti else the questions asked
+    (asked_questions); ("", []) with no frame held."""
+    from . import case_frame
+    held = case_frame.held(state)
+    if held is None:
+        return "", []
+    quesiti = [str(q) for q in (case_frame._frame(held).get("quesiti") or []) if str(q or "").strip()] or \
+        [str(q) for q in asked_questions(state) if str(q or "").strip()]
+    return case_frame.pretesa_text(held), quesiti
+
+
+def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.17.0 (item 2): the binding of every rito on the pretesa, from the verified fit verdicts' «governs»:
+    {"applied": a verified «si» / «dipende» names the pretesa, "principale": the articles governing the pretesa (the
+    only candidates for the leading line), "quesiti": {Qn: its articles} (candidates for that question's answer and
+    for the subordinate line), "context_only": the verified norms governing neither (schede, never a line),
+    "asked": the fit was given a pretesa or quesiti}. Counters binding_pretesa_applied, binding_pretesa_excluded
+    (the context-only labels) into block_counters; logged «binding_pretesa»."""
+    fit = state.get("applicability") or {}
+    out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
+                           "context_only": []}
+    if out["asked"]:
+        for j in fit.get("judgments") or []:
+            if not isinstance(j, dict) or not j.get("verified") or j.get("fit") not in ("si", "dipende"):
+                continue
+            label = str(j.get("article") or "")
+            if not isinstance(j.get("governs"), list):      # the verdict said nothing of it: neither set
+                continue
+            gov = list(j["governs"])
+            if "pretesa" in gov:
+                out["principale"].append(label)
+            for tok in gov:
+                if tok.startswith("Q"):
+                    out["quesiti"].setdefault(tok, []).append(label)
+            if not gov:
+                out["context_only"].append(label)
+        out["applied"] = bool(out["principale"])
+    counters = state.setdefault("block_counters", {})
+    counters["binding_pretesa_applied"] = int(out["applied"])
+    counters["binding_pretesa_excluded"] = list(out["context_only"]) if out["applied"] else []
+    _log("binding_pretesa", out)
+    return out
+
+
 def fit_charged(state: Dict[str, Any], posture: Dict[str, Any]) -> List[str]:
     """v79.13.0 (review): the norms the text charges -- intake's contestazione, the case's charge or claim sentences
     (posture.charge_labels), a record marked charged -- each also as its store document's article
@@ -7818,12 +7870,25 @@ def quesiti_articles(state: Dict[str, Any]) -> Dict[str, List[str]]:
         return {}
     queries = list((state.get("analysis") or {}).get("quesiti_queries") or [])
     records = state.get("records") or {}
+    governs = governs_by_label(state)        # v79.17.0 (item 3): the verdict decides -- an article answers Qn or not
     out: Dict[str, List[str]] = {}
     for n, question in enumerate(queries, 1):
         labels = [x for x in by_n.get(n) or [] if x in records and not (records.get(x) or {}).get("dropped")]
+        labels = [x for x in labels if x not in governs or f"Q{n}" in governs[x] or "pretesa" in governs[x]]
         if labels:
             out[str(question)] = labels
     return out
+
+
+def governs_by_label(state: Dict[str, Any]) -> Dict[str, List[str]]:
+    """v79.17.0 (item 3): {label: its verified verdict's governs} for the judged «si» / «dipende» norms when the fit was
+    given the pretesa or the quesiti; {} otherwise (nothing filters)."""
+    fit = state.get("applicability") or {}
+    if not fit.get("governs_asked"):
+        return {}
+    return {str(j.get("article")): list(j["governs"]) for j in fit.get("judgments") or []
+            if isinstance(j, dict) and j.get("verified") and j.get("fit") in ("si", "dipende") and j.get("article")
+            and isinstance(j.get("governs"), list)}
 
 
 def quesito_articles_for(state: Dict[str, Any], question: str) -> List[str]:
@@ -7841,8 +7906,9 @@ def quesito_articles_block(state: Dict[str, Any], question: str) -> str:
     if not labels:
         return ""
     records = state.get("records") or {}
+    governs = governs_by_label(state)        # v79.17.0 (item 3): the governs tags shown to the writer
     named = [f"art. {x}" + (f" ({_plain_text(records[x].get('rubrica'))})" if (records.get(x) or {}).get("rubrica")
-                           else "") for x in labels]
+                           else "") + (f" [governa: {', '.join(governs[x])}]" if governs.get(x) else "") for x in labels]
     return "ARTICOLI DEL QUESITO (recuperati per questa domanda; rispondi prima con questi):\n" + "\n".join(
         f"- {x}" for x in named)
 
@@ -7878,10 +7944,15 @@ def reask_question(state: Dict[str, Any], plan: Dict[str, Any], question: str, l
                    documents, rows, case: str, context) -> str:
     """v79.16.0 (C2): one writer call for one question whose reviewed answer kept fewer than two sentences -- the
     verified affermazioni and the question's own articles (law) as the only law context; "" on any failure."""
-    from . import plan_then_write as ptw, writer_rules
+    from . import plan_then_write as ptw, verified_material, writer_rules
     title = quesito_title(question)
     instruction = writer_rules.QUESITO_INSTRUCTION.format(question=question) + writer_rules.REASK_RULE
     material = "\n\n".join(x for x in (f"CASO:\n{case}", str(state.get("verified_context") or ""), law) if x)  # (D1)
+    if state.get("verified_material"):       # v79.17.0 (item 4): written once more with the same material, nothing else
+        instruction = writer_rules.QUESITO_INSTRUCTION.format(question=question) + writer_rules.VERIFIED_REWRITE_NOTE \
+            + verified_material.ID_RULE
+        material = law or verified_material.block(state["verified_material"], verified_material.SITE_QA, question,
+                                                  question_number(state, question))
     try:
         got = ptw.write_sections(plan, [(f"0:{title}", instruction, material, QUESITO_TOKENS)], lang, named,
                                  documents, list(rows), case, context=context, sections_note="")
@@ -7889,6 +7960,44 @@ def reask_question(state: Dict[str, Any], plan: Dict[str, Any], question: str, l
         _log("qa_reask_failed", {"question": question[:160], "error": f"{type(exc).__name__}: {exc}"[:200]})
         return ""
     return str(dict(got or []).get(f"0:{title}") or "")
+
+
+def verified_object(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> None:
+    """v79.17.0 (items 4, 5): the one verified object on the view (analysis_step.attach_object: the pretesa, the
+    client, the lines, the esiti, the articles by governs, the record's facts, the open items -- §1, §3, §5, §9, §10 read
+    it) and, with the step ok, the writer's material (verified_material.build -> state["verified_material"]: the Q&A,
+    §4 and §7 calls receive it and nothing else)."""
+    from . import analysis_step, case_frame, fact_record, verified_material
+    if not isinstance(verified, dict):
+        return
+    held = case_frame.held(state)
+    pretesa = case_frame.pretesa(held) if held else {}
+    try:
+        uncertain = fact_record.uncertain_items(state)
+    except Exception:           # noqa: BLE001
+        uncertain = []
+    analysis_step.attach_object(verified, pretesa=pretesa, pretesa_line=case_frame.pretesa_line(held) if held else "",
+                                client=client_of(state), frame_unverified=(held or {}).get("unverified") or {},
+                                governs=state.get("binding_pretesa"), record_facts=fact_record_facts(state),
+                                record_uncertain=uncertain)
+    state["verified_material"] = {}
+    if verified.get("status") == analysis_step.OK and state.get("analysis_maps"):
+        state["verified_material"] = verified_material.build(
+            verified, state.get("analysis_maps") or {}, pretesa, client_of(state),
+            (state.get("applicability") or {}).get("judgments") or [], state.get("binding_pretesa"),
+            fact_record_facts(state), fit_pretesa_quesiti(state)[1], named=[_label(k) for k in user_named(state)],
+            quesiti_articles=quesiti_articles(state))
+    _log("verified_object", {"pretesa": pretesa.get("tipo"), "material": bool(state["verified_material"]),
+                             "articles": list((state["verified_material"].get("articles") or {}).keys())})
+
+
+def question_number(state: Dict[str, Any], question: str) -> Optional[int]:
+    """v79.17.0 (item 3): the question's number among the quesiti the fit was given (Q<n>), None when not among them."""
+    from . import lawyer_method
+    for n, q in enumerate(fit_pretesa_quesiti(state)[1], 1):
+        if q == question or lawyer_method.same_line(q, question):
+            return n
+    return None
 
 
 def analysis_step_run(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -7907,6 +8016,7 @@ def analysis_step_run(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except Exception:           # noqa: BLE001 -- run() reads it again and returns the failure, logged
         inp = None
     result = analysis_step.run(state, inp=inp, started=t0)
+    state["analysis_maps"] = analysis_step.id_maps(inp)       # v79.17.0 (item 4): the ids the writer's material cites
     state["analysis_step"] = _jsonable({k: result.get(k) for k in ("status", "error", "analysis", "counters",
                                                                    "prompt_hash", "seconds", "calls", "reasons",
                                                                    "rejected")})
@@ -7968,8 +8078,11 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     role = str((posture or {}).get("role") or "")
     from . import case_frame                    # v79.14.0 (CASE_FRAME): the verified frame as the judgment's context
     context = case_frame.fit_context(state.get("case_frame")) if case_frame.enabled() else ""
+    # v79.17.0 (item 3): the pretesa and the numbered quesiti the verdicts' «governa» refers to
+    pretesa_txt, quesiti_list = fit_pretesa_quesiti(state)
     # v79.15.0 (item 3): every judgment verified by the ids it cites (the facts' S-ids, the article's period ids)
-    result = applicability.judge(norms, facts, role, started=started, frame_context=context)
+    result = applicability.judge(norms, facts, role, started=started, frame_context=context, pretesa=pretesa_txt,
+                                 quesiti=quesiti_list)
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
     known = [f["id"] for f in facts]
@@ -8012,9 +8125,13 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         "facts": known, "protected": protected, "charged": fit_charged(state, posture), "facts_sig": sig,
         "timing": result.get("timing") or {},
         "judgments": [{k: r.get(k) for k in ("article", "fit", "verified", "reason", "added_content", "passage",
-                                             "perche", "condizione", "ambito", "cita_norma", "cita_fatti")}
+                                             "perche", "condizione", "ambito", "cita_norma", "cita_fatti",
+                                             "governs")}                   # v79.17.0 (item 3): what the norm decides
                       for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
-                      if r]}
+                      if r],
+        "governs_asked": bool(result.get("governs_asked")), "quesiti": list(quesiti_list),       # v79.17.0 (item 3)
+        "pretesa": pretesa_txt}
+    state["binding_pretesa"] = binding_pretesa(state)       # v79.17.0 (item 2): the candidate sets for the lines
     counters = state.setdefault("block_counters", {})
     counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})
     counters["norms_removed_by_fit"] = len(removed)
@@ -8554,11 +8671,18 @@ def requested_jobs(state: Dict[str, Any], blocks: Sequence[Dict[str, Any]],
     articles' rubriche and texts (writer_rules.CENNI_*); the alternatives' job (v63) on the alternatives whose article
     is known (posture.alternative_rows), numbered -- one sentence each; none: ALTERNATIVES_NONE, no call. v65: each
     «quesito» its own job, headed by the question, answered from the record and the store (quesito_material)."""
-    from . import writer_rules
+    from . import verified_material, writer_rules
     jobs, fixed = [], {}
+    vm = state.get("verified_material") or {}
     for i, b in enumerate(blocks):
         if b.get("kind") == "quesito" and b.get("subject"):
             title = quesito_title(str(b["subject"]))
+            if vm:                  # v79.17.0 (item 4): the verified material for this question, nothing else
+                n = question_number(state, str(b["subject"]))
+                jobs.append((f"{i}:{title}", writer_rules.QUESITO_INSTRUCTION.format(question=b["subject"])
+                             + writer_rules.VERIFIED_QUESITO_NOTE + verified_material.ID_RULE,
+                             verified_material.block(vm, verified_material.SITE_QA, str(b["subject"]), n), QUESITO_TOKENS))
+                continue
             own = quesito_articles_block(state, str(b["subject"]))        # v79.16.0 (B2): its quesito articles first
             parts = [f"CASO:\n{case}", own, str(state.get("verified_context") or ""), quesito_material]  # (D1)
             jobs.append((f"{i}:{title}", writer_rules.QUESITO_INSTRUCTION.format(question=b["subject"]),
@@ -8804,6 +8928,12 @@ def named_retry(state: Dict[str, Any], label: str, texts: Optional[Dict[str, str
         str(state.get("verified_context") or "")) if p))          # v79.16.0 (D1): every writer call's context block
     instruction = (writer_rules.NORMS_INSTRUCTION_REFERENCES if single_mode(state) else writer_rules.NORMS_INSTRUCTION) \
         + (C.fill(writer_rules.NAMED_RETRY_NOTE, article=f"art. {label}") or "")
+    vm = state.get("verified_material") or {}
+    if vm and label in (vm.get("articles") or {}):       # v79.17.0 (item 4): the one article's verified material alone
+        from . import verified_material
+        material = protected_sources.with_rule(verified_material.block(vm, verified_material.SITE_NORMS, only=[label]))
+        instruction = writer_rules.VERIFIED_NORMS_INSTRUCTION + verified_material.ID_RULE \
+            + (C.fill(writer_rules.NAMED_RETRY_NOTE, article=f"art. {label}") or "")
     written = dict(write([(ANSWER_TITLES[1], instruction, material, NAMED_RETRY_TOKENS)]) or [])
     paragraph = _PARAGRAPH_MARK_RE.sub("", str(written.get(ANSWER_TITLES[1]) or "")).strip()
     _log("named_retry", {"article": label, "written": bool(paragraph), "chars": len(paragraph)})
@@ -9700,6 +9830,10 @@ def hold_frame(state: Dict[str, Any]) -> None:
     if not case_frame.enabled() or not isinstance(got, dict):
         return
     state["case_frame"] = got
+    counters = state.setdefault("block_counters", {})      # v79.17.0 (item 1): the pretesa's counters on the answer
+    for key in ("frame_pretesa_verified", "frame_pretesa_derived"):
+        counters[key] = int((got.get("counters") or {}).get(key) or 0)
+    counters["frame_asked_side"] = 0
     if isinstance(state.get("analysis"), dict):     # the extraction's «posizione»: the frame role's side
         pos = case_frame.position(state, state["analysis"].get("posizione"), "analysis.posizione")
         if pos is not None:
@@ -10082,6 +10216,9 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     said = bound_said(state, stated(request or message))        # v79.14.0: the frame's client, when it holds one
     _isolated("stated", lambda: apply_stated(state, said))
     _isolated("intake_client", lambda: apply_intake_client(state, said))     # v79.14.1 (item 1)
+    asked = _isolated("ask_side", lambda: ask_side(state, message, request), None)    # v79.17.0 (item 1): ask, don't
+    if asked:                                                                           # guess -- no opinion from a
+        return asked                                                                    # guessed side
     if not (state.get("answered") or {}).get("parte_assistita"):
         _isolated("prepare_side", lambda: prepare_side(state))       # the assumed client's lines order the topics
     numbers = covered_topics(state)
@@ -10103,6 +10240,58 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     # v79.12.7 (item 8): the version is the response's metadata («version»); in the body only under FOOTER_IN_BODY
     return {"answer": with_version(text), "interaction": field, "state": state, "citations": citations,
             "kind": "answer", "article_citations": articles, "version": version.current()}
+
+
+def ask_side(state: Dict[str, Any], message: str, request: str = "") -> Optional[Dict[str, Any]]:
+    """v79.17.0 (item 1, «ask, don't guess»): with the held frame leaving cliente, ruolo or the pretesa unverified and
+    the text naming no side (case_frame.must_ask), the flow asks its one question (case_frame.ask_side_question) and
+    stops -- the result a reply of kind «ask_side», the state kept (ASKED_SIDE) for the next message (follow_up:
+    answer_after_ask). Counter frame_asked_side = 1, logged «frame_asked_side». None when nothing is asked."""
+    from . import case_frame
+    held = case_frame.held(state)
+    if held is None:
+        return None
+    missing = case_frame.must_ask(held, case_text(state))
+    if not missing:
+        return None
+    state.setdefault("block_counters", {})["frame_asked_side"] = 1
+    state["asked_side"] = {"missing": missing, "message": message, "request": request}
+    state["state"] = ASKED_SIDE
+    touch(state, "asked side")
+    _log("frame_asked_side", {"missing": missing, "question": case_frame.ask_side_question()})
+    from .. import version
+    return {"answer": case_frame.ask_side_question(), "interaction": interaction(state, 1, ("add_fact",)),
+            "state": state, "citations": [], "kind": "ask_side", "article_citations": [],
+            "version": version.current(), "asked": missing}
+
+
+def answer_after_ask(message: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.17.0 (item 1): the message after the one question -- the case run again as one text (the original request,
+    then the user's answer naming the side and what is asked), its intake read anew (intake.request_intake); the new
+    state carries frame_asked_side = 1. A second unanswerable frame asks no further question: the answer is written
+    with the frame as it stands (never two questions)."""
+    from . import intake as intake_mod
+    asked = state.get("asked_side") or {}
+    text = f"{asked.get('message') or state.get('text') or ''}\n\n{message}".strip()
+    read = intake_mod.request_intake(text, "", ())
+    result = single_shot(text, state.get("lang") or "it", str(asked.get("request") or ""), intake=read,
+                         case_id=str(state.get("case_id") or ""))
+    if result.get("kind") == "ask_side":            # never a second question: the opinion with what the frame holds
+        new = result["state"]
+        new.pop("asked_side", None)
+        new["no_more_asking"] = True
+        numbers = covered_topics(new)
+        new["chosen"] = numbers
+        new["state"] = FRAME_CONFIRMED
+        answered, citations = write_answer(new, numbers)
+        new["state"] = ANSWERED
+        new["last_answer"], new["last_snapshot"] = answered, _snapshot(new)
+        result = {"answer": with_version(answered), "interaction": interaction(new, 3, ("deepen", "add_fact")),
+                  "state": new, "citations": citations, "kind": "answer", "article_citations": [],
+                  "version": result.get("version")}
+    result["state"].setdefault("block_counters", {})["frame_asked_side"] = 1
+    _log("frame_asked_side_answered", {"chars": len(message or ""), "kind": result.get("kind")})
+    return result
 
 
 def footer_in_body() -> bool:
@@ -10691,6 +10880,8 @@ def follow_up(message: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     message is not one (a new case, or a question the interaction does not hold) -- the old path then."""
     t0 = time.time()
     phase = state.get("state")
+    if phase == ASKED_SIDE and state.get("asked_side"):      # v79.17.0 (item 1): the answer to the one question
+        return answer_after_ask(message, state)
     if is_new_case(message):
         return None
     parsed = parse_reply(message, state)

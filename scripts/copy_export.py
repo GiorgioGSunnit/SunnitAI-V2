@@ -124,7 +124,15 @@ EXTRA = (
     ("lawyer_method", "OBJ_OPEN", "Metodo, «Obiezioni e risposte»: un elemento da provare dell'addebito"),
     ("lawyer_method", "OBJ_DENIED", "Metodo, «Obiezioni e risposte»: un elemento del cliente da provare"),
     ("lawyer_method", "NO_ANSWER", "Metodo, «Obiezioni e risposte»: risposta da costruire"),
-    ("lawyer_method", "objections_section", "Metodo, «Obiezioni e risposte»: nessuna obiezione"),
+    ("lawyer_method", "NO_OBJECTIONS", "Metodo, «Obiezioni e risposte»: nessuna obiezione (il record non porta allegazioni "
+                                       "della controparte; v79.17.0)"),
+    ("lawyer_method", "OBJECTIONS_FROM_ALLEGATIONS", "Metodo, «Obiezioni e risposte»: il record porta allegazioni della "
+                                                     "controparte ma nessuna obiezione verificata (v79.17.0)"),
+    ("case_frame", "ASK_SIDE_DEFAULT", "La domanda unica del flusso quando il quadro non dice per chi è il parere né che cosa "
+                                       "chiede (v79.17.0; data/case_frame.json «ask_side»)"),
+    ("analysis_step", "PRETESA_BRIDGE", "Metodo, «Questione giuridica»: la frase d'apertura sulla pretesa (v79.17.0)"),
+    ("analysis_step", "RISK_LINE", "Metodo, «Conclusioni»: il rischio in parole, calcolato dagli esiti (v79.17.0)"),
+    ("analysis_step", "FRAME_UNVERIFIED_POINT", "Metodo, «Punti da verificare»: un campo del quadro non verificato (v79.17.0)"),
     ("lawyer_method", "orientations_section", "Metodo, «Orientamenti giurisprudenziali»"),
     ("lawyer_method", "question_section", "Metodo, «Questione giuridica»: dal registro"),
     ("lawyer_method", "points_section", "Metodo, «Punti da verificare»: nessun punto"),

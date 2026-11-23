@@ -546,6 +546,45 @@ rendering read the fallback line. The section dedup (`dedup_sections`) no longer
 abbreviation («art. 646 c.p. (addebito del quadro, …)» is one sentence): 79.16.0 dropped §1's label as the Q&A line's
 duplicate.
 
+## 5l. v79.17.0 (24 Nov 2026): the pretesa anchors every rito; the frame asks instead of guessing; questions bind
+## articles; prose from verified material only; the sections from one object
+
+No new flag. (1) `CASE_FRAME` -- the frame's `addebito_o_domanda` field is the pretesa of every rito: {tipo (accusa | domanda
+| ricorso | impugnazione | opposizione | istanza), contenuto, contro, rito, articolo, frase}; the prompt asks it as «pretesa»
+(hash 01439962c7c9 → 44d4b100df83; an «addebito_o_domanda» reply is still read). Sources in order:
+the text's explicit words (verified by quote), the verified quesiti, the text's last request (`case_frame.derive_pretesa`:
+`derivata` true, fonte quesiti | ultima_richiesta, counter `frame_pretesa_derived`; `frame_pretesa_verified` when the
+model's held). Ask, don't guess: cliente, ruolo or pretesa unverified and the text naming no side (`case_frame.must_ask`,
+`side_named`: no «assisto …», no «il mio cliente …») → the flow asks ONE question («Per chi è reso il parere e che cosa
+chiede?», data `ask_side`) and stops (`interactive_flow.ask_side`, reply kind `ask_side`, counter `frame_asked_side`); the
+next message runs the case again as one text (`answer_after_ask`), never a second question. The text names the side but the
+pretesa is derived → §1 opens with «Pretesa dedotta dai quesiti: «…».». (3) `APPLICABILITY_FIT` -- the fit's human message
+carries «PRETESA» and the numbered «QUESITI» (Q1…); every verdict adds «governa» (stored `governs`: ["pretesa"] and/or
+["Qn"], [] = context only; absent = nothing said), hash 677c05970c73 → c60a2f78634c; counters `fit_governs_pretesa`,
+`fit_governs_quesiti`, `fit_context_only`; a question's retrieval articles are kept for its answer only when the verdict
+governs it (`interactive_flow.quesiti_articles`). (2) the binding on the pretesa (`interactive_flow.binding_pretesa`,
+`analysis_step.governs_sets`): with a verified «si» / «dipende» governing the pretesa, the leading line's candidates are
+those articles, the subordinate's those and the quesiti's; a context-only norm is never a line (`analysis_line_context_rejected`),
+a quesito-only one never the leading line (`analysis_line_quesito_only`); the article block tells the model «governa: …»;
+counters `binding_pretesa_applied`, `binding_pretesa_excluded`. (4) `ANALYSIS_STEP` -- with the step ok, every Q&A, §4 and
+§7 writer call receives ONE block (`verified_material.block`): the pretesa, the client and its side, the verified lines and
+esiti, the section's articles with their cited periods as ids ([A1385cc.1]), the facts as ids ([S3]); it must cite the ids
+inline, the code renders them. The post-processing of that prose is one rule (`verified_material.review_*`): a sentence
+citing an article outside the fitted set (or an excluded one) or an id that does not exist is dropped -- no replacement,
+no dependent-sentence drop, no lemma matching, no rule-statement check on those sites (counters as before:
+`qa_sentences_dropped`, `prose_unfitted_article_dropped`, `prose_excluded_article_dropped`, new `prose_unknown_id_dropped`;
+`qa_sentences_replaced` is 0 by construction). An answer losing two or more sentences is written once more with the same
+material; a fragment or an article's text is never an answer (`qa_answer_fragment`, then the insufficient line). The
+«Affermazioni di diritto verificate» block is the log's only (`compose` log «statements_block»). (5) one object
+(`analysis_step.attach_object`: pretesa, client, side, lines, esiti, articles by governs, record facts, open items): §1
+opens with the pretesa line, §3 with «La questione è se <la pretesa> sia fondata sull'art. X, posto che …», §9 adds
+«Rischio per <cliente>: favorevole | incerto | sfavorevole» (`risk_word`, computed from the leading article's esiti, read
+the other way round for a client resisting the pretesa), §10 lists the frame's unverified fields, §5's rulings only on
+the lines' and the governs' articles; «Il materiale non indica obiezioni» prints only when the record holds no allegation
+by a non-client party (`lawyer_method.record_allegations`). `data/institution_laws.json`: every entry carries `family`
+and `tags`; the lavoro, amministrativo, tributario, famiglia and fallimentare sets added (data only). `scripts/replay_cases.py`
+reports the pretesa, `asked`, the frame and binding counters; `data/replay_cases/batch_2/` holds six more synthetic cases.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

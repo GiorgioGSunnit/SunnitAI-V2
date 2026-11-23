@@ -167,8 +167,9 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     # §1: the line on the charge's dolo element
     sintesi = H.section(answer, "sintesi")
     # v79.15.3 (item 1): the tesi is the code's -- the defence (ruolo indagato), the element in play contested
-    assert sintesi.startswith("Linea principale: art. 646 c.p. — L'accusa deve provare «per procurare a sé o ad altri "
-                              "un ingiusto profitto» (art. 646 c.p.).")
+    assert sintesi.startswith("Pretesa: accusa — «appropriazione indebita» (art. 646 c.p.).\n\nLinea principale: art. "
+                              "646 c.p. — L'accusa deve provare «per procurare a sé o ad altri un ingiusto profitto» "
+                              "(art. 646 c.p.).")          # v79.17.0 (item 5): the pretesa first
     assert "Il fine di profitto di Dario Melis non è provato" not in answer      # the model's tesi: the log only
     # §4: the verified verdicts only; no allegation provato; 62-bis a remedy -- no table, no count
     col = H.esito_column(answer)
@@ -188,7 +189,7 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     concl = H.section(answer, "conclusioni")
     assert concl.splitlines()[1].startswith("**Linea principale**: art. 646 c.p.") and "Esito probabile" not in answer  # v79.16.0 (D2)
     # the Q&A: the verified statement printed; the unverified 62-bis one dropped wherever the Q&A carried it
-    assert "**Affermazioni di diritto verificate**" in answer and "riduce sempre la pena di un terzo" not in answer
+    assert "**Affermazioni di diritto verificate**" not in answer       # v79.17.0 (item 4): the log's only
     # the old engine: logged, compared, printed nowhere
     legacy = by["legacy_plan"][0][0]
     assert legacy["rendered"] is False and legacy["linea_principale"]["articolo"]
@@ -212,7 +213,8 @@ def test_a_failed_step_prints_the_frames_charge_as_an_unverified_line_never_the_
     c = state["block_counters"]
     assert by["analysis_step"][0][0]["status"] == "failed" and c["analysis_failed"] == 1 and c["analysis_calls"] == 1
     assert c["analysis_frame_charge_missing"] == 1 and c["analysis_fallback_skipped_reason"] == "frame_charge_used"
-    assert H.section(answer, "sintesi") == "Linea principale: art. 646 c.p. (addebito del quadro, linea non verificata)."
+    assert H.section(answer, "sintesi") == ("Pretesa: accusa — «appropriazione indebita» (art. 646 c.p.).\n\nLinea "
+                                            "principale: art. 646 c.p. (addebito del quadro, linea non verificata).")
     assert [x.split(" | ")[::2] for x in H.esito_column(answer)] == [["646 c.p.", "da provare"]] * 4
     assert set(re.findall(r"\b\d+ su \d+\b", answer)) == {"0 su 4", "4 su 4"}
     assert "| Linea principale | art. 646 c.p. (addebito del quadro, linea non verificata) | — | — | — |" in \

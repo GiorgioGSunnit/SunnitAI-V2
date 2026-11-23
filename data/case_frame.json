@@ -1,5 +1,5 @@
 {
-  "_doc": "v79.14.0: the case frame's tables (src/rag/case_frame.py, flag CASE_FRAME). One model call at the top of the pipeline reads the case frame from the request's full text (parti, cliente, ruolo, rito, stadio, addebito_o_domanda, istituto, quesiti); the code verifies every field against the text before it counts -- a field that fails is dropped (frame_unverified.<field>) and intake's and posture's rules fill it (frame_fallback.<field>). deadline_s: the call's wall-clock budget (the brief: one call, at most 15 s) -- a call not back by then leaves the whole frame empty (logged), every field to the fallback; max_tokens: the reply's budget; max_text_chars: a longer request is cut there in the prompt (logged; verification always reads the whole text). lati: the party sides; ruoli / riti / stadi: the frame's values, each mapped to the intake's own vocabulary (src/rag/intake.py ROLES, RITI, STAGES -- a test keeps them inside it); *_sinonimi: the spellings a model may use for a value (lowercased, accents as written). unknown: the value that says the text does not show it (valid only with its quote; without one the field is empty and falls back). penal_provisions: what a penal rito's charge article may be -- codes (the compact code keys: c.p.), code_ranges (a code's penal articles: the civil code's reati societari 2621-2642), laws (each penal law by its own «expression» on the article's code, or its data/special_laws.json entry «special_law_id», with its penal articles: «articles» ranges of the base number, «numbers» exact numbers, neither = every article; Code's draft of the penal titles, to be checked by the lawyer); an article led by another code (c.c., c.p.c., c.p.p., c.p.a., Cost.) is that code's; anything else in a penal rito is dropped and counted charge_rito_dropped (and, at binding, refused by a penal posture). company_forms: the company forms written one way for the name match («S.r.l.», «Srl» -> srl; names are matched word by word, exactly, never by stem). controparte_words: an off-schema lato holding one of them is a controparte for the client rule. client_signals / client_signal_window: the words (stems) that say the lawyer assists or defends a party, within that many words of its name with no counterparty marker between -- such a party named «a carico di» is still the client. role_refinements: the rules' finer word for the frame role's side, kept (persona_offesa -> parte_civile). counterparty_markers: the words that make the name after them the subject the questions are about, not the client («quali reati a carico di X»): a cliente whose own quoted passage names it only after one of them is not shown by that passage (dropped). name_titles: the words (accent-folded) that may stand between such a marker and the name («contro la società Alfa»). fit_context: the labels of the frame as the 79.13 applicability judgment receives it (context only). prompt_system: the system prompt (joined with newlines), hashed and logged with every run.",
+  "_doc": "v79.14.0: the case frame's tables (src/rag/case_frame.py, flag CASE_FRAME). One model call at the top of the pipeline reads the case frame from the request's full text (parti, cliente, ruolo, rito, stadio, addebito_o_domanda, istituto, quesiti); the code verifies every field against the text before it counts -- a field that fails is dropped (frame_unverified.<field>) and intake's and posture's rules fill it (frame_fallback.<field>). deadline_s: the call's wall-clock budget (the brief: one call, at most 15 s) -- a call not back by then leaves the whole frame empty (logged), every field to the fallback; max_tokens: the reply's budget; max_text_chars: a longer request is cut there in the prompt (logged; verification always reads the whole text). lati: the party sides; ruoli / riti / stadi: the frame's values, each mapped to the intake's own vocabulary (src/rag/intake.py ROLES, RITI, STAGES -- a test keeps them inside it); *_sinonimi: the spellings a model may use for a value (lowercased, accents as written). unknown: the value that says the text does not show it (valid only with its quote; without one the field is empty and falls back). penal_provisions: what a penal rito's charge article may be -- codes (the compact code keys: c.p.), code_ranges (a code's penal articles: the civil code's reati societari 2621-2642), laws (each penal law by its own «expression» on the article's code, or its data/special_laws.json entry «special_law_id», with its penal articles: «articles» ranges of the base number, «numbers» exact numbers, neither = every article; Code's draft of the penal titles, to be checked by the lawyer); an article led by another code (c.c., c.p.c., c.p.p., c.p.a., Cost.) is that code's; anything else in a penal rito is dropped and counted charge_rito_dropped (and, at binding, refused by a penal posture). company_forms: the company forms written one way for the name match («S.r.l.», «Srl» -> srl; names are matched word by word, exactly, never by stem). controparte_words: an off-schema lato holding one of them is a controparte for the client rule. client_signals / client_signal_window: the words (stems) that say the lawyer assists or defends a party, within that many words of its name with no counterparty marker between -- such a party named «a carico di» is still the client. role_refinements: the rules' finer word for the frame role's side, kept (persona_offesa -> parte_civile). counterparty_markers: the words that make the name after them the subject the questions are about, not the client («quali reati a carico di X»): a cliente whose own quoted passage names it only after one of them is not shown by that passage (dropped). name_titles: the words (accent-folded) that may stand between such a marker and the name («contro la società Alfa»). fit_context: the labels of the frame as the 79.13 applicability judgment receives it (context only). prompt_system: the system prompt (joined with newlines), hashed and logged with every run. v79.17.0: the frame's addebito_o_domanda is the pretesa of every rito -- {tipo (pretesa_tipi: accusa | domanda | ricorso | impugnazione | opposizione | istanza; pretesa_sinonimi the model's other words), contenuto (quoted or in the text's words), contro (a party of the text), rito, articolo, frase}; the prompt asks it as «pretesa» (an «addebito_o_domanda» reply is still read). Unverified or empty, the code derives it from the verified quesiti, else from the text's last request (case_frame.derive_pretesa: fonte «quesiti» / «ultima_richiesta», derivata true, counter frame_pretesa_derived; its tipo by pretesa_tipo_rules on the text, the penal riti «accusa», pretesa_riti_ricorso «ricorso», else «domanda»). ask_side: the one question the flow asks and stops with when cliente, ruolo or pretesa is unverified and the text names no side (frame_asked_side). pretesa_labels: §1's pretesa line and the derived banner.",
   "deadline_s": 15,
   "max_tokens": 1500,
   "max_text_chars": 40000,
@@ -344,7 +344,8 @@
     "rito": "Rito",
     "stadio": "Fase",
     "addebito_o_domanda": "Addebito o domanda (ipotesi)",
-    "istituto": "Rapporto o istituto"
+    "istituto": "Rapporto o istituto",
+    "pretesa": "Pretesa"
   },
   "prompt_system": [
     "Leggi la richiesta di un avvocato e ricavane il quadro del caso. Non dai pareri, non qualifichi oltre il testo e non aggiungi nulla che il testo non dica.",
@@ -354,7 +355,7 @@
     " \"ruolo\": {\"valore\": \"attore | convenuto | imputato/indagato | persona_offesa | ricorrente | resistente | sconosciuto\", \"perche\": \"«...»\"},",
     " \"rito\": {\"valore\": \"civile | lavoro | famiglia | esecuzione | penale | penale_gdp | amministrativo | tributario | fallimentare | sconosciuto\", \"perche\": \"«...»\"},",
     " \"stadio\": {\"valore\": \"pre_filing | indagini | primo_grado | appello | cassazione | esecuzione | sconosciuto\", \"perche\": \"«...»\"},",
-    " \"addebito_o_domanda\": {\"articolo\": \"numero e codice, es. 640 c.p.\" oppure null, \"descrizione\": \"...\", \"frase\": \"«...»\"} oppure null,",
+    " \"pretesa\": {\"tipo\": \"accusa | domanda | ricorso | impugnazione | opposizione | istanza\", \"contenuto\": \"...\", \"contro\": \"nome della parte contro cui è rivolta\" oppure null, \"articolo\": \"numero e codice, es. 640 c.p.\" oppure null, \"frase\": \"«...»\"} oppure null,",
     " \"istituto\": {\"testo\": \"...\", \"frase\": \"«...»\"} oppure null,",
     " \"quesiti\": [\"...\"]}",
     "Regole:",
@@ -363,7 +364,7 @@
     "- cliente: la parte per cui sono scritte le domande, cioè chi l'avvocato assiste («assisto…», «il mio cliente…», «quali strategie difensive…», la prospettiva delle domande). Il perche cita la frase che lo mostra. Se il testo non lo mostra, cliente è null: non indovinare. Le domande scritte «a carico di X» o «contro X» fanno di X la controparte, non il cliente. Il cliente non è mai una parte che indichi come controparte, e il cliente è uno solo.",
     "- ruolo: la posizione del cliente nel giudizio (o nel giudizio che si prospetta). Chi resiste a una pretesa altrui (una penale, una risoluzione, un pagamento chiesto, un ricorso) è convenuto o resistente, mai attore o ricorrente. Chi è sottoposto a indagine o a processo penale è imputato/indagato. Se il testo non lo mostra: sconosciuto, con la frase che lo lascia aperto.",
     "- rito e stadio: con la frase che li mostra; pre_filing quando nessun giudizio e nessun procedimento è ancora iniziato. Se il testo non li mostra: sconosciuto.",
-    "- addebito_o_domanda: il reato contestato o la domanda proposta, come ipotesi; articolo solo se il testo lo indica o è certo, con il suo codice o la sua legge, altrimenti null. In un rito penale l'articolo è una norma penale (codice penale o legge penale speciale), mai una norma civile.",
+    "- pretesa: che cosa è chiesto o contestato nel caso, in ogni rito -- l'accusa penale (il reato contestato), la domanda civile (risoluzione, pagamento, risarcimento…), il ricorso (lavoro, amministrativo, tributario), l'impugnazione, l'opposizione (a un decreto, a un'ingiunzione, a una sanzione), l'istanza. Fonti nell'ordine: le parole esplicite del testo («chiede la risoluzione…», «iscritto per…», «impugna il licenziamento», «ricorre contro il provvedimento»); poi i quesiti (ciò che chiedono); poi l'ultima richiesta dei fatti. tipo: uno dei sei valori; contenuto: che cosa è chiesto o contestato, con le parole del testo; contro: la parte contro cui la pretesa è rivolta, con il nome scritto nel testo, altrimenti null; articolo solo se il testo lo indica o è certo, con il suo codice o la sua legge, altrimenti null; frase: le parole del testo da cui la pretesa è letta. In un rito penale l'articolo è una norma penale (codice penale o legge penale speciale), mai una norma civile. Se il testo non mostra alcuna pretesa: null.",
     "- istituto: il rapporto o l'istituto giuridico con le parole dell'avvocato (testo) e la frase su cui si fonda.",
     "- quesiti: le domande del testo, copiate parola per parola, nell'ordine in cui compaiono.",
     "Un campo che il testo non mostra è null (o una lista vuota): mai inventato."
@@ -441,5 +442,69 @@
     "persona_offesa": [
       "parte_civile"
     ]
+  },
+  "pretesa_tipi": [
+    "accusa",
+    "domanda",
+    "ricorso",
+    "impugnazione",
+    "opposizione",
+    "istanza"
+  ],
+  "pretesa_sinonimi": {
+    "addebito": "accusa",
+    "imputazione": "accusa",
+    "contestazione": "accusa",
+    "reato": "accusa",
+    "azione": "domanda",
+    "pretesa": "domanda",
+    "richiesta": "domanda",
+    "domanda giudiziale": "domanda",
+    "ricorso giurisdizionale": "ricorso",
+    "ricorso al tar": "ricorso",
+    "ricorso tributario": "ricorso",
+    "appello": "impugnazione",
+    "reclamo": "impugnazione",
+    "ricorso per cassazione": "impugnazione",
+    "opposizione a decreto ingiuntivo": "opposizione",
+    "opposizione all'esecuzione": "opposizione",
+    "istanza cautelare": "istanza",
+    "richiesta cautelare": "istanza"
+  },
+  "pretesa_tipo_rules": {
+    "opposizione": [
+      "\\bopposizion",
+      "\\bopporsi\\b",
+      "\\boppone\\b"
+    ],
+    "impugnazione": [
+      "\\bimpugna",
+      "\\bappell[oa]\\b",
+      "\\bricorso per cassazione",
+      "\\breclam[oa]\\b"
+    ],
+    "istanza": [
+      "\\bistanza\\b",
+      "\\bcautelar",
+      "\\bsequestro conservativo",
+      "\\bprovvedimento d['’]urgenza"
+    ],
+    "ricorso": [
+      "\\bricorr",
+      "\\bricorso\\b"
+    ]
+  },
+  "pretesa_riti_ricorso": [
+    "lavoro",
+    "amministrativo",
+    "tributario"
+  ],
+  "ask_side": "Per chi è reso il parere e che cosa chiede?",
+  "pretesa_labels": {
+    "line": "Pretesa",
+    "banner": "Pretesa dedotta dai quesiti",
+    "banner_last": "Pretesa dedotta dall'ultima richiesta",
+    "contro": "contro",
+    "none": "non indicata"
   }
 }

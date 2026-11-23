@@ -27,6 +27,7 @@ sys.path.insert(0, str(HERE))
 import _fixture_79_15_0 as H  # noqa: E402
 import test_v79_14_2_fixture as F  # noqa: E402
 import test_v79_15_0_fixture_civil as CIVIL  # noqa: E402
+from src.rag import analysis_step as A  # noqa: E402
 
 CASE_ID = "v79160_civil"
 CLIENT = "Anna Corsi"
@@ -165,22 +166,28 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     assert c["retrieval_quesiti_queries"] == 3 and c["retrieval_quesiti_added"] == ["2946 c.c."]
     assert c["fit_kept_from_quesiti"] == 1
     q3_jobs = [j for j in run["jobs"] if "prescrive" in str(j[0])]
-    assert q3_jobs and "ARTICOLI DEL QUESITO" in q3_jobs[0][2] and "art. 2946 c.c." in q3_jobs[0][2].split("CONTESTO")[0]
-    # D1: every writer call carries the one verified context block
-    assert all("CONTESTO VERIFICATO" in j[2] for j in run["jobs"] if j[0].startswith("Norme") or "?" in j[0]), \
+    # v79.17.0 (item 4): the question's call receives the verified material alone -- its own article (2946 c.c.) with
+    # its periods by id, the pretesa, the lines, the facts by id; no CASO block, no SCHEDE
+    assert q3_jobs and q3_jobs[0][2].startswith("MATERIALE VERIFICATO") and "art. 2946 c.c." in q3_jobs[0][2]
+    assert "[A2946cc.1]" in q3_jobs[0][2] and "CASO:" not in q3_jobs[0][2] and "Quesito Q3" in q3_jobs[0][2]
+    assert "Pretesa: domanda: «esigere il doppio della caparra" in q3_jobs[0][2]
+    # D1 -> v79.17.0 (item 4): every §4 and quesito writer call carries the one verified material block
+    assert all("MATERIALE VERIFICATO" in j[2] for j in run["jobs"] if j[0].startswith("Norme") or "?" in j[0]), \
         [j[0] for j in run["jobs"]]
     # C1: one answer per numbered item, in the user's order
     assert c["qa_questions_detected"] == 3
     qa = H.section(answer, "risposte") if H.section(answer, "risposte") else answer.split("**1. ")[0]
     items = [x for x in qa.splitlines() if re.match(r"^\d\. «", x)]
     assert [x[:2] for x in items] == ["1.", "2.", "3."] and Q1 in items[0] and Q2 in items[1] and Q3 in items[2]
-    # C2: the third answer emptied, re-asked once, still empty -> the insufficient line (nowhere else)
-    assert items[2].endswith("— Il corpus non contiene informazioni sufficienti per rispondere a questo quesito.")
-    assert c["qa_answer_insufficient"] == 1 and c["qa_answer_reasked"] >= 1
-    assert answer.count("Il corpus non contiene informazioni sufficienti per rispondere a questo quesito.") == 1
-    assert QA_PRESCRIZIONE not in answer and QA_KEPT in items[0]
+    # C2 -> v79.17.0 (item 4): the third answer's 2946 c.c. sentence cites a fitted article -- kept as written (no
+    # lemma matching), nothing insufficient; the first answer's sentences likewise
+    assert QA_PRESCRIZIONE in items[2] and QA_KEPT in items[0]
+    assert c["qa_answer_insufficient"] == 0 and c["qa_answer_fragment"] == 0
+    assert "Il corpus non contiene informazioni sufficienti per rispondere a questo quesito." not in answer
+    assert A.LAW_STATEMENTS_TITLE not in answer
     # D2: the bridges
-    assert H.section(answer, "questione").startswith("La questione è se «")
+    assert H.section(answer, "questione").startswith("La questione è se la domanda «esigere il doppio della caparra ai "
+                                                     "sensi dell'art. 1385 c.c.» sia fondata sull'art. 1385 c.c., posto che")
     assert H.section(answer, "orientamenti").startswith("Pronunce sulle norme della linea: art. 1385 c.c.")
     assert H.section(answer, "soluzioni").startswith("Le linee seguono gli esiti del punto 4.")
     assert H.section(answer, "conclusioni").startswith("**Esiti dell'art. 1385 c.c.**")

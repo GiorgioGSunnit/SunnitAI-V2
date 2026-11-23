@@ -201,7 +201,8 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             # v79.16.1: the line's fit tier (item 3), a procedural element refused as the element in play (item 3),
             # a «provato» / «escluso» with no pertinent cited fact (item 4)
             "line_from_fit_si", "line_from_fit_dipende", "line_from_unverified", "analysis_line_procedural_rejected",
-            "analysis_provato_no_pertinence")
+            "analysis_provato_no_pertinence",
+            "analysis_line_context_rejected", "analysis_line_quesito_only")        # v79.17.0 (item 2)
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
@@ -678,7 +679,10 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
                           "remedy": is_remedy(label, contractual) and not (charge and same_article(label, charge)),
                           # v79.16.1 (item 3): the fit's verdict (si | no | dipende | None: no judgment), verified or not
                           "fit": _canon_fit_value(n.get("fit")), "fit_verified": bool(n.get("fit_verified")),
-                          "fit_perche": _flat(n.get("fit_perche"))})
+                          "fit_perche": _flat(n.get("fit_perche")),
+                          # v79.17.0 (item 2): what the verified verdict says the norm decides -- a list («pretesa»,
+                          # «Q<n>»; [] context only) when the fit was asked, None when it was not
+                          "governs": list(n["governs"]) if isinstance(n.get("governs"), (list, tuple)) else None})
     sents = [{"id": str(s.get("id")), "text": _flat(s.get("text")), "certainty": s.get("certainty"),
               "source": s.get("source"), "alleged_by": str(s.get("alleged_by") or ""),
               "fact": str(s.get("fact") or ""), "said_by": str(s.get("said_by") or "")}   # v79.16.0 (A2): the record's
@@ -723,6 +727,9 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         j = fits.get(flow._key(flow._parse_label(label)))             # v79.16.1 (item 3): the fit's verdict
         if j is not None:
             n["fit"], n["fit_verified"], n["fit_perche"] = j.get("fit"), bool(j.get("verified")), j.get("perche") or ""
+            if (state.get("applicability") or {}).get("governs_asked") and j.get("verified") \
+                    and j.get("fit") in (FIT_SI, FIT_DIPENDE) and isinstance(j.get("governs"), list):    # v79.17.0
+                n["governs"] = list(j["governs"])                                                        # (item 2)
         norms.append(n)
     sents = state.get("sentences") or flow.case_sentences(state)
     questions = list(frame.get("quesiti") or []) or flow.asked_questions(state)
@@ -778,6 +785,8 @@ def _frame_lines(f: Dict[str, Any]) -> List[str]:
 
 
 LABEL_LINE_RANK = "Preferenza per la linea (prima il fit si verificato, poi dipende verificato, poi non verificato)"
+LABEL_GOVERNS = "governa"               # v79.17.0 (item 3): the article block's governs tags
+LABEL_CONTEXT_ONLY = "(solo contesto: né la pretesa né un quesito)"
 
 
 def _norm_block(n: Dict[str, Any], rank: Optional[Tuple[int, int]] = None) -> str:
@@ -789,6 +798,8 @@ def _norm_block(n: Dict[str, Any], rank: Optional[Tuple[int, int]] = None) -> st
                     + (f" — {n['fit_perche']}" if n.get("fit_perche") else ""))
     if rank:                            # v79.16.2 (item 2): the tier told as a preference order, never a gate
         head.append(f"{labels.get('line_rank') or LABEL_LINE_RANK}: {rank[0]}/{rank[1]}")
+    if isinstance(n.get("governs"), list):   # v79.17.0 (item 3): what the fit says the norm decides
+        head.append(f"{labels.get('governs') or LABEL_GOVERNS}: " + (", ".join(n["governs"]) or LABEL_CONTEXT_ONLY))
     head.append(f"{labels['elements']}:")
     head += [f"- [{e['eid']}] {e['testo']}" for e in n.get("elements") or []] or [f"- {labels['none']}"]
     head.append(f"{labels['periods']}:")
@@ -831,6 +842,7 @@ def line_elements(norm: Dict[str, Any], inp: Dict[str, Any]) -> List[Dict[str, A
 
 # --- v79.16.1 (item 3): the fit's verdicts feed the step -----------------------------------------------------------------
 FIT_SI, FIT_NO, FIT_DIPENDE = "si", "no", "dipende"
+GOVERNS_PRETESA = "pretesa"             # v79.17.0 (item 2): the governs token of the pretesa (applicability.GOVERNS_PRETESA)
 TIER_SI, TIER_DIPENDE, TIER_UNVERIFIED, TIER_ALL = "fit_si", "fit_dipende", "unverified", "all"
 PROCEDURAL_KINDS = ("termine", "competenza", "onere_della_prova", "procedibilità", "quantificazione")
 
@@ -840,12 +852,39 @@ def _canon_fit_value(value: Any) -> Optional[str]:
     return v if v in (FIT_SI, FIT_NO, FIT_DIPENDE) else None
 
 
-def line_tier(inp: Dict[str, Any]) -> Tuple[str, List[str]]:
+def governs_sets(inp: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.17.0 (item 2): the binding on the pretesa as the step reads it from the norms' «governs» -- {"applied": a
+    norm governs the pretesa, "pretesa": its articles, "quesiti": the articles governing a quesito only, "context":
+    the verified norms governing neither (never a line)}; applied False when no norm carries a governs list."""
+    norms = [n for n in inp.get("norms") or [] if not n.get("remedy")]
+    with_gov = [n for n in norms if isinstance(n.get("governs"), list)]
+    out = {"applied": False, "pretesa": [], "quesiti": [], "context": []}
+    if not with_gov:
+        return out
+    for n in with_gov:
+        gov = n["governs"]
+        if GOVERNS_PRETESA in gov:
+            out["pretesa"].append(n["article"])
+        elif any(str(x).startswith("Q") for x in gov):
+            out["quesiti"].append(n["article"])
+        else:
+            out["context"].append(n["article"])
+    out["applied"] = bool(out["pretesa"])
+    return out
+
+
+def line_tier(inp: Dict[str, Any], kind: str = "linea_principale") -> Tuple[str, List[str]]:
     """(the best tier present, the articles a line may stand on in preference order): the verified «si», then the
     verified «dipende», then the unverified «si» / «dipende» and the norms the fit never judged; never a «no», never a
     remedy. v79.16.2 (item 2): a preference, not a gate -- the list holds every tier, in that order; _verify_line refuses
-    a «no» only. With no fit judgment on any norm (the fit off): every non-remedy norm (TIER_ALL)."""
+    a «no» only. With no fit judgment on any norm (the fit off): every non-remedy norm (TIER_ALL). v79.17.0 (item 2):
+    with the binding on the pretesa applied (governs_sets), the leading line's list holds the pretesa's articles only,
+    the subordinate's those and the quesiti's; a context-only norm is in neither."""
     norms = [n for n in inp.get("norms") or [] if not n.get("remedy")]
+    gs = governs_sets(inp)
+    if gs["applied"]:               # the pretesa's articles (the subordinate: the quesiti's too); a norm the fit never
+        allowed_g = set(gs["pretesa"]) | (set(gs["quesiti"]) if kind != "linea_principale" else set())    # judged stays
+        norms = [n for n in norms if n["article"] in allowed_g or not isinstance(n.get("governs"), list)]
     if not any(n.get("fit") for n in inp.get("norms") or []):
         return TIER_ALL, [n["article"] for n in norms]
     verified = lambda n, fit: n.get("fit") == fit and bool(n.get("fit_verified"))    # noqa: E731
@@ -863,11 +902,12 @@ def line_tier(inp: Dict[str, Any]) -> Tuple[str, List[str]]:
 
 def tier_tag(norm: Dict[str, Any]) -> str:
     """v79.16.2 (item 2): the norm's fit as the re-ask's allowed list tags it -- «fit si verificato», «fit dipende
-    verificato», «fit si non verificato», «fit non giudicato»."""
+    verificato», «fit si non verificato», «fit non giudicato»; v79.17.0: «; governa: pretesa, Q2» when the fit said."""
     fit = norm.get("fit")
-    if not fit:
-        return "fit non giudicato"
-    return f"fit {fit} " + ("verificato" if norm.get("fit_verified") else "non verificato")
+    tag = "fit non giudicato" if not fit else f"fit {fit} " + ("verificato" if norm.get("fit_verified") else "non verificato")
+    if isinstance(norm.get("governs"), list):
+        tag += f"; {LABEL_GOVERNS}: " + (", ".join(norm["governs"]) or "solo contesto")
+    return tag
 
 
 def line_fit_counter(norm: Dict[str, Any]) -> str:
@@ -904,14 +944,17 @@ def allowed_text(inp: Dict[str, Any]) -> str:
     set (the frame's own charge kept: make_input never marks it), each with at least one usable element -- one per
     line: «- A<token> (art. <label>): <E-ids>» (a claimant's: the constitutive E-ids only)."""
     rows = []
-    tier, allowed = line_tier(inp)          # v79.16.2 (item 2): every tier, in the preference order, each tagged
-    norms = {n["article"]: n for n in inp.get("norms") or []}
+    tier, allowed = line_tier(inp, "linea_subordinata")     # v79.16.2 (item 2): every tier, in the preference order,
+    norms = {n["article"]: n for n in inp.get("norms") or []}  # each tagged; v79.17.0: the subordinate's wider list
+    gs = governs_sets(inp)
     for label in allowed:
         n = norms[label]
         ids = [e["eid"] for e in line_elements(n, inp)]
         if n.get("remedy") or not ids:
             continue
         tag = "" if tier == TIER_ALL else f" [{tier_tag(n)}]"
+        if gs["applied"] and label in gs["quesiti"]:            # v79.17.0 (item 2): a quesito's article, subordinate only
+            tag += " [solo linea subordinata]"
         rows.append(f"- A{_ap().article_token(n['article'])} (art. {n['article']}): {', '.join(ids)}{tag}")
     return "\n".join(rows) or f"- {config()['labels']['none']}"
 
@@ -1309,8 +1352,8 @@ def _eid_article(value: Any, m: Dict[str, Any]) -> Optional[str]:
     return resolve(got[0], m["labels"]) if got and got[0] else None
 
 
-def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dict[str, Any]
-                 ) -> Tuple[Optional[Dict[str, Any]], str]:
+def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dict[str, Any],
+                 kind: str = "linea_principale") -> Tuple[Optional[Dict[str, Any]], str]:
     """(the verified line, "") or (None, why it is rejected)."""
     if not isinstance(raw, dict):
         return None, "non è un oggetto"
@@ -1322,6 +1365,15 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
         return None, f"art. {label}: rimedio o parte generale, mai una linea"
     if norm.get("fit") == FIT_NO:           # v79.16.1 (item 3): never a «no»; v79.16.2 (item 2): an unverified or
         return None, f"art. {label}: fit «no», mai una linea"     # unjudged norm is allowed (a preference, not a gate)
+    gs = governs_sets(inp)                  # v79.17.0 (item 2): the binding on the pretesa -- a context-only norm is
+    if gs["applied"] and label in gs["context"]:            # never a line, a quesito's only the subordinate
+        counters["analysis_line_context_rejected"] += 1
+        return None, (f"art. {label}: solo contesto (il fit non lo riferisce né alla pretesa né a un quesito), mai una "
+                      f"linea: ammessi {', '.join(f'art. {x}' for x in gs['pretesa'] + gs['quesiti'])}")
+    if gs["applied"] and kind == "linea_principale" and label in gs["quesiti"]:
+        counters["analysis_line_quesito_only"] += 1
+        return None, (f"art. {label}: governa solo un quesito, ammesso come linea subordinata, non come principale: "
+                      f"principale tra {', '.join(f'art. {x}' for x in gs['pretesa'])}")
     element = element_of(norm, raw.get("elemento_in_gioco"), m["labels"])
     if element is None:
         counters["analysis_bad_eid"] += 1
@@ -1380,7 +1432,7 @@ def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             el = element_of(m["norms"][label], raw.get("elemento_in_gioco"), m["labels"])
             if el and el.get("eccezione"):
                 raised.append({"articolo": label, "eid": el["eid"], "id": el["id"]})
-        line, why = _verify_line(raw, inp, m, counters)
+        line, why = _verify_line(raw, inp, m, counters, kind)      # v79.17.0 (item 2): the kind decides the set
         lines[kind] = line
         if why:
             counters["analysis_line_rejected"] += 1
@@ -1893,7 +1945,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                 if second["status"] == OK:
                     again = verify(second["data"], inp)
                     for k in ("analysis_line_rejected", "analysis_line_exception", "analysis_bad_eid",
-                              "analysis_line_procedural_rejected"):          # v79.16.1 (item 3): the first reply's too
+                              "analysis_line_procedural_rejected",           # v79.16.1 (item 3): the first reply's too
+                              "analysis_line_context_rejected", "analysis_line_quesito_only"):    # v79.17.0 (item 2)
                         again["counters"][k] += checked["counters"][k]
                     again["raised"] = list(checked.get("raised") or []) + [
                         r for r in again.get("raised") or [] if r not in (checked.get("raised") or [])]
@@ -2023,6 +2076,58 @@ def facts_cited_log(analysis: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, L
     return out
 
 
+def id_maps(inp: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.17.0 (item 4): the step's input as the writer's material and the id renderer read it -- {"periods": {id:
+    {article, text, comma}}, "sentences": {id: {text, certainty, fact, said_by}}, "norms": [{article, rubrica, fit,
+    fit_verified, governs, remedy}]}; {} with no input."""
+    if not isinstance(inp, dict):
+        return {}
+    periods = {p["id"]: {"article": n["article"], "text": p.get("text"), "comma": p.get("comma")}
+               for n in inp.get("norms") or [] for p in n.get("periods") or [] if p.get("id")}
+    sentences = {s["id"]: {"text": s.get("text"), "certainty": s.get("certainty"), "fact": s.get("fact"),
+                           "said_by": s.get("said_by")} for s in inp.get("sentences") or [] if s.get("id")}
+    norms = [{k: n.get(k) for k in ("article", "rubrica", "fit", "fit_verified", "governs", "remedy")}
+             for n in inp.get("norms") or []]
+    return {"periods": periods, "sentences": sentences, "norms": norms}
+
+
+def attach_object(v: Dict[str, Any], pretesa: Optional[Dict[str, Any]] = None, pretesa_line: str = "",
+                  client: str = "", frame_unverified: Optional[Dict[str, Any]] = None,
+                  governs: Optional[Dict[str, Any]] = None, record_facts: Sequence[Dict[str, Any]] = (),
+                  record_uncertain: Sequence[Dict[str, str]] = ()) -> Dict[str, Any]:
+    """v79.17.0 (item 5): the one verified object every code-rendered section reads from, onto the view --
+    v["object"] = {pretesa, client, side, lines, esiti, articles_by_governs, facts, open_items}; and on the view itself
+    v["pretesa"], v["pretesa_line"] (§1), v["articles_by_governs"] (§5), v["frame_unverified"] (§10), v["client"]
+    (§9's risk line). Returns v."""
+    a = v.get("analysis") if isinstance(v.get("analysis"), dict) else {}
+    v["pretesa"] = dict(pretesa or {})
+    v["pretesa_line"] = str(pretesa_line or "")
+    v["client"] = client or ""
+    v["frame_unverified"] = {k: list(x or []) for k, x in (frame_unverified or {}).items()}
+    g = governs or {}
+    v["articles_by_governs"] = {"pretesa": list(g.get("principale") or g.get("pretesa") or []),
+                                "quesiti": {k: list(x) for k, x in (g.get("quesiti") or {}).items()}
+                                if isinstance(g.get("quesiti"), dict) else {},
+                                "context": list(g.get("context_only") or g.get("context") or []),
+                                "applied": bool(g.get("applied"))}
+    open_items = [{"kind": "elemento", "text": e["question"], "article": e["article"]} for e in open_elements(v)]
+    open_items += [{"kind": "quadro", "text": f"{k}: {'; '.join(x)}" if x else k, "field": k}
+                   for k, x in v["frame_unverified"].items()]
+    open_items += [{"kind": str(i.get("kind") or "record"), "text": _flat(i.get("text"))} for i in record_uncertain or []]
+    v["object"] = {"pretesa": v["pretesa"], "client": v["client"], "side": a.get("side") or SIDE_NEUTRAL,
+                   "lines": [{"kind": k, **{x: (a.get(k) or {}).get(x) for x in ("articolo", "eid", "elemento_in_gioco",
+                                                                               "tesi", "stato")}}
+                             for k in LINE_KINDS if a.get(k)],
+                   "esiti": {art: [{k: e.get(k) for k in ("eid", "elemento", "esito", "parte_che_afferma", "fatti",
+                                                          "cita_fatti")} for e in els]
+                             for art, els in (a.get("elementi") or {}).items()},
+                   "articles_by_governs": v["articles_by_governs"],
+                   "facts": [{k: f.get(k) for k in ("id", "text", "stato", "chi")} for f in record_facts or []
+                             if isinstance(f, dict)],
+                   "open_items": open_items}
+    return v
+
+
 def undetermined_line() -> Dict[str, Any]:
     return {"articolo": None, "elemento_in_gioco": None, "elemento_id": None, "eid": None, "tesi": "",
             "cita_fatti": [], "cita_norma": [], "stato": UNDETERMINED, "label": LINE_UNDETERMINED,
@@ -2082,8 +2187,10 @@ def main_tesi(v: Dict[str, Any]) -> str:
 
 
 def summary_text(v: Dict[str, Any]) -> str:
-    """§1: the leading line and the subordinate one, labels and the verified text only."""
-    return "\n\n".join(f"{label}: {line_text(x)}." for label, x in _lines(v))
+    """§1: the leading line and the subordinate one, labels and the verified text only. v79.17.0 (item 5): the pretesa
+    first (v["pretesa_line"]: case_frame.pretesa_line -- a derived one with its banner), then the lines."""
+    head = [str(v.get("pretesa_line") or "")] if v.get("pretesa_line") else []
+    return "\n\n".join(head + [f"{label}: {line_text(x)}." for label, x in _lines(v)])
 
 
 def esito_text(e: Dict[str, Any]) -> str:
@@ -2177,6 +2284,9 @@ def conclusions_text(v: Dict[str, Any]) -> str:
             head, _, rest = c.partition(": ")
             out.append(f"**{head}**: {rest}")
     out += [f"**{label}**: {line_text(x)}." for label, x in _lines(v)]
+    risk = risk_word(v)             # v79.17.0 (item 5): the esiti -> the risk in words, computed, never written
+    if risk:
+        out.append(RISK_LINE.format(client=v.get("client") or "la parte assistita", parola=RISK_WORDS[risk]))
     for label in line_articles(v)[:1]:
         els = ((v.get("analysis") or {}).get("elementi") or {}).get(label) or []
         open_ = [f"«{e['elemento']}»" for e in els if e.get("esito") == DA_PROVARE]
@@ -2188,11 +2298,44 @@ def conclusions_text(v: Dict[str, Any]) -> str:
     return "\n".join(out)
 
 
+def risk_word(v: Dict[str, Any]) -> str:
+    """v79.17.0 (item 5): favorevole | incerto | sfavorevole for the client, from the leading line's elements -- for
+    the pretesa's holder: every element provato -> fondata (favorevole), an element escluso or none provato with one
+    contestato or da provare -> infondata (sfavorevole), else incerto; the client resisting the pretesa (side difesa)
+    reads it the other way round. "" with no verified leading article or no element."""
+    a = v.get("analysis") or {}
+    labels = line_articles(v)
+    if not labels or (a.get("linea_principale") or {}).get("stato") != VERIFIED:
+        return ""
+    els = (a.get("elementi") or {}).get(labels[0]) or []
+    if not els:
+        return ""
+    n = {k: sum(1 for e in els if e.get("esito") == k) for k in (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)}
+    if n[ESCLUSO]:
+        holder = "sfavorevole"
+    elif n[PROVATO] == len(els):
+        holder = "favorevole"
+    elif n[PROVATO] == 0:
+        holder = "sfavorevole"
+    else:
+        holder = "incerto"
+    if (a.get("side") or "") == SIDE_DEFENCE:
+        holder = {"favorevole": "sfavorevole", "sfavorevole": "favorevole"}.get(holder, holder)
+    return holder
+
+
 # --- v79.16.0: §2 and §10 from the verified elements (A3), the bridges (D2), the context block (D1) ---------------------
 # my drafts: labels and one-sentence bridges built from verified data only -- never a model text
 OPEN_QUESTION = "se «{elemento}» (art. {art}) risulti provato"
 CONTESTED_QUESTION = "se «{elemento}» (art. {art}) sia provato oltre l'allegazione{di_parte}"
 QUESTION_BRIDGE = "La questione è se «{elemento}» dell'art. {art} sia {esito}, posto che {fatto}."
+# v79.17.0 (item 5): §3 with the pretesa -- «La questione è se <pretesa> sia fondata sull'art. X, posto che …»
+PRETESA_BRIDGE = "La questione è se {tipo} «{contenuto}» sia fondata sull'art. {art}, posto che {fatto}."
+TIPO_ARTICLES = {"accusa": "l'accusa", "domanda": "la domanda", "ricorso": "il ricorso", "impugnazione": "l'impugnazione",
+                 "opposizione": "l'opposizione", "istanza": "l'istanza"}
+RISK_LINE = "**Rischio per {client}**: {parola}."
+RISK_WORDS = {"favorevole": "favorevole", "incerto": "incerto", "sfavorevole": "sfavorevole"}
+FRAME_UNVERIFIED_POINT = "Campo del quadro non verificato: {field} ({why})."
 RULINGS_BRIDGE = "Pronunce sulle norme della linea: {articles}."
 SOLUTIONS_BRIDGE = "Le linee seguono gli esiti del punto 4."
 CONTEXT_TITLE = "CONTESTO VERIFICATO (calcolato dal codice: non contraddirlo, non riscriverlo)"
@@ -2253,6 +2396,8 @@ def verify_points(v: Dict[str, Any], uncertain: Sequence[Dict[str, str]] = ()) -
     """§10 (A3): the open elements' questions (open_elements), then the record's uncertain items (fact_record.
     uncertain_items: a fact stated as a hypothesis, a stretch the model left out) -- code-written, no prose restated."""
     out = [f"Da verificare {e['question']}." for e in open_elements(v)]
+    for field, why in (v.get("frame_unverified") or {}).items():      # v79.17.0 (item 5): the frame's dropped fields
+        out.append(FRAME_UNVERIFIED_POINT.format(field=field, why="; ".join(str(x) for x in why or []) or "non verificato"))
     for item in uncertain or []:
         label = UNCERTAIN_LABELS.get(str(item.get("kind") or ""), "Da verificare")
         out.append(f"{label}: «{_flat(item.get('text'))}».")
@@ -2277,6 +2422,12 @@ def question_bridge(v: Dict[str, Any]) -> str:
         return ""
     facts = [v.get("sentences", {}).get(i) for i in line.get("cita_fatti") or [] if v.get("sentences", {}).get(i)]
     fatto = _stop(facts[0]) if facts else "i fatti narrati"
+    p = v.get("pretesa") or {}
+    what = _flat(p.get("contenuto")) or _flat(p.get("frase"))
+    if what:                        # v79.17.0 (item 5): the pretesa's own question
+        from .verified_material import unquoted
+        return PRETESA_BRIDGE.format(tipo=TIPO_ARTICLES.get(p.get("tipo") or "domanda", f"la {p.get('tipo')}"),
+                                     contenuto=unquoted(what), art=line["articolo"], fatto=fatto)
     return QUESTION_BRIDGE.format(elemento=_flat(line["elemento_in_gioco"]), art=line["articolo"],
                                   esito=_esito_of_line(v, line), fatto=fatto)
 
@@ -2292,7 +2443,13 @@ def rulings_bridge(v: Dict[str, Any]) -> str:
 
 
 def allowed_ruling_articles(v: Dict[str, Any], quesiti: Sequence[str] = ()) -> List[str]:
-    """D3: the articles §5 may cite rulings on -- the verified lines', the quesiti's, the remedies attached."""
+    """D3: the articles §5 may cite rulings on -- the verified lines', the quesiti's, the remedies attached. v79.17.0
+    (item 5): with the fit's governs (v["articles_by_governs"]) the quesiti's are the articles whose verdict governs the
+    pretesa or a quesito -- never a context-only one."""
+    g = v.get("articles_by_governs") or {}
+    if g.get("applied") or g.get("pretesa") or g.get("quesiti"):
+        tagged = list(g.get("pretesa") or []) + [x for labels in (g.get("quesiti") or {}).values() for x in labels]
+        return list(dict.fromkeys(list(line_articles(v)) + tagged + list(v.get("remedies") or [])))
     return list(dict.fromkeys(list(line_articles(v)) + [str(x) for x in quesiti or []] + list(v.get("remedies") or [])))
 
 
@@ -2935,9 +3092,12 @@ def prose_counters(events: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     prose_excluded_article_dropped / prose_unfitted_article_dropped -- a sentence citing an excluded / an unfitted
     article (the last four over the three sites). Each sentence in one counter only."""
     out = {k: 0 for k in list(_SITE_DROPPED.values()) + list(_KIND_COUNTER.values())}
+    out["prose_unknown_id_dropped"] = 0         # v79.17.0 (item 4): a sentence citing an id that does not exist
     for e in events or []:
         if e.get("esito") == DROPPED:
             key = _SITE_DROPPED.get(e.get("sede"))
+            if e.get("motivo") == "id_inesistente":
+                out["prose_unknown_id_dropped"] += 1
         else:
             key = _KIND_COUNTER.get(e.get("esito"))
         if key:

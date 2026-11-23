@@ -114,7 +114,8 @@
     "periods": "Testo (periodi numerati)",
     "questions": "QUESITI DELL'UTENTE",
     "none": "(nessuno)",
-    "line_rank": "Preferenza per la linea (prima il fit si verificato, poi dipende verificato, poi non verificato)"
+    "line_rank": "Preferenza per la linea (prima il fit si verificato, poi dipende verificato, poi non verificato)",
+    "governs": "governa"
   },
   "remedy_mark": "rimedio o parte generale: mai una linea",
   "reask": [

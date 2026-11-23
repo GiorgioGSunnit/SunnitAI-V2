@@ -108,7 +108,7 @@ def test_the_judge_counts_the_verified_verdicts_by_value_and_logs_the_perche():
 
 def test_the_fit_prompt_asks_the_facts_of_a_si_too_and_its_hash_moved():
     text = ap.prompt_system()
-    assert 'almeno uno con "si", con "no" e con "dipende"' in text and ap.prompt_hash() == "677c05970c73"
+    assert 'almeno uno con "si", con "no" e con "dipende"' in text and ap.prompt_hash() == "c60a2f78634c"
     assert '"ambito"' in text              # recorded, never verified
     assert A.prompt_hash() == "472423ea32d3"         # item 3: the analysis prompt's system text unchanged
 

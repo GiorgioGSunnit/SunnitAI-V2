@@ -633,7 +633,7 @@ def test_no_string_matcher_is_left_in_the_fit():
                  "_rests_on_passage", "_comma_of"):
         assert not hasattr(ap, name), name
     assert not hasattr(flow, "fact_source")
-    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "677c05970c73"   # v79.16.1 (item 2)
+    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "c60a2f78634c"   # v79.16.1 (item 2)
 
 
 def test_the_frames_verified_charge_is_protected_from_a_fit_no(monkeypatch):

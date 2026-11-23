@@ -49,18 +49,24 @@ sys.path.insert(0, str(ROOT))
 CASES_DIR = ROOT / "data" / "replay_cases"
 FLAGS = ("CASE_FRAME", "APPLICABILITY_FIT", "ANALYSIS_STEP", "FACT_RECORD", "QUESTION_RETRIEVAL", "ELEMENT_SCHEMAS")
 FIT_COUNTERS = ("fit_si", "fit_si_verified", "fit_dipende", "fit_dipende_verified", "fit_no", "fit_no_verified",
-                "fit_unverified_ids", "fit_removed", "fit_kept_named", "fit_kept_from_quesiti", "norms_removed_by_fit")
+                "fit_unverified_ids", "fit_removed", "fit_kept_named", "fit_kept_from_quesiti", "norms_removed_by_fit",
+                "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only")          # v79.17.0 (item 3)
+FRAME_COUNTERS = ("frame_pretesa_verified", "frame_pretesa_derived", "frame_asked_side",      # v79.17.0 (item 1)
+                  "binding_pretesa_applied", "binding_pretesa_excluded")                     # v79.17.0 (item 2)
 ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
                      "analysis_line_rejected", "analysis_line_procedural_rejected", "analysis_line_undetermined",
                      "analysis_line_fallback_rubrica", "analysis_frame_charge_missing", "analysis_provato_downgraded",
                      "analysis_provato_no_pertinence", "analysis_provenance_from_record", "analysis_provenance_fallback",
                      "analysis_fallback_skipped_reason", "line_from_fit_si", "line_from_fit_dipende",
-                     "line_from_unverified", "line_table_weaker")
+                     "line_from_unverified", "line_table_weaker",
+                     "analysis_line_context_rejected", "analysis_line_quesito_only")        # v79.17.0 (item 2)
 RETRIEVAL_COUNTERS = ("retrieval_quesiti_queries", "retrieval_quesiti_added")
-QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insufficient", "qa_sentences_replaced",
-               "qa_sentences_dropped", "qa_sentences_dropped_dependent", "sections_dedup_dropped",
-               "rulings_off_line_dropped", "sections_rito_blocks_dropped")
-FIELD_KEYS = ("valore", "intake", "articolo", "descrizione", "testo", "nome", "ruolo_nel_fatto", "lato")
+QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insufficient", "qa_answer_fragment",
+               "qa_sentences_replaced", "qa_sentences_dropped", "qa_sentences_dropped_dependent",
+               "prose_unfitted_article_dropped", "prose_excluded_article_dropped", "prose_unknown_id_dropped",
+               "sections_dedup_dropped", "rulings_off_line_dropped", "sections_rito_blocks_dropped")
+FIELD_KEYS = ("tipo", "contenuto", "contro", "valore", "intake", "articolo", "descrizione", "testo", "nome",
+              "ruolo_nel_fatto", "lato")       # v79.17.0: the pretesa's fields first
 
 
 # --- the measurement --------------------------------------------------------------------------------------------------
@@ -87,8 +93,11 @@ def frame_fields(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"verified": [], "fallback": [], "fields": {}}
     frame = got.get("frame") or {}
     verified = list(got.get("verified") or [])
-    return {"verified": verified, "fallback": list(got.get("fallback") or []),
-            "fields": {f: _short(frame.get(f)) for f in verified}}
+    derived = list(got.get("derived") or [])
+    from src.rag import case_frame
+    return {"verified": verified, "fallback": list(got.get("fallback") or []), "derived": derived,
+            "fields": {f: _short(frame.get(f)) for f in verified + [x for x in derived if x not in verified]},
+            "pretesa": case_frame.pretesa_text(got), "pretesa_line": case_frame.pretesa_line(got)}   # v79.17.0
 
 
 def _event(events: Dict[str, List[Any]], name: str) -> Dict[str, Any]:
@@ -138,7 +147,9 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
     """One case's row from the state the flow left, its answer, the wall seconds and the logged events."""
     events = events or {}
     return {"id": case_id, "error": error, "seconds": round(float(seconds), 1), "answer_chars": len(answer or ""),
-            "frame": frame_fields(state), "fit": _counters(state, FIT_COUNTERS),
+            "asked": bool((state or {}).get("asked_side")),                     # v79.17.0 (item 1): the flow asked
+            "frame": frame_fields(state), "frame_counters": _counters(state, FRAME_COUNTERS),
+            "fit": _counters(state, FIT_COUNTERS),
             "analysis": analysis_fields(state, events),
             "analysis_counters": _counters(state, ANALYSIS_COUNTERS),
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
@@ -209,7 +220,9 @@ def _row_values(row: Dict[str, Any]) -> Dict[str, Any]:
     a = row.get("analysis") or {}
     _flat("frame.fields", (row.get("frame") or {}).get("fields") or {}, flat)
     flat["frame.verified"] = ",".join((row.get("frame") or {}).get("verified") or [])
-    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval"):
+    flat["frame.pretesa"] = (row.get("frame") or {}).get("pretesa") or ""
+    flat["asked"] = bool(row.get("asked"))
+    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval", "frame_counters"):
         _flat(key, row.get(key) or {}, flat)
     flat["analysis.status"] = a.get("status")
     flat["analysis.line_tier"] = a.get("line_tier")
@@ -259,10 +272,14 @@ def case_table(row: Dict[str, Any]) -> str:
     lines.append("| Stage | Value |")
     lines.append("|---|---|")
     fr = row.get("frame") or {}
+    lines.append(f"| pretesa | {_show(fr.get('pretesa'))}" + (" (derivata)" if "addebito_o_domanda" in (fr.get("derived") or []) else "") + " |")
+    if row.get("asked"):
+        lines.append("| asked | the flow asked for the side and stopped (frame_asked_side) |")
     lines.append(f"| frame verified | {_show(fr.get('verified'))} |")
     for f, v in (fr.get("fields") or {}).items():
         lines.append(f"| frame.{f} | {v} |")
     lines.append(f"| frame fallback | {_show(fr.get('fallback'))} |")
+    lines.append("| frame counters | " + ", ".join(f"{k} {v}" for k, v in (row.get("frame_counters") or {}).items()) + " |")
     lines.append("| fit | " + ", ".join(f"{k} {v}" for k, v in (row.get("fit") or {}).items()) + " |")
     lines.append(f"| analysis status / tier / fallback | {_show(a.get('status'))} / {_show(a.get('line_tier'))} / "
                  f"{_show(a.get('fallback_skipped_reason'))} |")

@@ -465,15 +465,18 @@ def test_fixture_civil_caparra(monkeypatch, tmp_path):
     _report(run, "v79.15.3 civil caparra fixture (tests/test_v79_15_1_fixtures.py CIVIL_QA: Anna Corsi, attore)")
     X._no_failed_steps(run)
     answer, step = run["answer"], run["by"]["analysis_step"][0][0]
-    assert H.section(answer, "sintesi") == ("Linea principale: art. 1385 c.c. — «inadempiente è invece la parte che "
-                                            "l'ha ricevuta» è da provare.")
+    assert H.section(answer, "sintesi") == ("Pretesa: domanda — «esigere il doppio della caparra ai sensi dell'art. 1385 "
+                                            "c.c.» (art. 1385 c.c.).\n\nLinea principale: art. 1385 c.c. — «inadempiente "
+                                            "è invece la parte che l'ha ricevuta» è da provare.")     # v79.17.0 (item 5)
     assert step["side"] == A.SIDE_CLAIMANT and step["claimant"] is True and step["side_why"] == "ruolo: attore"
     assert set(step["tesi_modello"]) == {"linea_principale"} and step["tesi_modello"]["linea_principale"]
     assert step["tesi_modello"]["linea_principale"] not in answer
     obiezioni = H.section(answer, "obiezioni")
-    assert obiezioni == (f"**Obiezione 1.** {X.CIVIL.BASSI}.\n**Risposta.** L'elemento «inadempiente è invece la parte "
-                         "che l'ha ricevuta» (art. 1385 c.c.) è da provare: «Anna Corsi ha versato a Ettore Bassi "
-                         "15.000 euro a titolo di caparra confirmatoria».")
+    assert obiezioni.startswith(f"**Obiezione 1.** {X.CIVIL.BASSI}.\n**Risposta.** L'elemento «inadempiente è invece la "
+                                "parte che l'ha ricevuta» (art. 1385 c.c.) è da provare: «Anna Corsi ha versato a Ettore "
+                                "Bassi 15.000 euro a titolo di caparra confirmatoria».")
+    # v79.17.0 (item 4): the written objection (a fitted article, no unknown id) stays after the verified one
+    assert "**Obiezione 2.**" in obiezioni
 
 
 def test_fixture_penal_indagato(monkeypatch, tmp_path):
@@ -483,8 +486,9 @@ def test_fixture_penal_indagato(monkeypatch, tmp_path):
                  "Dario Melis, indagato)")
     X._no_failed_steps(run)
     answer, step = run["answer"], run["by"]["analysis_step"][0][0]
-    assert H.section(answer, "sintesi") == ("Linea principale: art. 646 c.p. — L'accusa deve provare «per procurare a "
-                                            "sé o ad altri un ingiusto profitto» (art. 646 c.p.).")
+    assert H.section(answer, "sintesi") == ("Pretesa: accusa — «appropriazione indebita» (art. 646 c.p.).\n\nLinea "
+                                            "principale: art. 646 c.p. — L'accusa deve provare «per procurare a sé o ad "
+                                            "altri un ingiusto profitto» (art. 646 c.p.).")
     assert step["side"] == A.SIDE_DEFENCE and step["claimant"] is False
     assert step["tesi_modello"]["linea_principale"] not in answer
     obiezioni = H.section(answer, "obiezioni")
@@ -503,8 +507,9 @@ def test_fixture_appalto_claimant(monkeypatch, tmp_path):
     answer, step = run["answer"], run["by"]["analysis_step"][0][0]
     assert run["state"]["case_frame"]["frame"].get("ruolo") in (None, {})
     assert step["side"] == A.SIDE_CLAIMANT and step["side_why"] == "ruolo_nel_fatto: committente"
-    assert H.section(answer, "sintesi") == ("Linea principale: art. 1667 c.c. — «L'appaltatore è tenuto alla garanzia "
-                                            "per le difformità e i vizi dell'opera» è da provare.")
+    assert H.section(answer, "sintesi") == ("Pretesa: domanda — «garanzia per i vizi» (art. 1667 c.c.).\n\nLinea "
+                                            "principale: art. 1667 c.c. — «L'appaltatore è tenuto alla garanzia per le "
+                                            "difformità e i vizi dell'opera» è da provare.")
     obiezioni = H.section(answer, "obiezioni")
     assert obiezioni.count("**Obiezione ") == 3 and "Esito verificato" not in obiezioni
 
@@ -521,9 +526,11 @@ def test_fixture_a_written_answer_asserting_the_contested_element_is_dropped(mon
     X._no_failed_steps(run)
     c, answer = run["state"]["block_counters"], run["answer"]
     obiezioni = H.section(answer, "obiezioni")
-    assert "l'elemento è integrato" not in answer
+    # v79.17.0 (item 4): the one rule keeps the written answer (it cites no article outside the fitted set); 79.15.3's
+    # asserted_unproven check is no longer applied
+    assert "l'elemento è integrato" in obiezioni
     assert "**Obiezione 2.** Ettore Bassi sosterrà di non dover restituire nulla ad Anna Corsi." in obiezioni
     assert "Anna Corsi ha versato la caparra a Ettore Bassi." in obiezioni
     events = [e for d, _ in run["by"].get("lawyer_method_prose_review") or [] for e in d["events"]]
-    assert [e["elemento"] for e in events if e.get("motivo") == A.UNPROVEN_ASSERTED] == ["A1385cc:E4"]
-    assert c["objections_sentences_dropped"] == 1
+    assert [e["elemento"] for e in events if e.get("motivo") == A.UNPROVEN_ASSERTED] == []    # v79.17.0: not applied
+    assert c["objections_sentences_dropped"] == 0

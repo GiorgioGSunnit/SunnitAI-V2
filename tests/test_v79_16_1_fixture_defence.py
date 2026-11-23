@@ -95,10 +95,10 @@ def fit_reply(messages, kwargs):
     """Both norms «si», each citing its period and its fact -- verified by ids."""
     human = messages[-1].content
     refusal, diffida = _sid(human, "Alfa S.r.l. rifiuta"), _sid(human, "Beta S.p.A. sostiene")
-    items = {"1460 c.c.": F._fit_item("1460 c.c.", "si", f"Alfa rifiuta di adempiere in quanto Beta non ha adempiuto "
-                                                       f"({refusal}).", cf=[refusal]),
-             "1454 c.c.": F._fit_item("1454 c.c.", "si", f"Beta ha intimato per iscritto di adempiere ({diffida}).",
-                                      cf=[diffida])}
+    items = {"1460 c.c.": dict(F._fit_item("1460 c.c.", "si", f"Alfa rifiuta di adempiere in quanto Beta non ha adempiuto "
+                                                            f"({refusal}).", cf=[refusal]), governa=["pretesa", "Q1"]),
+             "1454 c.c.": dict(F._fit_item("1454 c.c.", "si", f"Beta ha intimato per iscritto di adempiere ({diffida}).",
+                                           cf=[diffida]), governa=["pretesa"])}      # v79.17.0 (item 3): what each governs
     labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
     return json.dumps({"giudizi": [items[x] for x in labels if x in items]}, ensure_ascii=False)
 
@@ -190,7 +190,17 @@ def test_the_civil_defence_fixture_end_to_end(monkeypatch, tmp_path):
     assert procedural and not any(e in allowed for e in procedural) and "A1460cc:E1" in allowed
     assert [x["articolo"] for x in step["lines"]] == ["1460 c.c."] and step["line_tier"] == "fit_si"
     assert c["line_from_fit_si"] == 1 and c["line_from_unverified"] == 0 and c["line_from_fit_dipende"] == 0
-    assert H.section(answer, "sintesi").startswith("Linea principale: art. 1460 c.c.")
+    # v79.17.0 (items 2, 3): the fit was given the pretesa and Q1; both verdicts govern the pretesa, 1460 Q1 too; the
+    # binding applied, no context-only norm; the material block tags them; the prompt's article blocks say «governa»
+    assert c["fit_governs_pretesa"] == 2 and c["fit_governs_quesiti"] == 1 and c["fit_context_only"] == 0
+    assert c["binding_pretesa_applied"] == 1 and c["binding_pretesa_excluded"] == []
+    assert state["binding_pretesa"]["principale"] == ["1460 c.c.", "1454 c.c."] and state["binding_pretesa"]["quesiti"] == {"Q1": ["1460 c.c."]}
+    human = run["model"].calls[0]["last"]
+    assert "governa: pretesa, Q1" in human and "governa: pretesa" in human
+    assert "[governa: pretesa, Q1]" in q_jobs_block(run) and "Pretesa: opposizione: «pagamento del prezzo»" in q_jobs_block(run)
+    assert c["frame_pretesa_verified"] == 1 and c["frame_asked_side"] == 0
+    assert H.section(answer, "sintesi").startswith("Pretesa: opposizione — «pagamento del prezzo».\n\nLinea principale: "
+                                                   "art. 1460 c.c.")       # v79.17.0 (item 5): the pretesa first
     # item 4: the provato stands on a pertinent fact («non ha adempiuto» ~ «non adempie»)
     col = H.esito_column(answer)
     assert any("non adempie" in x and x.endswith("| provato") for x in col), col
@@ -204,3 +214,8 @@ def test_the_civil_defence_fixture_end_to_end(monkeypatch, tmp_path):
     assert "Procedibilità e competenza" not in procedure and "Profilo penale" not in procedure
     assert c["sections_rito_blocks_dropped"] == 0
     assert by["legacy_plan"][0][0]["rendered"] is False
+
+
+def q_jobs_block(run):
+    """The one quesito's writer material (v79.17.0: verified_material.block)."""
+    return next(j[2] for j in run["jobs"] if "?" in str(j[0]))

@@ -456,7 +456,8 @@ def test_a_penal_charge_with_no_article_number_finds_its_line_by_rubrica(monkeyp
     assert "rimedio o parte generale" in step["rejected"][1]["why"]
     assert c["analysis_fallback_skipped_reason"] == "" == step["fallback_skipped_reason"]
     sintesi = H.section(answer, "sintesi")
-    assert sintesi == "Linea principale: art. 646 c.p. — Appropriazione indebita: elementi da provare dall'accusa."
+    assert sintesi == ("Pretesa: accusa — «appropriazione indebita».\n\nLinea principale: art. 646 c.p. — Appropriazione "
+                       "indebita: elementi da provare dall'accusa.")        # v79.17.0 (item 5): the pretesa first
     assert "da determinare" not in answer
     col = H.esito_column(answer)
     assert col and all(x.startswith("646 c.p.") and x.endswith("| da provare") for x in col), col
@@ -478,9 +479,12 @@ def _events(run):
     return [e for d, _ in run["by"].get("lawyer_method_prose_review") or [] for e in d["events"]]
 
 
-def test_the_civil_prose_is_replaced_and_never_left_in_fragments(monkeypatch, tmp_path):
-    """Item 4 on the civil fixture: replaced, not deleted; a dropped sentence takes its anaphoric follower; an excluded
-    and an unfitted article's sentence dropped; §4 and §7 likewise."""
+def test_the_civil_prose_is_reviewed_by_the_one_rule_only(monkeypatch, tmp_path):
+    """v79.17.0 (item 4) on the civil fixture -- 79.15.1's item 4 reversed: the prose is written from the verified
+    material and the post-processing is one rule. A sentence citing an excluded (1439 c.c.) or an unfitted (1218 c.c.)
+    article is dropped; nothing else is: no replacement by a verified statement, no anaphoric follower dropped, no
+    lemma matching of a rule sentence (the 1385 c.c. and 1453 c.c. sentences stay as written); the «Affermazioni di
+    diritto verificate» block is not in the body."""
     run = H.run(monkeypatch, tmp_path, CIVIL_QA)
     _no_failed_steps(run)
     c, answer = run["state"]["block_counters"], run["answer"]
@@ -488,33 +492,23 @@ def test_the_civil_prose_is_replaced_and_never_left_in_fragments(monkeypatch, tm
     assert [x.get("article") for x in run["state"].get("fit_removed") or []] == ["1439 c.c."]
     statement = ("Se inadempiente è la parte che ha ricevuto la caparra, l'altra può recedere dal contratto ed esigere "
                  "il doppio della caparra (art. 1385 c.c.).")
-    # the 1385 c.c. rule replaced by the verified statement, its «Ai sensi del primo comma» follower kept
     second = next(x for x in qa.splitlines() if x.startswith("2. "))
-    assert QA_REPLACED not in answer and f"— {statement} {QA_FOLLOW}" in second
-    # the 1453 c.c. rule dropped with «Inoltre», the 1439 c.c. one with «Pertanto»; 1218 c.c. dropped; never a fragment
-    for gone in (QA_1453, QA_1453_FOLLOW, QA_1439, QA_1439_FOLLOW, QA_1218):
-        assert gone not in answer, gone
+    assert QA_REPLACED in second and QA_FOLLOW in second and statement not in answer      # kept as written, no twin
     first = next(x for x in qa.splitlines() if x.startswith("1. "))
-    assert first.endswith(f"— {CIVIL.QA_KEPT}"), first
-    assert "1439" not in answer and "1218" not in answer
-    for line in qa.splitlines():
-        assert "— Inoltre" not in line and "— Pertanto" not in line
-    # §4: the remedies' rules with no verified statement dropped; §7: the written objection's rule dropped
-    assert CIVIL.WRITER["1453 c.c."] not in answer and CIVIL.WRITER["2043 c.c."] not in answer
+    assert QA_1453 in first and QA_1453_FOLLOW in first and CIVIL.QA_KEPT in first      # a fitted remedy's sentence stays
+    for gone in (QA_1439, QA_1218):                                   # the one rule: excluded, unfitted
+        assert gone not in answer, gone
+    assert QA_1439_FOLLOW in answer                                   # no dependent-sentence drop
+    assert "1439" not in qa and "1218" not in answer
+    assert A.LAW_STATEMENTS_TITLE not in answer                        # the log's only
     obiezioni = H.section(answer, "obiezioni")
-    # (review) the written objection's unverified rule is dropped, never replaced by a statement of law: the objection,
-    # emptied, leaves §7 (79.14.1's rule); only the verified objection from the allegation stays
-    assert OBJ_RULE not in obiezioni and "**Obiezione 2.**" not in obiezioni and statement not in obiezioni
-    assert f"**Obiezione 1.** {CIVIL.BASSI}." in obiezioni         # v79.15.3 (item 3): the sentence as written
-    # the counters: each sentence once
-    assert c["qa_sentences_replaced"] == 1 and c["qa_sentences_dropped"] == 1     # (review: §7's objection no longer
-    assert c["qa_sentences_dropped_dependent"] == 2 and c["norms_sentences_dropped"] == 2      # replaced -- dropped)
+    assert f"**Obiezione 1.** {CIVIL.BASSI}." in obiezioni             # the verified objection from the allegation
+    assert OBJ_RULE in obiezioni and "**Obiezione 2.**" in obiezioni    # the written one stays (cites a fitted article)
+    assert c["qa_sentences_replaced"] == 0 and c["qa_sentences_dropped"] == 0 and c["qa_sentences_dropped_dependent"] == 0
     assert c["prose_excluded_article_dropped"] == 1 and c["prose_unfitted_article_dropped"] == 1
-    assert c["objections_sentences_dropped"] == 1
+    assert c["norms_sentences_dropped"] == 0 and c["objections_sentences_dropped"] == 0
     kinds = sorted((e["sede"], e["esito"]) for e in _events(run))
-    assert kinds == sorted([("norme", A.DROPPED), ("norme", A.DROPPED), ("obiezioni", A.DROPPED),
-                            ("risposte", A.DROPPED), ("risposte", A.DEPENDENT), ("risposte", A.ARTICLE_EXCLUDED),
-                            ("risposte", A.DEPENDENT), ("risposte", A.REPLACED), ("risposte", A.ARTICLE_UNFITTED)])
+    assert kinds == sorted([("risposte", A.ARTICLE_EXCLUDED), ("risposte", A.ARTICLE_UNFITTED)])
 
 
 def test_the_truffa_case_both_replies_rejected_finds_its_line_by_the_older_frames_name(monkeypatch, tmp_path):
@@ -531,20 +525,22 @@ def test_the_truffa_case_both_replies_rejected_finds_its_line_by_the_older_frame
     assert c["analysis_line_fallback_rubrica"] == 1 and c["analysis_fallback_skipped_reason"] == ""
     line = state["analysis_step"]["analysis"]["linea_principale"]
     assert line["stato"] == A.FALLBACK_LINE and line["nome"] == "Truffa" and line["articolo"] == "640 c.p."
-    assert H.section(answer, "sintesi") == "Linea principale: art. 640 c.p. — Truffa: elementi da provare dall'accusa."
+    assert H.section(answer, "sintesi") == ("Pretesa: accusa — «procede per truffa ai sensi dell'art. 640 c.p.».\n\nLinea "
+                                            "principale: art. 640 c.p. — Truffa: elementi da provare dall'accusa.")
     col = H.esito_column(answer)
     assert col and all(x.startswith("640 c.p.") and x.endswith("| da provare") for x in col), col
     assert "| Linea principale | art. 640 c.p. | — | Truffa: elementi da provare dall'accusa | — |" in \
         H.section(answer, "soluzioni")
     assert "da determinare" not in answer
-    # the Q&A: the evidence's Q3 -- the removed 1439 c.c. and its follower gone; 641 c.p. gone; 640 c.p. replaced
-    assert "1439" not in answer and TR_QA_1439_FOLLOW not in answer and "641" not in answer
-    assert TR_QA_640 not in answer
-    assert "L'art. 640 c.p. punisce chi, con artifizi o raggiri, inducendo taluno in errore" in _qa(answer)
-    # (review) the 1439 c.c. sentence by number alone («l'art. 1439») dropped as excluded too: two per answer
-    assert TR_QA_1439_BARE not in answer
-    assert c["prose_excluded_article_dropped"] == 4 and c["qa_sentences_dropped_dependent"] == 2   # two answers
-    assert c["prose_unfitted_article_dropped"] == 2 and c["qa_sentences_replaced"] == 2
+    # the Q&A, v79.17.0 (item 4, the one rule): the removed 1439 c.c. sentences gone (by code and by number alone),
+    # 641 c.p. gone; the «Pertanto» follower and the 640 c.p. sentence stay as written (no dependent drop, no
+    # replacement by the verified statement)
+    assert "1439" not in answer and "641" not in answer and TR_QA_1439_BARE not in answer
+    assert TR_QA_1439_FOLLOW in _qa(answer) and TR_QA_640 in _qa(answer)
+    assert "L'art. 640 c.p. punisce chi, con artifizi o raggiri, inducendo taluno in errore" not in _qa(answer)
+    assert c["prose_excluded_article_dropped"] == 4 and c["qa_sentences_dropped_dependent"] == 0   # two answers;
+    # v79.17.0 (item 4): no dependent-sentence drop
+    assert c["prose_unfitted_article_dropped"] == 2 and c["qa_sentences_replaced"] == 0    # v79.17.0: no replacement
     assert run["by"]["legacy_plan"][0][0]["rendered"] is False
 
 
@@ -567,8 +563,8 @@ def test_a_claimants_line_is_constitutive_and_the_allegation_is_the_objection(mo
     assert c["analysis_fallback_skipped_reason"] == "line_verified"
     sintesi = H.section(answer, "sintesi")
     # v79.15.3 (item 1): the code's tesi -- a claimant (the committente), the element in play contested
-    assert sintesi == ("Linea principale: art. 1667 c.c. — «L'appaltatore è tenuto alla garanzia per le difformità e i "
-                       "vizi dell'opera» è da provare.")
+    assert sintesi == ("Pretesa: domanda — «garanzia per i vizi» (art. 1667 c.c.).\n\nLinea principale: art. 1667 c.c. — "
+                       "«L'appaltatore è tenuto alla garanzia per le difformità e i vizi dell'opera» è da provare.")
     assert "La Edilnova S.r.l. deve la garanzia" not in answer                  # the model's tesi: the log only
     assert "accettato l'opera" not in sintesi
     obiezioni = H.section(answer, "obiezioni")

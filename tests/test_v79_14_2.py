@@ -181,7 +181,7 @@ def test_the_prompt_carries_the_id_fields_and_no_fact_quote():
     assert lines[lines.index(norma[0]) - 1].startswith('- "perche": UNA sola frase')
     assert lines.index(fatti[0]) == lines.index(norma[0]) + 1
     assert '"cita_norma": ["..."]' in lines[-1] and '"cita_fatti": ["..."]' in lines[-1]
-    assert len(lines) == 19
+    assert len(lines) == 21        # v79.17.0: the «governa» field and its rule
 
 
 def _flow_state(text, sentences, records, topics=None):

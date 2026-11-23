@@ -202,8 +202,10 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     assert c["analysis_provato_downgraded"] == 1
     sintesi = H.section(answer, "sintesi")
     # v79.15.3 (item 1): the tesi is the code's -- a claimant (ruolo attore), the element in play contested
-    assert sintesi.startswith("Linea principale: art. 1385 c.c. — «inadempiente è invece la parte che l'ha ricevuta» "
-                              "è da provare.")
+    # v79.17.0 (item 5): the pretesa first, then the line
+    assert sintesi.startswith("Pretesa: domanda — «esigere il doppio della caparra ai sensi dell'art. 1385 c.c.» "
+                              "(art. 1385 c.c.).\n\nLinea principale: art. 1385 c.c. — «inadempiente è invece la parte "
+                              "che l'ha ricevuta» è da provare.")
     assert "Linea subordinata" not in sintesi
     for remedy in ("1453", "2043"):
         assert not any(remedy in x for x in answer.splitlines() if "Linea principale" in x or "Linea subordinata" in x)
@@ -224,11 +226,12 @@ def test_the_civil_fixture_end_to_end(monkeypatch, tmp_path):
     assert H.section(answer, "conclusioni").splitlines()[1].startswith("**Linea principale**: art. 1385 c.c.")
     # the Q&A: the unverified statements of 1453 and 2043 c.c. removed, the verified 1385 c.c. one printed
     # v79.15.1 (item 4): the unverified 1385 c.c. statement is replaced by its verified one, no longer dropped
-    assert c["qa_sentences_dropped"] + c["qa_sentences_replaced"] >= 1
-    assert WRITER["1453 c.c."] not in answer and WRITER["2043 c.c."] not in answer and QA_DROPPED not in answer
+    # v79.17.0 (item 4): one rule -- the 1385 c.c. sentences stay as written (no replacement, no lemma matching); the
+    # remedies' §4 prose is out by 79.16.0's D4; the statements block is the log's only
+    assert c["qa_sentences_dropped"] + c["qa_sentences_replaced"] == 0
+    assert WRITER["1453 c.c."] not in answer and WRITER["2043 c.c."] not in answer and QA_DROPPED in answer
     assert QA_KEPT in H.section(answer, "risposte") or QA_KEPT in answer.split("**1. ")[0]
-    assert "**Affermazioni di diritto verificate**" in answer
-    assert "l'altra può recedere dal contratto ed esigere il doppio della caparra (art. 1385 c.c.)." in answer
+    assert "**Affermazioni di diritto verificate**" not in answer
     # the old engine: logged, compared, printed nowhere
     legacy = by["legacy_plan"][0][0]
     assert legacy["rendered"] is False

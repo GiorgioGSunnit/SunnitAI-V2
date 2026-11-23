@@ -1,5 +1,5 @@
 {
-  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. v79.14.2 (B): «penal»: true flags a penal source -- the c.p. and the c.p.p. entries, and the penal laws (d.P.R. 309/1990, d.lgs. 231/2001) -- what a verified penal frame with the client imputato or indagato may offer as the charge (lawyer_method.penal_source: the codes c.p. and c.p.p., case_frame.is_penal for a law case_frame.json's penal_provisions lists -- its penal articles by range --, and a flagged law it does not list, whole). Code's draft list, for the lawyer's review; edit here.",
+  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. v79.14.2 (B): «penal»: true flags a penal source -- the c.p. and the c.p.p. entries, and the penal laws (d.P.R. 309/1990, d.lgs. 231/2001) -- what a verified penal frame with the client imputato or indagato may offer as the charge (lawyer_method.penal_source: the codes c.p. and c.p.p., case_frame.is_penal for a law case_frame.json's penal_provisions lists -- its penal articles by range --, and a flagged law it does not list, whole). Code's draft list, for the lawyer's review; edit here. v79.17.0: every entry carries «family» (civile | penale | lavoro | amministrativo | tributario | famiglia | fallimentare) and «tags»; the lavoro (L. 604/1966, L. 300/1970, d.lgs. 23/2015, the c.c.'s TFR and preavviso), amministrativo (d.lgs. 104/2010, L. 241/1990), tributario (d.lgs. 546/1992, d.P.R. 600/1973, L. 212/2000), famiglia (L. 898/1970, the c.c.'s affidamento) and fallimentare (d.lgs. 14/2019) sets added -- data only: the rito selects nothing here but the law sets; a law missing from the archive fires the honesty line as before (archive names exact).",
   "institutions": [
     {
       "name": "contratto di viaggio",
@@ -10,6 +10,11 @@
         "\\bvacanza\\s+rovinata\\b",
         "\\bdanno\\s+da\\s+vacanza",
         "\\bcodice\\s+del\\s+turismo"
+      ],
+      "family": "civile",
+      "tags": [
+        "contratti",
+        "consumatore"
       ]
     },
     {
@@ -21,6 +26,10 @@
         "\\bcontraffazione\\s+(?:del|di)\\s+(?:marchio|brevetto)",
         "\\bproprietà\\s+industriale",
         "\\bdisegni\\s+e\\s+modelli"
+      ],
+      "family": "civile",
+      "tags": [
+        "impresa"
       ]
     },
     {
@@ -30,6 +39,10 @@
         "\\bdiritto\\s+d['’]\\s*autore",
         "\\bopere\\s+dell['’]\\s*ingegno",
         "\\bplagio\\b"
+      ],
+      "family": "civile",
+      "tags": [
+        "impresa"
       ]
     },
     {
@@ -42,6 +55,10 @@
         "\\bgdpr\\b",
         "\\btrattamento\\s+(?:illecito\\s+)?dei\\s+dati",
         "\\bdiritto\\s+all['’]\\s*oblio\\b"
+      ],
+      "family": "civile",
+      "tags": [
+        "dati"
       ]
     },
     {
@@ -55,6 +72,11 @@
         "\\bbancarott",
         "\\bconcordato\\s+preventivo",
         "\\bsovraindebitament"
+      ],
+      "family": "fallimentare",
+      "tags": [
+        "impresa",
+        "concorsuale"
       ]
     },
     {
@@ -64,6 +86,10 @@
         "\\bresponsabilit\\w*\\s+(?:medica|sanitaria|del\\s+medico|dell['’]\\s*esercente\\s+la\\s+professione\\s+sanitaria|della\\s+struttura\\s+(?:sanitaria|ospedaliera))",
         "\\bmalpractice\\b",
         "\\blegge\\s+gelli"
+      ],
+      "family": "civile",
+      "tags": [
+        "danno"
       ]
     },
     {
@@ -74,6 +100,11 @@
         "\\bappalt\\w*\\s+di\\s+(?:opere|lavori|servizi|forniture)\\s+pubblic",
         "\\bcodice\\s+dei\\s+contratti\\s+pubblici",
         "\\bgara\\s+(?:d['’]\\s*appalto|pubblica)\\b"
+      ],
+      "family": "amministrativo",
+      "tags": [
+        "appalti",
+        "pubblica amministrazione"
       ]
     },
     {
@@ -84,6 +115,10 @@
         "\\bresponsabilit\\w*\\s+amministrativ\\w*\\s+(?:degli|delle)\\s+(?:enti|persone\\s+giuridiche|societ)",
         "\\bmodell\\w*\\s+(?:di\\s+)?organizzazione(?:,|\\s+e)\\s+(?:di\\s+)?gestione",
         "\\b231\\s*/\\s*2001\\b"
+      ],
+      "family": "penale",
+      "tags": [
+        "impresa"
       ]
     },
     {
@@ -94,6 +129,11 @@
         "\\btesto\\s+unico\\s+bancario",
         "\\banatocism\\w*\\s+bancari",
         "\\bcredito\\s+ai\\s+consumatori"
+      ],
+      "family": "civile",
+      "tags": [
+        "banca",
+        "contratti"
       ]
     },
     {
@@ -105,6 +145,11 @@
         "\\bcodice\\s+delle\\s+assicurazioni",
         "\\bfondo\\s+di\\s+garanzia\\s+per\\s+le\\s+vittime\\s+della\\s+strada",
         "\\brisarcimento\\s+diretto\\b"
+      ],
+      "family": "civile",
+      "tags": [
+        "danno",
+        "assicurazione"
       ]
     },
     {
@@ -118,6 +163,11 @@
         "\\bguida\\s+in\\s+stato\\s+di\\s+(?:ebbrezza|alterazione)",
         "\\bguida\\s+sotto\\s+l['’]\\s*(?:effetto|influenza)",
         "\\bguida\\s+senza\\s+patente"
+      ],
+      "family": "civile",
+      "tags": [
+        "danno",
+        "sanzioni"
       ]
     },
     {
@@ -127,6 +177,10 @@
       "patterns": [
         "\\bstupefacent",
         "\\bspaccio\\b"
+      ],
+      "family": "penale",
+      "tags": [
+        "reati"
       ]
     },
     {
@@ -134,6 +188,10 @@
       "law": "d.lgs. 28/2010",
       "patterns": [
         "\\bmediazione\\s+(?:civile|obbligatoria|finalizzata)"
+      ],
+      "family": "civile",
+      "tags": [
+        "procedura"
       ]
     },
     {
@@ -144,6 +202,10 @@
         "\\blegittima\\s+difesa\\b",
         "\\bdifesa\\s+legittima\\b",
         "\\beccesso\\s+colposo\\b"
+      ],
+      "family": "penale",
+      "tags": [
+        "scriminanti"
       ]
     },
     {
@@ -152,6 +214,10 @@
       "penal": true,
       "patterns": [
         "\\bstato\\s+di\\s+necessit"
+      ],
+      "family": "penale",
+      "tags": [
+        "scriminanti"
       ]
     },
     {
@@ -164,6 +230,10 @@
         "\\bconsenso\\s+dell['’]\\s*avente\\s+diritto\\b",
         "\\besercizio\\s+di\\s+un\\s+diritto\\b",
         "\\badempimento\\s+di\\s+un\\s+dovere\\b"
+      ],
+      "family": "penale",
+      "tags": [
+        "scriminanti"
       ]
     },
     {
@@ -185,6 +255,10 @@
         "\\bomissione\\s+di\\s+soccorso",
         "\\binterferenz\\w*\\s+illecit\\w*\\s+nella\\s+vita\\s+privata",
         "\\bsostituzione\\s+di\\s+persona\\b"
+      ],
+      "family": "penale",
+      "tags": [
+        "reati"
       ]
     },
     {
@@ -203,6 +277,10 @@
         "\\busura\\b",
         "\\binsolvenza\\s+fraudolenta",
         "\\bfrode\\s+informatica"
+      ],
+      "family": "penale",
+      "tags": [
+        "reati"
       ]
     },
     {
@@ -218,6 +296,10 @@
         "\\boltraggio",
         "\\bfalso\\s+ideologic",
         "\\bfalsit[àa]\\s+(?:materiale|ideologica|in\\s+atto)"
+      ],
+      "family": "penale",
+      "tags": [
+        "reati"
       ]
     },
     {
@@ -235,6 +317,10 @@
         "\\bprescrizione\\s+del\\s+reato",
         "\\bdesistenza",
         "\\brecesso\\s+attivo"
+      ],
+      "family": "penale",
+      "tags": [
+        "parte generale"
       ]
     },
     {
@@ -251,6 +337,10 @@
         "\\barchiviazion",
         "\\bcostituzione\\s+di\\s+parte\\s+civile\\b",
         "\\bincidente\\s+probatorio"
+      ],
+      "family": "penale",
+      "tags": [
+        "procedura"
       ]
     },
     {
@@ -279,6 +369,11 @@
         "\\bdecadenza\\b",
         "\\bfallimento\\s+delle\\s+trattative|\\brottura\\s+(?:ingiustificata\\s+)?delle\\s+trattative|\\btrattative\\s+precontrattual",
         "\\banatocism"
+      ],
+      "family": "civile",
+      "tags": [
+        "contratti",
+        "obbligazioni"
       ]
     },
     {
@@ -299,6 +394,11 @@
         "\\blegittim[ai]\\b(?!\\s+difesa)",
         "\\bimpresa\\s+familiare",
         "\\bsociet[àa]\\s+(?:semplice|in\\s+nome\\s+collettivo|in\\s+accomandita|a\\s+responsabilit|per\\s+azioni)"
+      ],
+      "family": "famiglia",
+      "tags": [
+        "famiglia",
+        "diritti reali"
       ]
     },
     {
@@ -315,6 +415,194 @@
         "\\bcompetenza\\s+(?:territoriale|per\\s+valore)",
         "\\bappello\\b",
         "\\bricorso\\s+per\\s+cassazione"
+      ],
+      "family": "civile",
+      "tags": [
+        "procedura"
+      ]
+    },
+    {
+      "name": "licenziamento e tutele del lavoratore",
+      "law": "L. 604/1966",
+      "family": "lavoro",
+      "tags": [
+        "lavoro",
+        "licenziamento"
+      ],
+      "patterns": [
+        "\\bimpugna\\w*\\s+(?:il\\s+)?licenziament",
+        "\\blicenziament\\w*\\s+(?:per\\s+)?(?:giusta\\s+causa|giustificato\\s+motivo|disciplinar|illegittim|orale|discriminator)",
+        "\\bgiustificato\\s+motivo",
+        "\\bgiusta\\s+causa\\b",
+        "\\breintegra\\w*\\s+(?:nel|sul)\\s+posto\\s+di\\s+lavoro"
+      ]
+    },
+    {
+      "name": "statuto dei lavoratori",
+      "law": "L. 300/1970",
+      "family": "lavoro",
+      "tags": [
+        "lavoro",
+        "licenziamento",
+        "sindacato"
+      ],
+      "patterns": [
+        "\\bstatuto\\s+dei\\s+lavoratori",
+        "\\bart\\.?\\s*18\\b[^.]{0,20}\\b300\\b",
+        "\\bcondotta\\s+antisindacale",
+        "\\bsanzion\\w*\\s+disciplinar"
+      ]
+    },
+    {
+      "name": "tutele crescenti",
+      "law": "d.lgs. 23/2015",
+      "family": "lavoro",
+      "tags": [
+        "lavoro",
+        "licenziamento"
+      ],
+      "patterns": [
+        "\\btutele\\s+crescenti",
+        "\\bindennit[àa]\\s+risarcitoria\\b[^.]{0,40}\\bmensilit"
+      ]
+    },
+    {
+      "name": "rapporto di lavoro: retribuzione e TFR",
+      "law": "c.c.",
+      "family": "lavoro",
+      "tags": [
+        "lavoro",
+        "retribuzione"
+      ],
+      "patterns": [
+        "\\btrattamento\\s+di\\s+fine\\s+rapporto",
+        "\\bTFR\\b",
+        "\\bindennit[àa]\\s+(?:sostitutiva\\s+)?di\\s+preavviso",
+        "\\bmensilit[àa]\\s+(?:non\\s+pagat|arretrat)"
+      ]
+    },
+    {
+      "name": "processo amministrativo",
+      "law": "d.lgs. 104/2010",
+      "family": "amministrativo",
+      "tags": [
+        "amministrativo",
+        "procedura"
+      ],
+      "patterns": [
+        "\\bricorso\\s+al\\s+TAR\\b",
+        "\\bTAR\\b",
+        "\\bConsiglio\\s+di\\s+Stato",
+        "\\bgiudice\\s+amministrativ",
+        "\\bannullament\\w*\\s+del\\s+provvedimento"
+      ]
+    },
+    {
+      "name": "procedimento amministrativo",
+      "law": "L. 241/1990",
+      "family": "amministrativo",
+      "tags": [
+        "amministrativo",
+        "pubblica amministrazione"
+      ],
+      "patterns": [
+        "\\bprocediment\\w*\\s+amministrativ",
+        "\\baccesso\\s+agli\\s+atti",
+        "\\bsilenzio[- ]assenso",
+        "\\bmotivazione\\s+del\\s+provvedimento",
+        "\\bpreavviso\\s+di\\s+rigetto"
+      ]
+    },
+    {
+      "name": "processo tributario",
+      "law": "d.lgs. 546/1992",
+      "family": "tributario",
+      "tags": [
+        "tributario",
+        "procedura"
+      ],
+      "patterns": [
+        "\\bcorte\\s+di\\s+giustizia\\s+tributaria",
+        "\\bcommissione\\s+tributaria",
+        "\\bricorso\\s+tributario",
+        "\\bavviso\\s+di\\s+accertamento",
+        "\\bcartella\\s+di\\s+pagamento"
+      ]
+    },
+    {
+      "name": "accertamento delle imposte sui redditi",
+      "law": "d.P.R. 600/1973",
+      "family": "tributario",
+      "tags": [
+        "tributario",
+        "accertamento"
+      ],
+      "patterns": [
+        "\\baccertament\\w*\\s+(?:fiscal|tributar|delle\\s+imposte)",
+        "\\bAgenzia\\s+delle\\s+Entrate",
+        "\\bimposte\\s+sui\\s+redditi",
+        "\\bIRPEF\\b"
+      ]
+    },
+    {
+      "name": "statuto del contribuente",
+      "law": "L. 212/2000",
+      "family": "tributario",
+      "tags": [
+        "tributario"
+      ],
+      "patterns": [
+        "\\bstatuto\\s+del\\s+contribuente",
+        "\\bcontraddittorio\\s+(?:preventivo|endoprocedimentale)"
+      ]
+    },
+    {
+      "name": "separazione e divorzio",
+      "law": "L. 898/1970",
+      "family": "famiglia",
+      "tags": [
+        "famiglia",
+        "separazione",
+        "divorzio"
+      ],
+      "patterns": [
+        "\\bdivorzi",
+        "\\bseparazion\\w*\\s+(?:personale|dei\\s+coniugi|giudiziale|consensuale)",
+        "\\bassegno\\s+(?:divorzile|di\\s+mantenimento)",
+        "\\bscioglimento\\s+del\\s+matrimonio"
+      ]
+    },
+    {
+      "name": "affidamento e mantenimento dei figli",
+      "law": "c.c.",
+      "family": "famiglia",
+      "tags": [
+        "famiglia",
+        "figli"
+      ],
+      "patterns": [
+        "\\baffidament\\w*\\s+(?:condiviso|esclusivo|dei\\s+figli|del\\s+minore)",
+        "\\bmantenimento\\s+(?:dei\\s+figli|del\\s+figlio|del\\s+minore)",
+        "\\bresponsabilit[àa]\\s+genitoriale",
+        "\\bcollocament\\w*\\s+(?:del\\s+minore|dei\\s+figli)"
+      ]
+    },
+    {
+      "name": "procedure concorsuali",
+      "law": "d.lgs. 14/2019",
+      "family": "fallimentare",
+      "tags": [
+        "impresa",
+        "concorsuale",
+        "liquidazione"
+      ],
+      "patterns": [
+        "\\bliquidazione\\s+giudiziale",
+        "\\bconcordato\\s+preventivo",
+        "\\bcuratore\\b",
+        "\\bstato\\s+passivo",
+        "\\binsinuazione\\s+al\\s+passivo",
+        "\\brevocatoria\\s+fallimentare"
       ]
     }
   ]

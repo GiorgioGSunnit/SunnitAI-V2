@@ -475,7 +475,10 @@ def test_the_frame_as_the_fit_judgments_context_and_none_without_one():
     framed = ap.build_messages([norm], facts, "convenuto", context)
     assert framed[1].content == f"{context}\n\n{plain[1].content}" and framed[0].content == plain[0].content
     assert ap.build_messages([norm], facts, "convenuto", "")[1].content == plain[1].content
-    assert cf.fit_context(None) == "" and cf.fit_context(_read(DEBTOR, "{}")) == ""
+    assert cf.fit_context(None) == ""
+    empty = cf.fit_context(_read(DEBTOR, "{}"))         # v79.17.0: an empty reply still derives the pretesa from the
+    assert empty.startswith(cf.config()["fit_context"]["title"]) and "Pretesa (dedotta" in empty   # text's last request
+    assert "Addebito o domanda" not in empty and "Cliente:" not in empty
     sent = []
     ap.judge([norm], facts, "convenuto", call=lambda m, k: sent.append(m[1].content) or '{"giudizi": []}',
              frame_context=context)

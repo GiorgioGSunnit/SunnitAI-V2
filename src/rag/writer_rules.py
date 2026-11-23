@@ -132,6 +132,20 @@ QUESITO_INSTRUCTION = ("SEZIONE: {question} Rispondi a questa domanda, in uno-tr
 REASK_RULE = (" Usa SOLO le AFFERMAZIONI DI DIRITTO VERIFICATE e gli ARTICOLI DEL QUESITO riportati sotto: nessun'altra "
               "regola di diritto. Se non bastano, scrivi che il materiale non consente di rispondere.")
 
+# v79.17.0 (item 4, my draft): prose from the verified material only -- §4 per article, the Q&A and the re-ask cite the
+# material's ids inline ([A1385cc.1], [S3]); the code renders them; a sentence citing anything else is removed
+VERIFIED_NORMS_INSTRUCTION = (
+    "SEZIONE: Norme applicate ai fatti. Per ciascuna norma di NORME NELL'ORDINE DEI PARAGRAFI, nell'ordine, un paragrafo "
+    "aperto dal numero della norma tra parentesi quadre su una riga nuova («[1] ...», «[2] ...»), senza titolo e senza "
+    "riportare il testo della norma: come si applica ai fatti, elemento per elemento come gli ESITI li danno -- per un "
+    "elemento provato il fatto che lo prova (con il suo id), per uno da provare la prova da acquisire, per uno contestato "
+    "chi lo afferma e che cosa resta da provare, per uno escluso il fatto che lo esclude. Non ripetere né contraddire gli "
+    "esiti. Nessuna norma e nessun fatto fuori dal MATERIALE VERIFICATO.")
+VERIFIED_QUESITO_NOTE = (" Rispondi solo con il MATERIALE VERIFICATO: la pretesa, le linee e gli esiti, gli articoli e i "
+                         "fatti elencati. Se il materiale non basta, scrivi che il materiale non consente di rispondere.")
+VERIFIED_REWRITE_NOTE = (" La risposta precedente citava norme o fatti fuori dal materiale ed è stata scartata: riscrivila "
+                         "con il solo MATERIALE VERIFICATO, due-quattro frasi complete.")
+
 # v62 (my draft): §1 and the conclusions -- the charge or the claim is what the client contests, never asserted
 THREAT_ASSERT_RULE = (" Le norme {articles} sono l'addebito o la domanda contro {who}: presentale come da contestare, "
                       "mai come applicabili.")
