@@ -52,6 +52,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from . import user_limits
+
 logger = logging.getLogger(__name__)
 
 SENTENCES_MAX = 80
@@ -146,7 +148,7 @@ def _split(text: str) -> List[str]:
     for piece in [x for line in re.split(r"\n+", text or "") for x in split(line, _SENTENCE_RE)]:
         piece = " ".join(piece.split())
         if len(piece) >= 12 and re.search(r"[a-zà-ü]{3}", piece):
-            out.append(piece[:SENTENCE_CHARS])
+            out.append(piece[:user_limits.cap(SENTENCE_CHARS)])
     return out
 
 
@@ -161,19 +163,23 @@ def _asked(text: str, asks: Sequence[str]) -> bool:
 
 
 def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] = (),
-              asks: Sequence[str] = ()) -> List[Dict[str, str]]:
+              asks: Sequence[str] = (), facts: Sequence[Dict[str, Any]] = ()) -> List[Dict[str, str]]:
     """The case's sentences, then the client's precisazioni, then the system's assumptions, numbered S1… v60i (4): never
     the user's own message (fact_signals.case_only: the request over an upload, a question, «Sei l'avvocato di …», an
     instruction) -- no element is supported or contradicted by it. v75: nor the requested blocks (asks: the quesiti
-    intake listed) -- the ask is never a fact."""
+    intake listed) -- the ask is never a fact. facts (FACT_RECORD): the case's facts as the fact record holds them
+    (fact_record.facts), numbered in place of the rule's split -- uncut, with no ceiling on their number (their words
+    are the case's, already bounded); each keeps the record's id («fact») and, an allegation, its speaker
+    («said_by»). The cuts on the user's text read user_limits (USER_TEXT_UNCAPPED)."""
     from .fact_signals import case_only, user_message
     from . import text_hygiene
     out: List[Dict[str, str]] = []
     seen = set()
+    limit = float("inf") if facts else user_limits.most(SENTENCES_MAX)
 
     def add(text, source, how=None, origin=""):
         key = text.lower()
-        if key in seen or len(out) >= SENTENCES_MAX or source != "sistema" and _asked(text, asks):
+        if key in seen or len(out) >= limit or source != "sistema" and _asked(text, asks):
             return
         seen.add(key)
         out.append({"id": f"S{len(out) + 1}", "text": text, "source": source, "certainty": how or certainty(text),
@@ -181,7 +187,12 @@ def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] =
         act = text_hygiene.procedural_act(text) if source != "sistema" else ""
         if act:                         # v79.12.7 (item 7): the act it narrates (certain_fact reads it)
             out[-1]["act"] = act
-    for s in _split(case_only(case)):
+    for f in facts or []:           # FACT_RECORD: the record's facts, the case's own words, in the text's order
+        n = len(out)
+        add(f["text"], "caso", f.get("stato"), origin=case)
+        if len(out) > n:
+            out[-1].update({"fact": f.get("id"), **({"said_by": f["chi"]} if f.get("chi") else {})})
+    for s in [] if facts else _split(case_only(case)):
         add(s, "caso", origin=case)
     for a in additions or []:
         for s in _split(a):
@@ -2512,7 +2523,7 @@ def writer_block(records: Dict[str, Dict[str, Any]], refs: Sequence[Tuple[str, s
                 parts = [f"  - {next(elements, '')}"]
                 for key, word in (("supporting", "fatti dell'accusa" if penal else "fatti della controparte"),
                                   ("contradicting", "fatti a favore della difesa")):
-                    said = [f"«{text_of[x]['text'][:WRITER_SENTENCE_CHARS]}» ({text_of[x]['certainty']})"
+                    said = [f"«{text_of[x]['text'][:user_limits.cap(WRITER_SENTENCE_CHARS)]}» ({text_of[x]['certainty']})"
                             for x in r.get(key) or [] if x in text_of]
                     if said:
                         parts.append(f"{word}: " + "; ".join(said))
@@ -2531,7 +2542,7 @@ def writer_block(records: Dict[str, Dict[str, Any]], refs: Sequence[Tuple[str, s
             quiet = no_signal(r)        # v60r (6): no fact for or against it, none asked -- never narrated as missing
             parts = [f"  - {where}, {name}: {element_status(rec, r)}" + (f" ({NO_SIGNAL_NOTE})" if quiet else "")]
             for key, word in (("supporting", "a favore"), ("contradicting", "CONTRO")):
-                said = [f"«{text_of[x]['text'][:WRITER_SENTENCE_CHARS]}» ({text_of[x]['certainty']})"
+                said = [f"«{text_of[x]['text'][:user_limits.cap(WRITER_SENTENCE_CHARS)]}» ({text_of[x]['certainty']})"
                         for x in r.get(key) or [] if x in text_of]
                 if said:
                     parts.append(f"{word}: " + "; ".join(said))

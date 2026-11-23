@@ -97,6 +97,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Timeout
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import user_limits
 from .feature_flags import enabled as _flag_enabled
 
 logger = logging.getLogger(__name__)
@@ -813,7 +814,7 @@ def build_messages(text: str) -> List[Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
     body = str(text or "")
     cap = int(config().get("max_text_chars") or 40000)
-    if len(body) > cap:
+    if len(body) > user_limits.most(cap):
         logger.info("case_frame: the request cut at %d characters in the prompt (%d)", cap, len(body))
         body = body[:cap] + " […]"
     return [SystemMessage(content=prompt_system()), HumanMessage(content=f"TESTO DELLA RICHIESTA:\n{body}")]

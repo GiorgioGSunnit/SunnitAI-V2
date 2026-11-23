@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import feature_flags
+from . import feature_flags, user_limits
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ def fact_issues(case_text: str, frame: Optional[Dict[str, Any]], signals: Option
     """The institutions the decisive facts raise (clean), [] on any failure."""
     from . import defensive_generation as dg
     facts = fact_lines(frame, signals)
-    human = f"CASO:\n{case_text[:8000]}\n\nFATTI:\n" + ("\n".join(facts) or "(nessuno estratto: leggili dal caso)")
+    human = f"CASO:\n{case_text[:user_limits.cap(8000)]}\n\nFATTI:\n" + ("\n".join(facts) or "(nessuno estratto: leggili dal caso)")
     limit = cap(case_text, frame)
     t0 = time.time()
     try:

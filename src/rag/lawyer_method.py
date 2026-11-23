@@ -395,17 +395,18 @@ def facts_split(sentences: Sequence[Dict[str, Any]], records: Dict[str, Dict[str
     the narrative's sentences (narrative()) by their certainty; as missing, the elements «da provare» and the open
     questions linked to an element -- each naming the element id it would change; a missing fact with no element is
     left out (logged)."""
-    from . import issue_records
+    from . import issue_records, user_limits
     certi, ipotesi, excluded = [], [], []
+    chars = user_limits.most(FACT_CHARS)             # USER_TEXT_UNCAPPED: the user's sentences whole
     for s_ in sentences or []:
         if not narrative(s_, article_texts):
             if _plain(s_.get("text")) and s_.get("source") != "sistema":
                 excluded.append(_short(s_.get("text"), 80))
             continue
         if issue_records.stated_certain(s_):        # v79.8 (C1): as §4's «provato»; v79.12.7 (item 7): an act too
-            certi.append(_short(s_["text"]))
+            certi.append(_short(s_["text"], chars))
         else:
-            ipotesi.append({"text": _short(s_["text"]), "how": HOW.get(str(s_.get("certainty") or ""), "ipotesi")})
+            ipotesi.append({"text": _short(s_["text"], chars), "how": HOW.get(str(s_.get("certainty") or ""), "ipotesi")})
     by_question: Dict[str, List[Tuple[str, Dict[str, Any], Dict[str, Any]]]] = {}
     mancanti, seen = [], set()
     for label, rec in (records or {}).items():

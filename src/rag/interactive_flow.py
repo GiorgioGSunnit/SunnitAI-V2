@@ -1592,8 +1592,9 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
                  ) -> Dict[str, Any]:
     """Step 1: the analysis object, as a new state (TOPICS_OFFERED is set by round1). v79.14.0: frame -- the request's
     case frame (CASE_FRAME): its institution the first read's first (frame_institution), its client the read's."""
-    from . import case_read, defensive_generation as dg, render_computed, stage_meter
+    from . import case_read, defensive_generation as dg, fact_record, render_computed, stage_meter
     t0 = time.time()
+    record = fact_record.start(dg._case_text(text, request))    # FACT_RECORD: beside round 1 too; None when off
     pending = case_read.start(text, request, lang) if case_first_enabled() else None     # v60 (A): beside the rest
     framed_client = str((((frame or {}).get("frame") or {}).get("cliente") or {}).get("nome") or "")
     if pending is not None and frame_institution(frame):
@@ -1651,6 +1652,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
     state = {
         "schema": SCHEMA, "version": 0, "state": "", "created": _now().isoformat(), "lang": lang,
         "text": text, "request": request, "additions": [],
+        "fact_record": record.result() if record is not None else None,    # FACT_RECORD: the main query's facts
         "analysis": _jsonable({**{k: v for k, v in analysis.items() if k != "topics"},
                                CASE_KEY: dg._case_text(text, request)}),
         "topics": _jsonable(found["topics"]), "others": _jsonable(found.get("others") or []),
@@ -3204,7 +3206,7 @@ def round2(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
 def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
     """v60f: the case's numbered sentences with their certainty (issue_records.sentences): the message, the client's
     precisazioni, and the system's assumptions (an assumed client, the facts' deduced fields)."""
-    from . import defensive_generation as dg, issue_records
+    from . import defensive_generation as dg, fact_record, issue_records
     assumed = []
     client = state.get("client") or {}
     if client.get("how") == "assunta" and client.get("name"):
@@ -3218,7 +3220,7 @@ def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
     asks = [str(b.get("subject") or "") for b in (state.get("intake") or {}).get("requested_blocks") or []
             if b.get("kind") == "quesito"]                  # v75: the ask is never a fact
     sents = issue_records.sentences(dg._case_text(state.get("text") or "", state.get("request") or ""),
-                                    state.get("additions") or [], assumed[:10], asks)
+                                    state.get("additions") or [], assumed[:10], asks, fact_record.facts(state))
     mark_sides(sents, state)
     return sents
 
@@ -3241,6 +3243,14 @@ def attributed_to(sentence: str, names: Sequence[str]) -> str:
     return ""
 
 
+def said_by_party(sentence: Dict[str, Any], names: Sequence[str]) -> str:
+    """FACT_RECORD: the party of the case the fact record names as an allegation's speaker («said_by»), "" when it
+    names none of them."""
+    from . import case_read
+    who = str(sentence.get("said_by") or "")
+    return next((str(n) for n in names or () if n and case_read.same_party(n, who)), "") if who else ""
+
+
 def mark_sides(sents: Sequence[Dict[str, Any]], state: Dict[str, Any]) -> None:
     """In place: each attributed sentence's speaker ("by") and side ("side": the counterparty's when the speaker is a
     party other than the client -- client_of: settled, else the extraction's; unknown client: no side). v79.14.3 (item
@@ -3249,7 +3259,8 @@ def mark_sides(sents: Sequence[Dict[str, Any]], state: Dict[str, Any]) -> None:
     from . import issue_records
     names, client = party_names_of(state), _low(client_of(state))
     for s in sents:
-        by = attributed_to(s.get("text") or "", names) if s.get("certainty") == issue_records.ALLEGATO else ""
+        by = (attributed_to(s.get("text") or "", names) or said_by_party(s, names)) \
+            if s.get("certainty") == issue_records.ALLEGATO else ""
         s["by"] = by
         mine = bool(client) and (_low(by) == client or _low(by) in client or client in _low(by))
         s["side"] = issue_records.COUNTERPARTY if by and client and not mine else ("cliente" if by and mine else "")
@@ -3359,7 +3370,7 @@ def alleging_party(sentence: Dict[str, Any], state: Dict[str, Any], names: Seque
     held = case_frame.held(state)
     listed = list(names) + [str(p.get("nome")) for p in (case_frame._frame(held).get("parti") or [] if held else [])
                             if isinstance(p, dict) and p.get("nome")]
-    who = speaker_phrase(str(sentence.get("text") or ""), listed)
+    who = speaker_phrase(str(sentence.get("text") or ""), listed) or str(sentence.get("said_by") or "")
     if not who:
         return ""
     low = _low(who)

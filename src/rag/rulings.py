@@ -40,7 +40,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import feature_flags
+from . import feature_flags, user_limits
 
 logger = logging.getLogger(__name__)
 
@@ -1138,7 +1138,7 @@ def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: 
 
 
 def link_material(short: Sequence[Dict[str, Any]], case: str = "") -> str:
-    parts = [f"CASO (per orientarti, non per scegliere le frasi):\n{_plain(case)[:1500]}"] if case else []
+    parts = [f"CASO (per orientarti, non per scegliere le frasi):\n{_plain(case)[:user_limits.cap(1500)]}"] if case else []
     for i, r in enumerate(short, 1):
         r["_pid"] = f"P{i}"
         els = "\n".join(f"  [{e['id']}] {_plain(e.get('text'))[:200]}" for e in r["elements"])

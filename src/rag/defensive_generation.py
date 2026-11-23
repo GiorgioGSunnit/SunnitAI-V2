@@ -27,6 +27,7 @@ from .llm_reply import salvage_json
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import exception_data, vlog
 from .stage_meter import mark as _mark      # v60: named sub-steps of round 1's collection (no-op without a meter)
+from . import user_limits
 
 
 def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
@@ -1009,7 +1010,7 @@ _ALL_CODE_PREFIXES = ["Codice Civile", "Codice di procedura civile", "Codice Pen
 def _case_text(facts: str, request: str = "") -> str:
     """The case as the model reads it: the user's request (when the case is an
     uploaded document) and the text, cut to _FACTS_CHARS with a visible mark."""
-    text = facts if len(facts) <= _FACTS_CHARS else facts[:_FACTS_CHARS] + "\n[... documento troncato ...]"
+    text = facts if len(facts) <= user_limits.most(_FACTS_CHARS) else facts[:_FACTS_CHARS] + "\n[... documento troncato ...]"
     return (f"RICHIESTA DELL'UTENTE: {request}\n\nDOCUMENTO CARICATO:\n{text}" if request else text)
 
 
@@ -1943,7 +1944,7 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
     t0 = time.time()
     try:
         chosen = _chat_json([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
-                            HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
+                            HumanMessage(content=f"CASO:\n{facts[:user_limits.cap(6000)]}\n\nARTICOLI CANDIDATI:\n{listing}")],
                            max_tokens=200, temperature=0)
     except Exception as exc:
         _log_exception("_choose_articles", exc)
@@ -3773,7 +3774,7 @@ def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
 
 
 def _fusion_distill_bullets(case_text: str) -> List[Dict[str, str]]:
-    parsed = _chat_json([SystemMessage(content=_FUSION_DISTILL_SYSTEM), HumanMessage(content=case_text[:6000])],
+    parsed = _chat_json([SystemMessage(content=_FUSION_DISTILL_SYSTEM), HumanMessage(content=case_text[:user_limits.cap(6000)])],
                         max_tokens=1200, temperature=0)
     if not isinstance(parsed, list):
         return []
@@ -4543,7 +4544,7 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
     a verdict (kept). None if every batch fails. CHECK_GRADED_ENABLED has its own: _graded_verdicts."""
     if not texts:
         return {}
-    case = _case_text(facts, request)[:2000]
+    case = _case_text(facts, request)[:user_limits.cap(2000)]
     labels = list(texts)
     batches = [{label: texts[label] for label in labels[i:i + _APPLICABILITY_BATCH]}
                for i in range(0, len(labels), _APPLICABILITY_BATCH)]
@@ -5453,11 +5454,11 @@ def _graded_case(facts: str, request: str, analysis: Optional[Dict[str, Any]],
     """The case for the graded check: its text, then its questions, central issues and issues -- or, given
     the numbered issues (GRADER_EVIDENCE_ENABLED, _graded_issues), those."""
     if issues:
-        return (_case_text(facts, request)[:2000] + "\n\nQuestioni del caso:\n"
+        return (_case_text(facts, request)[:user_limits.cap(2000)] + "\n\nQuestioni del caso:\n"
                 + "\n".join(f"Q{i}. {issue}" for i, issue in enumerate(issues, 1)))
     analysis = analysis or {}
     frame = analysis.get("frame") or {}
-    parts = [_case_text(facts, request)[:2000]]
+    parts = [_case_text(facts, request)[:user_limits.cap(2000)]]
     tasks = [t for t in frame.get("tasks") or [] if t]
     central = [c.get("nome") for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict) and c.get("nome")]
     issues = list(dict.fromkeys(str(q.get("titolo")).strip() for q in analysis.get("questioni") or []
@@ -5650,7 +5651,7 @@ def _stance_party(analysis: Dict[str, Any]) -> str:
 def _opposing_arguments(facts: str, request: str, analysis: Dict[str, Any], section: str) -> List[Dict[str, str]]:
     """Section 3's arguments that favour the other side; [] on any failure."""
     tasks = "\n".join(f"- {t}" for t in ((analysis.get("frame") or {}).get("tasks") or []))
-    human = (f"CASO:\n{_case_text(facts, request)[:4000]}\n\n"
+    human = (f"CASO:\n{_case_text(facts, request)[:user_limits.cap(4000)]}\n\n"
              + (f"QUESITI:\n{tasks}\n\n" if tasks else "")
              + f"PARTE ASSISTITA: {_stance_party(analysis)}\n\nSEZIONE 3 DELLA BOZZA:\n{section[:6000]}")
     t0 = time.time()

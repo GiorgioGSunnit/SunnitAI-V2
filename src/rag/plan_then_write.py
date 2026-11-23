@@ -53,7 +53,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import last_reply
-from . import defensive_generation as dg
+from . import defensive_generation as dg, user_limits
 from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, render_computed, repetition_guard, role_fit, rule_quote, section_fit
 from .verbose_logger import exception_data
 
@@ -1300,7 +1300,7 @@ def _patch_answers(plan: Dict[str, Any], questions: List[str], facts: str, reque
         [f"Parte assistita: {plan.get('parte_assistita') or '-'}", f"Questione centrale: {plan.get('questione_centrale') or '-'}"]
         + [f"{k}. {q['titolo']} (norme: {', '.join(f'art. {n} {c}' for n, c in q['norme']) or '-'}): {q['argomento']}"
            for k, q in enumerate(plan["questioni"], 1)])
-    human = (f"CASO:\n{dg._case_text(facts, request)[:6000]}\n\nPIANO:\n{brief}\n\nQUESITI:\n"
+    human = (f"CASO:\n{dg._case_text(facts, request)[:user_limits.cap(6000)]}\n\nPIANO:\n{brief}\n\nQUESITI:\n"
              + "\n".join(f"{k}. {q}" for k, q in enumerate(questions, 1)))
     added: List[Dict[str, str]] = []
     try:
@@ -1433,7 +1433,7 @@ def _patch_opposing(plan: Dict[str, Any], opposing: List[Dict[str, str]], facts:
         [f"Parte assistita: {plan.get('parte_assistita') or '-'}", f"Questione centrale: {plan.get('questione_centrale') or '-'}"]
         + [f"{k}. {q['titolo']}: {q.get('argomento') or '-'} (obiezione: {q.get('obiezione') or '-'}; replica: "
            f"{q.get('replica') or '-'})" for k, q in enumerate(issues, 1)])
-    human = (f"CASO:\n{dg._case_text(facts, request)[:6000]}\n\nPIANO:\n{brief}\n\nARGOMENTI:\n"
+    human = (f"CASO:\n{dg._case_text(facts, request)[:user_limits.cap(6000)]}\n\nPIANO:\n{brief}\n\nARGOMENTI:\n"
              + "\n".join(f"{k}. {o['argomento']}: {o.get('perche') or ''}" for k, o in enumerate(opposing, 1)))
     placed: List[Dict[str, Any]] = []
     try:

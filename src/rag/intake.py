@@ -39,6 +39,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from . import user_limits
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -445,7 +446,7 @@ def quesiti(message: str) -> List[Tuple[int, str]]:
         for pos, text in items:
             text = _flat(text).strip(" ;,").rstrip(".").strip()
             if len(text.split()) >= 2:
-                out.append((pos, text[:QUESITO_CHARS]))
+                out.append((pos, text[:user_limits.cap(QUESITO_CHARS)]))
     return out
 
 
@@ -476,7 +477,7 @@ def questions(message: str) -> List[str]:
             task = task_question(text)
             if task:
                 out.append(task)
-    return list(dict.fromkeys(x[:QUESITO_CHARS] for x in out))
+    return list(dict.fromkeys(x[:user_limits.cap(QUESITO_CHARS)] for x in out))
 
 
 # v79.10.2 (B2): a question written as a task addressed to the lawyer -- the second person's imperative («illustra»,
@@ -574,7 +575,7 @@ def question_sentences(message: str) -> List[Tuple[int, str]]:
         at = pos + len(sentence) if pos >= 0 else at
         text = _flat(sentence).strip()
         if text.endswith("?") and len(text.split()) >= 2:
-            out.append((max(pos, 0), text[:QUESITO_CHARS]))
+            out.append((max(pos, 0), text[:user_limits.cap(QUESITO_CHARS)]))
     return out if len(out) >= QUESTIONS_MIN else []
 # v68: a single question that still asks for the case's analysis -- a course of action («come impugnare il
 # licenziamento?», «come ottengo l'affidamento?», «come contestarlo?», «cosa può eccepire?») or the qualification of the
