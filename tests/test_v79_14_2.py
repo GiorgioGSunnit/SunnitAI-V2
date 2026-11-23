@@ -121,8 +121,9 @@ def test_an_unverified_no_keeps_the_norm_and_is_counted_as_an_id_failure(perche,
 def test_a_no_citing_a_fact_but_adding_a_rule_is_still_discarded():
     res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3): la norma "
                                                           "vale solo per i contratti scritti.", cf=["S3"]))
-    assert not rec["verified"] and rec["added_content"] and not rec["ids_failed"]
-    assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_no_unverified_ids"] == 0
+    # v79.16.1 (item 2): ids only -- a «no» that cites its fact is verified, its perché logged
+    assert rec["verified"] and not rec["added_content"] and not rec["ids_failed"]
+    assert res["counters"]["fit_added_content"] == 0 and res["counters"]["fit_no_verified"] == 1
 
 
 def test_a_si_citing_no_period_of_the_article_stays_unverified():
@@ -134,6 +135,9 @@ def test_a_si_citing_no_period_of_the_article_stays_unverified():
     assert not rec["verified"] and rec["reason"] == "cita_norma: periodo non dell'articolo: S1"
     res, rec = _judge(TRUFFA, _item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi "
                                                       "o raggiri».", cn=["A640cp.1"]))
+    assert not rec["verified"] and rec["reason"] == "cita_fatti mancante"      # v79.16.1 (item 2): a «si» cites facts
+    res, rec = _judge(TRUFFA, _item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi "
+                                                      "o raggiri».", cf=["S1"], cn=["A640cp.1"]))
     assert rec["verified"] and res["counters"]["fit_si"] == 1 and res["counters"]["fit_no_verified"] == 0
     assert rec["passage"] == ART_640
 
@@ -145,8 +149,8 @@ def test_a_si_citing_no_period_of_the_article_stays_unverified():
 ])
 def test_a_no_whose_words_are_the_articles_uncited_not_the_facts_is_discarded(perche):
     res, rec = _judge(CONTRATTO, _item("1439 c.c.", "no", perche, cf=["S3"]))
-    assert not rec["verified"] and rec["added_content"] and not rec["ids_failed"], rec["reason"]
-    assert res["counters"]["fit_no_verified"] == 0 and ap.effects(res, [])["removed"] == []
+    assert rec["verified"] and not rec["added_content"], rec["reason"]      # v79.16.1 (item 2): the words never read
+    assert res["counters"]["fit_no_verified"] == 1 and [e["article"] for e in ap.effects(res, [])["removed"]] == ["1439 c.c."]
     # the article's words with their period cited may carry the «no»; the rubrica's word may be said
     rec = _judge(CONTRATTO, _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3), non "
                                                      "«annullamento del contratto».", cf=["S3"], cn=["A1439cc.1"]))[1]
@@ -212,7 +216,7 @@ def test_a_verified_no_removes_the_norm_logs_the_removal_and_counts_it(monkeypat
     state = _flow_state(CASE_TEXT, sents, records)
     rows = [_row("640", "c.p.", ART_640, "Truffa"), _row("1439", "c.c.", ART_1439, "Dolo")]
     reply = {"giudizi": [_item("640 c.p.", "si", "Bruno Gelso ha venduto a Carla Tasso un orologio (S1): «con artifizi o "
-                                                 "raggiri».", cn=["A640cp.1"]),
+                                                 "raggiri».", cf=["S1"], cn=["A640cp.1"]),
                          _item("1439 c.c.", "no", "«Il pubblico ministero procede per truffa» (S3).", cf=["S3"])]}
     monkeypatch.setattr(ap, "_default_call", lambda m, k: json.dumps(reply, ensure_ascii=False))
     removed = flow.applicability_fit(state, IMPUTATO, rows, set(), [])

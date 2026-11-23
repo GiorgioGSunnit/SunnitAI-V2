@@ -32,7 +32,9 @@ LINE = T._line("640 c.p.", T.E640[0], "Tesi.", ["S5"], ["A640cp.1"])
 
 def _with_sentence(text, frame=T.PENAL_FRAME):
     sents = T._sents(T.PENAL_SENTENCES, sistema=(9,))
-    sents[0] = {**sents[0], "text": text}
+    # v79.16.1 (item 4): the sentence under test keeps a lemma of the element it is cited for («artifizi»), so the
+    # provenance rules, not the pertinence one, decide these cases
+    sents[0] = {**sents[0], "text": f"{text} Gli artifizi sono il punto."}
     return A.make_input(frame, T.PENAL_NORMS, sents, [], client="Paolo Sarti", client_roles=["imputato", "indagato"])
 
 

@@ -59,18 +59,20 @@ COLPITI_FACT = ["S1"]       # FACTS_RISSA's S1
     ("«Tizio e Caio, due persone» (S1): la rissa richiede più di due persone.", None),
 ])
 def test_rissa_no_on_an_unstated_count_is_rejected_and_counted(perche, cn):
+    # v79.16.1 (item 2): the perché is logged, never verified -- a «no» that cites its fact is verified whatever
+    # count or rule its words add (79.13's content check discarded true verdicts for a word)
     rec = _v(RISSA, FACTS_RISSA, "no", perche, cf=COLPITI_FACT, cn=cn)
-    assert not rec["verified"] and rec["added_content"], rec["reason"]
+    assert rec["verified"] and not rec["added_content"], rec["reason"]
     res = ap.judge([RISSA], FACTS_RISSA, "imputato", call=lambda m, k: _reply(_item("588 c.p.", "no", perche,
                                                                                      cf=COLPITI_FACT, cn=cn)))
-    assert res["counters"]["fit_no"] == 0 and res["counters"]["fit_added_content"] == 1
-    assert ap.effects(res, [])["removed"] == []
+    assert res["counters"]["fit_no"] == 1 and res["counters"]["fit_added_content"] == 0
+    assert [e["article"] for e in ap.effects(res, [])["removed"]] == ["588 c.p."]
 
 
 def test_646_only_restriction_not_in_the_passage_is_rejected():
     rec = _v(APPROPRIAZIONE, FACTS_ACCONTO, "no", "La norma si applica solo al denaro altrui, non al «prezzo dei "
                                                   "lavori» (S1).", cf=ACCONTO_FACT, cn=["A646cp.1"])
-    assert not rec["verified"] and rec["added_content"] and "solo" in rec["reason"]
+    assert rec["verified"] and not rec["added_content"]       # v79.16.1 (item 2): ids only
 
 
 def test_a_no_citing_no_fact_or_an_unknown_fact_is_rejected():
@@ -113,12 +115,11 @@ def test_a_changed_number_or_short_word_in_the_quote_is_not_the_text(norm, facts
     # no longer matches quotes -- its printed passage is the cited period's own text, never the model's quote
     assert not ap.passage_found(norm["text"], quote)
     rec = _v(norm, facts, "si", f"Beta trattiene l'acconto (S2), Tizio e Caio (S1): «{quote}».", cn=cn)
-    assert not rec["verified"] and rec["added_content"]       # (the facts are another case's: their words unground)
-    rec = _v(norm, facts, "si", f"«{quote}» (S1).", cn=cn)
+    assert not rec["verified"] and rec["reason"] == "cita_fatti mancante"     # v79.16.1 (item 2): a «si» cites facts
+    rec = _v(norm, facts, "si", f"«{quote}» (S1).", cf=["S1"], cn=cn)
     assert quote not in rec["passage"] and rec["passage"] == next(
         p["text"] for p in ap.article_ids(norm["article"], norm["text"]) if p["id"] == cn[0])
-    if any(ch.isdigit() for ch in quote):                       # a changed number: never verified
-        assert not rec["verified"] and rec["added_content"]
+    assert rec["verified"] and not rec["added_content"]       # the quote's words are never read: the period's text prints
 
 
 def test_the_text_as_quoted_is_still_found():
@@ -134,7 +135,7 @@ def test_a_quote_cut_after_a_negation_is_not_the_text():
     assert not ap.passage_found(MUTUO["text"], "adempie l'obbligo del pagamento")
     assert ap.passage_found(MUTUO["text"], "non adempie l'obbligo del pagamento")
     rec = _v(MUTUO, FACTS_MUTUO, "no", "Caio (S2) «adempie l'obbligo del pagamento».", cf=["S2"])
-    assert not rec["verified"] and rec["added_content"]       # v79.15.0 (item 3): the article's words, its period uncited
+    assert rec["verified"] and not rec["added_content"]       # v79.16.1 (item 2): a «no» with its fact: verified
     art = "1. Non è punibile chi ha commesso alcuno dei fatti previsti a danno del coniuge."      # invented text
     assert not ap.passage_found(art, "è punibile chi ha commesso alcuno dei fatti")
     assert not ap.passage_found(art, "punibile chi ha commesso")
@@ -145,7 +146,7 @@ def test_a_quote_cut_after_a_negation_is_not_the_text():
 def test_a_perche_contradicting_the_fact_it_names_is_rejected():
     # v79.14.2 (A, review): a fact quote of two content words at least, the rest on the facts' words
     rec = _v(APPROPRIAZIONE, FACTS_ACCONTO, "no", "Il cliente non ha versato «a Beta 3.000 euro» (S1).", cf=["S1"])
-    assert not rec["verified"] and rec["reason"] == "contraddice il fatto nominato: versato"
+    assert rec["verified"] and rec["reason"] == ""            # v79.16.1 (item 2): the perché's polarity is not read
     assert ap.contradicted("Caio ha restituito la somma (S2).", ["Caio non ha restituito la somma alla scadenza."]) \
         == ["restituito"]
     assert ap.contradicted("Caio non ha restituito la somma (S2).", ["Caio non ha restituito la somma."]) == []
@@ -159,14 +160,14 @@ def test_a_condition_smuggling_a_count_is_rejected_and_counted():
             "588 c.p.", "dipende", "Tizio e Caio si sono colpiti (S1): «Chiunque partecipa a una rissa».",
             condizione=cond, cf=COLPITI_FACT, cn=["A588cp.1"])))
         rec = res["judgments"][0]
-        assert not rec["verified"] and rec["added_content"] and "condizione" in rec["reason"], cond
-        assert res["counters"]["fit_added_content"] == 1 and res["counters"]["fit_dipende"] == 0
+        assert rec["verified"] and rec["condizione"] == cond, cond     # v79.16.1 (item 2): recorded, not verified
+        assert res["counters"]["fit_added_content"] == 0 and res["counters"]["fit_dipende"] == 1
 
 
 def test_another_codes_article_with_the_same_number_is_added_content():
     other = _v(APPROPRIAZIONE, FACTS_ACCONTO, "no", "Si applica invece l'art. 646 c.c. al denaro «sul prezzo dei "
                                                     "lavori» (S1).", cf=ACCONTO_FACT)
-    assert not other["verified"] and other["added_content"] and "646" in other["reason"]
+    assert other["verified"] and not other["added_content"]        # v79.16.1 (item 2): the perché's words never read
     own = _v(MUTUO, FACTS_MUTUO, "no", "L'art. 1819 cod. civ. non si applica: il prestito è «da restituire in "
                                        "un'unica soluzione» (S1), non «rateale».", cf=LOAN_FACT)
     assert own["verified"], own["reason"]
@@ -179,10 +180,10 @@ def test_auxiliaries_and_plain_words_are_no_added_content():
              LOAN_FACT, ["A1819cc.1"]),
             (MUTUO, FACTS_MUTUO, "dipende", "Il prestito (S1) è da restituire in un'unica soluzione: dipende dalla "
                                             "«restituzione rateale».", "Tizio e Caio avevano convenuto una restituzione "
-                                                                       "rateale?", LOAN_FACT, None),
+                                                                       "rateale?", LOAN_FACT, ["A1819cc.1"]),  # v79.16.1
             (APPROPRIAZIONE, FACTS_ACCONTO, "si", "Beta trattiene l'acconto (S2) che il cliente aveva versato (S1): «si "
-                                                  "appropria il denaro o la cosa mobile altrui».", "", None,
-             ["A646cp.1"]),
+                                                  "appropria il denaro o la cosa mobile altrui».", "", ["S1", "S2"],
+             ["A646cp.1"]),                     # v79.16.1 (item 2): a «si» cites its facts
             (RISSA, FACTS_RISSA, "dipende", "Caio sostiene una ferita (S2): conta se taluno «riporta lesione personale».",
              "Caio ha riportato una lesione personale?", FERITA_FACT, ["A588cp.2"])):
         rec = _v(norm, facts, fit, perche, cond, cf, cn)
@@ -314,7 +315,7 @@ def test_a_removal_on_facts_since_changed_is_judged_again(monkeypatch):
     seen: list = []
     F._model(monkeypatch, _item("1819 c.c.", "si", "Le parti hanno poi convenuto la restituzione rateale (S3): «è stata "
                                                    "convenuta la restituzione rateale».", ambito="rimedio",
-                                cn=["A1819cc.1"]), seen=seen)
+                                cf=["S3"], cn=["A1819cc.1"]), seen=seen)     # v79.16.1 (item 2): a «si» cites its facts
     dead: set = set()
     flow.applicability_fit(state, F.CONVENUTO, got["state"].get("rows") or [
         F._row("1813", "c.c.", F.ART_1813, "Nozione"), F._row("1819", "c.c.", F.ART_1819, "Restituzione rateale")],

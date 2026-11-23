@@ -32,7 +32,7 @@ CLIENT = "Dario Melis"
 PROCURA = "Secondo la Procura, Dario Melis ha trattenuto 4.000 euro degli incassi per procurarsi un profitto"
 SOCIETA = "La società sostiene che Dario Melis si è appropriato del denaro della cassa"
 TEXT = ("Assisto Dario Melis, indagato per appropriazione indebita. Dario Melis lavorava come cassiere presso la "
-        f"società Ferramenta Lunardi e custodiva la cassa del negozio. {PROCURA}. {SOCIETA}. Dario Melis nega di aver "
+        f"società Ferramenta Lunardi e aveva il possesso della cassa del negozio. {PROCURA}. {SOCIETA}. Dario Melis nega di aver "
         "trattenuto il denaro. Il pubblico ministero procede per appropriazione indebita ai sensi dell'art. 646 c.p. e "
         "le indagini preliminari sono in corso. Quali rischi corre Dario Melis?")
 ART_62BIS = ("Il giudice, indipendentemente dalle circostanze previste nell'articolo 62, può prendere in considerazione "
@@ -67,9 +67,9 @@ def fit_reply(messages, kwargs):
     human = messages[-1].content
     cash = _sid(human, "Dario Melis lavorava")
     items = {"646 c.p.": F._fit_item("646 c.p.", "si", f"Dario Melis custodiva la cassa del negozio ({cash}): «di cui "
-                                                     "abbia, a qualsiasi titolo, il possesso»."),
+                                                     "abbia, a qualsiasi titolo, il possesso».", cf=[cash]),  # v79.16.1
              "62-bis c.p.": F._fit_item("62-bis c.p.", "si", "Il giudice «può prendere in considerazione altre "
-                                                           "circostanze diverse».", ambito="circostanza")}
+                                                           "circostanze diverse».", ambito="circostanza", cf=[cash])}
     labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
     return json.dumps({"giudizi": [items[x] for x in labels if x in items]}, ensure_ascii=False)
 

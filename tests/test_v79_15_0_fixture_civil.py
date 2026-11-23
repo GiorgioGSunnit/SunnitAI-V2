@@ -82,11 +82,11 @@ def fit_reply(messages, kwargs):
     paid = _sid(human, "Anna Corsi ha versato")
     signed = _sid(human, "Anna Corsi ha firmato")
     items = {"1385 c.c.": F._fit_item("1385 c.c.", "si", f"Anna Corsi ha versato la somma ({paid}): «a titolo di "
-                                                       "caparra, una somma di danaro»."),
+                                                       "caparra, una somma di danaro».", cf=[paid]),   # v79.16.1
              "1453 c.c.": F._fit_item("1453 c.c.", "si", f"Il contratto ({signed}) è un contratto «con prestazioni "
-                                                       "corrispettive».", ambito="rimedio"),
+                                                       "corrispettive».", ambito="rimedio", cf=[signed]),
              "2043 c.c.": F._fit_item("2043 c.c.", "si", "«Qualunque fatto doloso o colposo» obbliga «a risarcire il "
-                                                       "danno».", ambito="rimedio")}
+                                                       "danno».", ambito="rimedio", cf=[signed])}
     labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
     return json.dumps({"giudizi": [items[x] for x in labels if x in items]}, ensure_ascii=False)
 

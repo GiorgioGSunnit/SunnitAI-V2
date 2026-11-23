@@ -92,15 +92,15 @@ def _fit_reply(messages, kwargs):
     sale = next(i for t, i in sid.items() if t.startswith("Bruno Gelso ha venduto"))
     harm = next(i for t, i in sid.items() if t.startswith("Carla Tasso chiede"))
     items = {"640 c.p.": _fit_item("640 c.p.", "si", f"Bruno Gelso ha venduto a Carla Tasso un orologio ({sale}): «con "
-                                                     "artifizi o raggiri»."),
+                                                     "artifizi o raggiri».", cf=[sale]),       # v79.16.1 (item 2)
              "646 c.p.": _fit_item("646 c.p.", "si", f"Bruno Gelso ha venduto a Carla Tasso un orologio ({sale}): "
-                                                     "«si appropria il denaro o la cosa mobile altrui»."),
+                                                     "«si appropria il denaro o la cosa mobile altrui».", cf=[sale]),
              "1439 c.c.": _fit_item("1439 c.c.", "no", f"«Il pubblico ministero procede per truffa» ({pm}).",
                                     ambito="rimedio", cf=[pm]),        # v79.15.0 (item 3): the fact by its id
              "2043 c.c.": _fit_item("2043 c.c.", "si", f"Carla Tasso chiede a Bruno Gelso il risarcimento del danno "
                                                        f"({harm}): "
                                                        "«obbliga colui che ha commesso il fatto a risarcire il danno».",
-                                    ambito="rimedio")}
+                                    ambito="rimedio", cf=[harm])}
     labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
     return json.dumps({"giudizi": [items[x] for x in labels if x in items]}, ensure_ascii=False)
 

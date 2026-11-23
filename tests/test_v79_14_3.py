@@ -196,18 +196,22 @@ def test_a_dipende_must_cite_an_existing_fact_and_a_si_its_article_period():
     assert not rec["verified"] and rec["ids_failed"] and res["counters"]["fit_dipende"] == 0
     assert ap.effects(res, [])["open"] == []                           # unverified: the norm keeps its path
     res, rec = _judge(T._item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio (S1): «con artifizi o raggiri».",
-                              cn=["A640cp.1"]))
+                              cf=["S1"], cn=["A640cp.1"]))
     assert not rec["verified"]          # judged on 1439: 640's period is no period of 1439
     res = ap.judge([T.TRUFFA], T.FACTS, "imputato", call=lambda m, k: json.dumps(
         {"giudizi": [T._item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio (S1): «con artifizi o raggiri».",
                              cn=["A640cp.1"], cf=[])]}))
+    assert not res["judgments"][0]["verified"] and res["counters"]["fit_si"] == 0    # v79.16.1 (item 2): a «si» cites
+    res = ap.judge([T.TRUFFA], T.FACTS, "imputato", call=lambda m, k: json.dumps(   # its facts too
+        {"giudizi": [T._item("640 c.p.", "si", "Bruno Gelso ha venduto un orologio (S1): «con artifizi o raggiri».",
+                             cn=["A640cp.1"], cf=["S1"])]}))
     assert res["judgments"][0]["verified"] and res["counters"]["fit_si"] == 1
 
 
 def test_the_prompt_schema_carries_the_id_fields_and_its_hash_is_new():
     text = ap.prompt_system()
     assert '"fatto_citato"' not in text and '"cita_fatti"' in text and '"cita_norma"' in text
-    assert ap.prompt_hash() == "5b06ff45a132"
+    assert ap.prompt_hash() == "677c05970c73"       # v79.16.1 (item 2): a «si» cites its facts too
 
 
 # --- 3. an empty plan with a verified charge -----------------------------------------------------------------------------

@@ -190,7 +190,11 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "analysis_fallback_skipped_reason",
             # v79.16.0 (A2): a «provato» decided by the record's stato / chi, or by the text heuristic (no record);
             # the measurement line_table_weaker: the subordinate line holds more provato elements than the leading one
-            "analysis_provenance_from_record", "analysis_provenance_fallback", "line_table_weaker")
+            "analysis_provenance_from_record", "analysis_provenance_fallback", "line_table_weaker",
+            # v79.16.1: the line's fit tier (item 3), a procedural element refused as the element in play (item 3),
+            # a «provato» / «escluso» with no pertinent cited fact (item 4)
+            "line_from_fit_si", "line_from_fit_dipende", "line_from_unverified", "analysis_line_procedural_rejected",
+            "analysis_provato_no_pertinence")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
@@ -664,7 +668,10 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
             elements.append(el)
         out_norms.append({"article": label, "rubrica": _flat(n.get("rubrica")), "text": str(n.get("text") or ""),
                           "elements": elements, "periods": periods,
-                          "remedy": is_remedy(label, contractual) and not (charge and same_article(label, charge))})
+                          "remedy": is_remedy(label, contractual) and not (charge and same_article(label, charge)),
+                          # v79.16.1 (item 3): the fit's verdict (si | no | dipende | None: no judgment), verified or not
+                          "fit": _canon_fit_value(n.get("fit")), "fit_verified": bool(n.get("fit_verified")),
+                          "fit_perche": _flat(n.get("fit_perche"))})
     sents = [{"id": str(s.get("id")), "text": _flat(s.get("text")), "certainty": s.get("certainty"),
               "source": s.get("source"), "alleged_by": str(s.get("alleged_by") or ""),
               "fact": str(s.get("fact") or ""), "said_by": str(s.get("said_by") or "")}   # v79.16.0 (A2): the record's
@@ -692,6 +699,8 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
     rows = flow._restored_rows(state.get("rows") or [])
     have = {flow._key(r["_article"]): r for r in rows if r.get("_article")}
     removed = flow.fit_removed_keys(state)
+    fits = {flow._key(flow._parse_label(str(j.get("article")))): j
+            for j in ((state.get("applicability") or {}).get("judgments") or []) if isinstance(j, dict) and j.get("article")}
     norms = []
     for label, rec in (state.get("records") or {}).items():
         if not isinstance(rec, dict) or rec.get("dropped"):
@@ -704,6 +713,9 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         n["elements"] = [dict(e, **{k: kinds[str(e.get("id"))][k] for k in ("schema_kind", "special")
                                     if (kinds.get(str(e.get("id"))) or {}).get(k)})
                          for e in n.get("elements") or []]          # v79.15.1: the schema's own element kind
+        j = fits.get(flow._key(flow._parse_label(label)))             # v79.16.1 (item 3): the fit's verdict
+        if j is not None:
+            n["fit"], n["fit_verified"], n["fit_perche"] = j.get("fit"), bool(j.get("verified")), j.get("perche") or ""
         norms.append(n)
     sents = state.get("sentences") or flow.case_sentences(state)
     questions = list(frame.get("quesiti") or []) or flow.asked_questions(state)
@@ -761,7 +773,11 @@ def _frame_lines(f: Dict[str, Any]) -> List[str]:
 def _norm_block(n: Dict[str, Any]) -> str:
     labels = config()["labels"]
     head = [f"ARTICOLO: {n['article']}" + (f" ({config()['remedy_mark']})" if n.get("remedy") else ""),
-            f"Rubrica: {n.get('rubrica') or labels['none']}", f"{labels['elements']}:"]
+            f"Rubrica: {n.get('rubrica') or labels['none']}"]
+    if n.get("fit"):                    # v79.16.1 (item 3): «fit: si — <perché>» (verificato: the ids held)
+        head.append(f"fit: {n['fit']}" + (" (verificato)" if n.get("fit_verified") else "")
+                    + (f" — {n['fit_perche']}" if n.get("fit_perche") else ""))
+    head.append(f"{labels['elements']}:")
     head += [f"- [{e['eid']}] {e['testo']}" for e in n.get("elements") or []] or [f"- {labels['none']}"]
     head.append(f"{labels['periods']}:")
     body = "\n".join(f"[{p['id']}] {p['text']}" for p in n.get("periods") or [])
@@ -792,9 +808,68 @@ def build_messages(inp: Dict[str, Any]) -> List[Any]:
 
 def line_elements(norm: Dict[str, Any], inp: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.15.1: the elements a line on this norm may be played on -- every one; for a claimant, the constitutive
-    ones only (exception_of false)."""
-    els = list(norm.get("elements") or [])
+    ones only (exception_of false). v79.16.1 (item 3): never a procedural, temporal or remedial element
+    (procedural_element)."""
+    els = [e for e in norm.get("elements") or [] if not procedural_element(e)]
     return [e for e in els if not e.get("eccezione")] if inp.get("claimant") else els
+
+
+# --- v79.16.1 (item 3): the fit's verdicts feed the step -----------------------------------------------------------------
+FIT_SI, FIT_NO, FIT_DIPENDE = "si", "no", "dipende"
+TIER_SI, TIER_DIPENDE, TIER_UNVERIFIED, TIER_ALL = "fit_si", "fit_dipende", "unverified", "all"
+PROCEDURAL_KINDS = ("termine", "competenza", "onere_della_prova", "procedibilità", "quantificazione")
+
+
+def _canon_fit_value(value: Any) -> Optional[str]:
+    v = str(value or "").strip().lower()
+    return v if v in (FIT_SI, FIT_NO, FIT_DIPENDE) else None
+
+
+def line_tier(inp: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """(the tier, the articles a line may stand on): the verified «si» first; none, the verified «dipende»; none, the
+    unverified «si» / «dipende»; never a «no». With no fit judgment on any norm (the fit off): every non-remedy norm
+    (TIER_ALL)."""
+    norms = [n for n in inp.get("norms") or [] if not n.get("remedy")]
+    if not any(n.get("fit") for n in inp.get("norms") or []):
+        return TIER_ALL, [n["article"] for n in norms]
+    for tier, keep in ((TIER_SI, lambda n: n.get("fit") == FIT_SI and n.get("fit_verified")),
+                       (TIER_DIPENDE, lambda n: n.get("fit") == FIT_DIPENDE and n.get("fit_verified")),
+                       (TIER_UNVERIFIED, lambda n: n.get("fit") in (FIT_SI, FIT_DIPENDE) and not n.get("fit_verified"))):
+        mine = [n["article"] for n in norms if keep(n)]
+        if mine:
+            return tier, mine
+    return TIER_UNVERIFIED, []
+
+
+def line_fit_counter(norm: Dict[str, Any]) -> Optional[str]:
+    """The counter a verified line on this norm adds to: line_from_fit_si / line_from_fit_dipende (verified), else
+    line_from_unverified; None with no fit judgment."""
+    fit = norm.get("fit")
+    if not fit:
+        return None
+    if norm.get("fit_verified") and fit == FIT_SI:
+        return "line_from_fit_si"
+    if norm.get("fit_verified") and fit == FIT_DIPENDE:
+        return "line_from_fit_dipende"
+    return "line_from_unverified"
+
+
+@lru_cache(maxsize=1)
+def _procedural_re() -> "re.Pattern[str]":
+    pats = [str(x) for x in config().get("procedural_patterns") or [] if str(x or "").strip()]
+    return re.compile("|".join(f"(?:{p})" for p in pats) if pats else r"(?!x)x", re.IGNORECASE)
+
+
+def procedural_element(element: Dict[str, Any]) -> bool:
+    """An element whose text is procedural, temporal or remedial -- never the element in play: by the schema's own kind
+    when it has one (PROCEDURAL_KINDS), else by the data's pattern list («procedural_patterns», data/analysis_step.json)
+    on the element's text alone."""
+    kind = _flat(element.get("schema_kind")).lower()
+    if kind:
+        return kind in PROCEDURAL_KINDS
+    if _flat(element.get("special")).lower() == "procedibilità":
+        return True
+    return bool(_procedural_re().search(_flat(element.get("testo") or element.get("elemento"))))
 
 
 def allowed_text(inp: Dict[str, Any]) -> str:
@@ -802,9 +877,10 @@ def allowed_text(inp: Dict[str, Any]) -> str:
     set (the frame's own charge kept: make_input never marks it), each with at least one usable element -- one per
     line: «- A<token> (art. <label>): <E-ids>» (a claimant's: the constitutive E-ids only)."""
     rows = []
+    _tier, allowed = line_tier(inp)         # v79.16.1 (item 3): the fit tier a line may stand on
     for n in inp.get("norms") or []:
         ids = [e["eid"] for e in line_elements(n, inp)]
-        if n.get("remedy") or not ids:
+        if n.get("remedy") or not ids or n["article"] not in allowed:
             continue
         rows.append(f"- A{_ap().article_token(n['article'])} (art. {n['article']}): {', '.join(ids)}")
     return "\n".join(rows) or f"- {config()['labels']['none']}"
@@ -1109,6 +1185,50 @@ def record_provenance(ids: Sequence[str], m: Dict[str, Any], inp: Dict[str, Any]
     return next((w for w in alleged if w), ""), True
 
 
+# --- v79.16.1 (item 4): a «provato» / «escluso» needs a pertinent fact -----------------------------------------------------
+_LEMMA_RE = re.compile(r"[a-zà-ü]{4,}")
+STEM_CHARS = 5
+
+
+def _lemmas(text: Any, stop: set) -> set:
+    """The content lemmas of a text: its words of four letters or more, accents folded, not in `stop`, each cut to
+    STEM_CHARS (simple stemming: «appropriato» / «appropria» -> «appro»)."""
+    return {w[:STEM_CHARS] for w in _LEMMA_RE.findall(fold(text)) if w not in stop and w[:STEM_CHARS] not in stop}
+
+
+@lru_cache(maxsize=1)
+def _stopwords() -> frozenset:
+    words = set()
+    try:
+        cfg = _ap().config()
+        for key in ("connective_words", "question_words", "generic_norm_words", "omittable_words", "article_words"):
+            words |= {fold(x) for x in cfg.get(key) or []}
+    except Exception:           # noqa: BLE001 -- the data's own list only
+        pass
+    words |= {fold(x) for x in config().get("pertinence_stopwords") or []}
+    return frozenset(words | {w[:STEM_CHARS] for w in words})
+
+
+def party_words(inp: Dict[str, Any]) -> set:
+    """The parties' names' words (the frame's parti, the client), folded: never a content lemma."""
+    out = set()
+    names = [inp.get("client") or ""] + [p.get("nome") or "" for p in (inp.get("frame") or {}).get("parti") or []
+                                         if isinstance(p, dict)]
+    for name in names:
+        out |= {w for w in _LEMMA_RE.findall(fold(name))}
+    return out | {w[:STEM_CHARS] for w in out}
+
+
+def pertinent(element: Dict[str, Any], sentences: Sequence[Dict[str, Any]], inp: Dict[str, Any]) -> bool:
+    """At least one cited sentence shares a content lemma with the element's text (the schema text), stopwords and the
+    parties' names out. An element with no content lemma of its own: pertinent (nothing to compare)."""
+    stop = set(_stopwords()) | party_words(inp)
+    want = _lemmas(element.get("testo") or element.get("elemento"), stop)
+    if not want:
+        return True
+    return any(want & _lemmas(s.get("text"), stop) for s in sentences or [])
+
+
 def reported_by(sentence: Dict[str, Any], inp: Dict[str, Any], parte: str = "") -> str:
     """The party other than the client whose reported assertion the sentence is, "" when it is not one: parte (the
     reply's parte_che_afferma) naming a non-client party; 79.14.3's mark (alleged_by: interactive_flow.alleging_party);
@@ -1170,12 +1290,24 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
     norm = m["norms"][label]
     if norm.get("remedy"):
         return None, f"art. {label}: rimedio o parte generale, mai una linea"
+    tier, allowed = line_tier(inp)          # v79.16.1 (item 3): never a «no»; never an unverified norm while a
+    if norm.get("fit") == FIT_NO:           # verified «si» (or «dipende») exists
+        return None, f"art. {label}: fit «no», mai una linea"
+    if tier != TIER_ALL and label not in allowed:
+        return None, (f"art. {label}: fit {norm.get('fit') or 'non giudicato'}"
+                      f"{' non verificato' if norm.get('fit') else ''}, mentre esiste un fit verificato: ammessi "
+                      + (", ".join(f"art. {x}" for x in allowed) or config()["labels"]["none"]))
     element = element_of(norm, raw.get("elemento_in_gioco"), m["labels"])
     if element is None:
         counters["analysis_bad_eid"] += 1
         said = _flat(raw.get("elemento_in_gioco"))[:40] or "(vuoto)"
         return None, (f"art. {label}: elemento_in_gioco «{said}» non è l'id di un elemento dello schema di questo "
                       f"articolo (A{_ap().article_token(label)}:E1…E{len(norm.get('elements') or [])})")
+    if procedural_element(element):         # v79.16.1 (item 3): a procedural / temporal / remedial clause never in play
+        counters["analysis_line_procedural_rejected"] += 1
+        ok = ", ".join(e["eid"] for e in line_elements(norm, inp)) or config()["labels"]["none"]
+        return None, (f"art. {label}: elemento_in_gioco {element['eid']} «{_flat(element.get('testo'))[:60]}» è una "
+                      f"clausola processuale, temporale o rimediale, non un elemento della fattispecie: ammessi {ok}")
     if inp.get("claimant") and element.get("eccezione"):
         counters["analysis_line_exception"] += 1
         ok = ", ".join(e["eid"] for e in line_elements(norm, inp)) or config()["labels"]["none"]
@@ -1197,7 +1329,8 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
     if not tesi:
         return None, f"art. {label}: tesi mancante"
     return {"articolo": label, "elemento_in_gioco": element["testo"], "elemento_id": element["id"],
-            "eid": element["eid"], "tesi": tesi, "cita_fatti": sf, "cita_norma": sn, "stato": VERIFIED}, ""
+            "eid": element["eid"], "tesi": tesi, "cita_fatti": sf, "cita_norma": sn, "stato": VERIFIED,
+            "fit": norm.get("fit"), "fit_verified": bool(norm.get("fit_verified"))}, ""
 
 
 def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
@@ -1289,6 +1422,13 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
     if parte:
         out["parte_che_afferma"] = parte
     out["fatti"] = [str(m["sents"][i].get("fact")) for i in ids if m["sents"][i].get("fact")]   # v79.16.0 (A4)
+
+    def not_pertinent() -> Dict[str, Any]:  # v79.16.1 (item 4): a «provato» / «escluso» with no cited fact sharing a
+        counters["analysis_provato_no_pertinence"] += 1      # content lemma with the element: da_provare, logged
+        out["esito"] = DA_PROVARE
+        out["non_pertinente"] = {"esito_modello": esito, "fatti": [_flat(m["sents"][i].get("text"))[:160] for i in ids]}
+        out["declassato"] = "nessun fatto citato pertinente"
+        return out
     if esito == PROVATO:
         if not ids:
             counters["analysis_provato_unsupported"] += 1
@@ -1301,6 +1441,8 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
                 out["esito"], out["parte_che_afferma"] = CONTESTATO, (who or None)
                 out["declassato"] = "provato su un'allegazione"
                 return out
+            if not pertinent(element, [m["sents"][i] for i in ids], inp):
+                return not_pertinent()
             out["esito"] = PROVATO
             return out
         counters["analysis_provenance_fallback"] += 1
@@ -1310,11 +1452,15 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
             out["esito"], out["parte_che_afferma"] = CONTESTATO, by[0]
             out["declassato"] = "provato su un'allegazione"
             return out
+        if not pertinent(element, [m["sents"][i] for i in ids], inp):
+            return not_pertinent()
         out["esito"] = PROVATO
         return out
     if esito in (ESCLUSO, CONTESTATO) and not ids:
         counters["analysis_escluso_unsupported" if esito == ESCLUSO else "analysis_contestato_unsupported"] += 1
         return out
+    if esito == ESCLUSO and not pertinent(element, [m["sents"][i] for i in ids], inp):
+        return not_pertinent()
     if esito == CONTESTATO and not parte:
         who = [w for w in (str(m["sents"][i].get("said_by") or "") or reported_by(m["sents"][i], inp) for i in ids)
                if w]                            # v79.16.0 (A2): the record's speaker first
@@ -1613,6 +1759,11 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
     principale, subordinata = (code_tesi(x, elements, inp, m) for x in (principale, subordinata))   # v79.15.3 (1)
     objections = objections_of((principale, subordinata), elements, checked.get("raised") or [], inp, m)
     counters["line_table_weaker"] = line_table_weaker(principale, subordinata, elements)    # v79.16.0 (measurement)
+    for x in (principale, subordinata):     # v79.16.1 (item 3): the fit tier each final verified line stands on
+        if x and x.get("stato") == VERIFIED and x.get("articolo") in m["norms"]:
+            fit_counter = line_fit_counter(m["norms"][x["articolo"]])
+            if fit_counter:
+                counters[fit_counter] += 1
     counters["objections_from_allegations"] = sum(1 for o in objections if o["fonte"] == "allegazione")
     counters["objections_from_exceptions"] = sum(1 for o in objections if o["fonte"] == "eccezione")
     return {"linea_principale": principale, "linea_subordinata": subordinata, "elementi": elements,
@@ -1709,7 +1860,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                 counters["analysis_reasked"] = 1
                 if second["status"] == OK:
                     again = verify(second["data"], inp)
-                    for k in ("analysis_line_rejected", "analysis_line_exception", "analysis_bad_eid"):
+                    for k in ("analysis_line_rejected", "analysis_line_exception", "analysis_bad_eid",
+                              "analysis_line_procedural_rejected"):          # v79.16.1 (item 3): the first reply's too
                         again["counters"][k] += checked["counters"][k]
                     again["raised"] = list(checked.get("raised") or []) + [
                         r for r in again.get("raised") or [] if r not in (checked.get("raised") or [])]
@@ -1746,6 +1898,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                            "side_why": inp.get("side_why") or "",
                            "tesi_modello": tesi_log(result["analysis"]),                 # v79.15.3 (item 1)
                            "facts_cited": facts_cited_log(result["analysis"]),           # v79.16.0 (A4): the F-ids
+                           "no_pertinence": no_pertinence_log(result["analysis"]),       # v79.16.1 (item 4)
+                           "line_tier": line_tier(inp)[0] if inp.get("norms") else "",   # v79.16.1 (item 3)
                            "exceptions": (result["analysis"] or {}).get("eccezioni") or [],
                            "objections": [{"fonte": o.get("fonte"), "sid": o.get("sid"), "parte": o.get("parte"),
                                            "eids": [e.get("eid") for e in o.get("elementi") or []] or [o.get("eid")]}
@@ -1808,6 +1962,17 @@ PROSE_COUNTERS = ("qa_sentences_replaced", "qa_sentences_dropped_dependent", "pr
                   "prose_unfitted_article_dropped", "objections_sentences_dropped")
 RENDER_COUNTERS = ("qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
                    "legacy_disagrees_esito") + PROSE_COUNTERS
+
+
+def no_pertinence_log(analysis: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.16.1 (item 4): the verdicts set «da_provare» for want of a pertinent fact -- the element and the facts."""
+    out = []
+    for label, els in ((analysis or {}).get("elementi") or {}).items():
+        for e in els:
+            if e.get("non_pertinente"):
+                out.append({"articolo": label, "eid": e.get("eid"), "elemento": _flat(e.get("elemento"))[:120],
+                            **e["non_pertinente"]})
+    return out
 
 
 def facts_cited_log(analysis: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, List[str]]]:

@@ -2195,17 +2195,32 @@ def question_retrieval_enabled() -> bool:
     return enabled(QUESTION_RETRIEVAL_FLAG)
 
 
-def quesito_queries(frame_quesiti: Optional[List[str]], text: str) -> List[str]:
-    """The questions searched: the frame's verified quesiti; none, the numbered questions of the user's text
-    (intake.question_items); each once, in order, blank ones out."""
+SOURCE_FRAME, SOURCE_ITEMS, SOURCE_QUESTIONS, SOURCE_NONE = "frame", "numbered_items", "questions", "none"
+
+
+def quesito_sources(frame_quesiti: Optional[List[str]], text: str) -> "tuple[List[str], str]":
+    """v79.16.1 (item 1): (the questions searched, their source) in this order -- the frame's verified quesiti
+    (SOURCE_FRAME); none, the numbered items of the user's text (intake.question_items, SOURCE_ITEMS); none, the
+    text's explicit questions (intake.questions: a sentence with «?», a request phrased as one, a task --
+    SOURCE_QUESTIONS: the server's cases whose questions sit inside the narrative, neither numbered nor verified by the
+    frame); none at all: ([], SOURCE_NONE). Each question once, in order, blank ones out."""
     from .. import intake
     asked = [str(q).strip() for q in (frame_quesiti or []) if str(q or "").strip()]
-    if not asked:
+    if asked:
+        return list(dict.fromkeys(asked)), SOURCE_FRAME
+    for source, reader in ((SOURCE_ITEMS, intake.question_items), (SOURCE_QUESTIONS, intake.questions)):
         try:
-            asked = [q for q in intake.question_items(text or "") if q.strip()]
-        except Exception:               # noqa: BLE001 -- no question read: no query
+            asked = [str(q).strip() for q in reader(text or "") if str(q or "").strip()]
+        except Exception:               # noqa: BLE001 -- a reader failing: the next source
             asked = []
-    return list(dict.fromkeys(asked))
+        if asked:
+            return list(dict.fromkeys(asked)), source
+    return [], SOURCE_NONE
+
+
+def quesito_queries(frame_quesiti: Optional[List[str]], text: str) -> List[str]:
+    """The questions searched (quesito_sources), texts only."""
+    return quesito_sources(frame_quesiti, text)[0]
 
 
 def _label_of(row: Dict[str, Any]) -> str:

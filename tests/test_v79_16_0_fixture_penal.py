@@ -26,7 +26,7 @@ import test_v79_14_2_fixture as F  # noqa: E402
 CASE_ID = "v79160_penal"
 CLIENT = "Marta Serra"
 FACT_PAID = "Marta Serra ha pagato a Luca Prandi 3.000 euro con un bonifico per un motorino annunciato online"
-MARTA = "Secondo Marta Serra, Luca Prandi non ha mai consegnato il motorino"
+MARTA = "Secondo Marta Serra, Luca Prandi ha usato artifizi e raggiri e non ha mai consegnato il motorino"
 PRANDI = "Luca Prandi sostiene di aver spedito il motorino con un corriere"
 QUERELA = "Marta Serra ha sporto querela per truffa"
 QUESTION = "Marta Serra può costituirsi parte civile? A quali condizioni? Con quali limiti?"
@@ -92,9 +92,9 @@ def fit_reply(messages, kwargs):
     human = messages[-1].content
     paid = _sid(human, "Marta Serra ha pagato")
     items = {"640 c.p.": F._fit_item("640 c.p.", "si", f"Marta Serra ha pagato ({paid}): «procura a sé o ad altri un "
-                                                     "ingiusto profitto con altrui danno»."),
+                                                     "ingiusto profitto con altrui danno».", cf=[paid]),
              "74 c.p.p.": F._fit_item("74 c.p.p.", "si", "«Può essere esercitata nel processo penale dal soggetto al "
-                                                       "quale il reato ha recato danno».", ambito="rimedio")}
+                                                       "quale il reato ha recato danno».", ambito="rimedio", cf=[paid])}
     labels = [line.split(": ", 1)[1] for line in human.splitlines() if line.startswith("ARTICOLO: ")]
     return json.dumps({"giudizi": [items[x] for x in labels if x in items]}, ensure_ascii=False)
 

@@ -779,6 +779,17 @@ def cap_anchors(rows: Sequence[Dict[str, Any]], rule_topics: Sequence[Dict[str, 
     return list(dict.fromkeys(out))
 
 
+def quesiti_gate_log(data: Dict[str, Any]) -> None:
+    """v79.16.1 (item 1): the «retrieval_quesiti» line under its plain name (not the flow's «interactive_» prefix, the
+    name 79.16.0's line had and the server grep missed): the gate's decision on every case -- queries, source (frame |
+    numbered_items | questions | none) and, with no search, the reason (flag_off | not_case_first | no_questions)."""
+    try:
+        from .verbose_logger import vlog
+        vlog("retrieval_quesiti", data)
+    except Exception:           # noqa: BLE001 -- logging never fails a turn
+        logger.debug("retrieval_quesiti not logged", exc_info=True)
+
+
 def _label_of_row(row: Dict[str, Any]) -> str:
     ref = row.get("_article") or ()
     return f"{ref[0]} {ref[1]}" if len(ref) >= 2 else ""
@@ -909,20 +920,29 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 article_rows = list(article_rows) + added
                 search_log = {**search_log, "new": len(added), "s": round(time.time() - t_search, 1)}
         from .nodes import retrieval as retrieval_module
-        if case_first and retrieval_module.question_retrieval_enabled():     # v79.16.0 (B): the questions searched
-            stage_meter.mark("quesiti_search")
+        if retrieval_module.question_retrieval_enabled():     # v79.16.0 (B): the questions searched
             queries = list(analysis.get("quesiti_queries") or [])
-            q_rows, q_log = _isolated("quesiti_search", lambda: retrieval_module.retrieve_for_quesiti(
-                session, documents, queries, store=store_), ([], {"queries": len(queries), "per_quesito": []})) \
-                or ([], {"queries": len(queries), "per_quesito": []})
-            article_rows, q_added, q_labels = retrieval_module.merge_quesito_rows(article_rows, q_rows, _key)
-            if q_added:
-                _isolated("quesiti_texts", lambda: article_text.fill_texts(session, q_added, store_))
-            must += q_labels            # graded past the cap, as the first read's hits
-            q_log = {**q_log, "added": [_label_of_row(r) for r in q_added], "labels": q_labels,
-                     "by_quesito": retrieval_module.quesito_labels(article_rows)}
-            out["quesiti_retrieval"] = q_log
-            _log("retrieval_quesiti", q_log)
+            source = str(analysis.get("quesiti_source") or "")
+            if not case_first:          # v79.16.1 (item 1): the gate's decision logged on every case
+                quesiti_gate_log({"queries": len(queries), "source": source, "reason": "not_case_first"})
+            elif not queries:
+                q_log = {"queries": 0, "source": source, "reason": "no_questions", "per_quesito": [], "added": [],
+                         "labels": [], "by_quesito": {}}
+                out["quesiti_retrieval"] = q_log
+                quesiti_gate_log(q_log)
+            else:
+                stage_meter.mark("quesiti_search")
+                q_rows, q_log = _isolated("quesiti_search", lambda: retrieval_module.retrieve_for_quesiti(
+                    session, documents, queries, store=store_), ([], {"queries": len(queries), "per_quesito": []})) \
+                    or ([], {"queries": len(queries), "per_quesito": []})
+                article_rows, q_added, q_labels = retrieval_module.merge_quesito_rows(article_rows, q_rows, _key)
+                if q_added:
+                    _isolated("quesiti_texts", lambda: article_text.fill_texts(session, q_added, store_))
+                must += q_labels            # graded past the cap, as the first read's hits
+                q_log = {**q_log, "source": source, "reason": "", "added": [_label_of_row(r) for r in q_added],
+                         "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(article_rows)}
+                out["quesiti_retrieval"] = q_log
+                quesiti_gate_log(q_log)
         links = topic_step.GraphLinks(session, documents)
         anchor_keep: List[str] = []
         if case_first:          # v60n: the fired rules' and tables' anchors -- candidates, graded like any other
@@ -1625,8 +1645,12 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
         analysis = dg._analyse_case_for_pipeline(text, lang, request)
         from .nodes import retrieval as retrieval_module       # v79.16.0 (B): the questions searched too
         if retrieval_module.question_retrieval_enabled():
-            analysis["quesiti_queries"] = _isolated("quesiti_queries", lambda: retrieval_module.quesito_queries(
-                list(((frame or {}).get("frame") or {}).get("quesiti") or []), dg._case_text(text, request)), []) or []
+            got = _isolated("quesiti_queries", lambda: retrieval_module.quesito_sources(
+                list(((frame or {}).get("frame") or {}).get("quesiti") or []), dg._case_text(text, request)), None)
+            analysis["quesiti_queries"] = list(got[0]) if got else []
+            analysis["quesiti_source"] = got[1] if got else "error"       # v79.16.1 (item 1): frame | numbered_items
+        else:                           # v79.16.1 (item 1): the gate's decision on every case, never silent
+            quesiti_gate_log({"queries": 0, "source": "", "reason": "flag_off"})
         _isolated("relative_periods", lambda: relative_periods(analysis, text, request))      # v60g (6)
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
         found = _analysed_and_retrieved(text, request, lang, analysis, t0, meter, pending)
@@ -6428,7 +6452,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             records, offences, alternatives_done["fits"] if alternatives_done else None)
         if focus_log:
             _log("procedure_offences", focus_log)
-    facts_cp = procedural_facts.by_number(rows)
+    # v79.16.1 (item 5): the procedural facts read from every row of the answer (the charge article's among them,
+    # whichever topic lists it), not the chosen refs' rows alone -- 79.16.0 printed «non lette dal testo dell'articolo»
+    # for the charge when its row was not among the refs'
+    facts_cp = procedural_facts.by_number(list(all_rows) + [r for r in rows if r not in all_rows])
     offence_facts = {n: facts_cp[n] for n, _ in offences if n in facts_cp}
     if records:                 # v60h (1): each d'ufficio condition with its record status, the line's verdict
         offence_facts = {n: procedural_facts.with_statuses(f, (records.get(f"{n} c.p.") or {}).get("procedibilita") or [])
@@ -6664,7 +6691,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                     # v79.16.0: the Q&A re-ask and the insufficient line (C2), the sentences dropped as already
                     # printed (D3), the rulings outside the lines' and the quesiti's articles (D3)
                     "qa_answer_reasked", "qa_answer_insufficient", "sections_dedup_dropped",
-                    "rulings_off_line_dropped"):
+                    "rulings_off_line_dropped", "sections_rito_blocks_dropped"):      # v79.16.1 (item 5)
             counters[key] = sum(int(c.get(key) or 0) for c in composed)
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
         # v79.10.6 (E1): §1's summary too, wherever a thesis text could replace the charge
@@ -7985,7 +8012,8 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         "facts": known, "protected": protected, "charged": fit_charged(state, posture), "facts_sig": sig,
         "timing": result.get("timing") or {},
         "judgments": [{k: r.get(k) for k in ("article", "fit", "verified", "reason", "added_content", "passage",
-                                             "perche", "condizione", "ambito")} for r in result.get("judgments") or []
+                                             "perche", "condizione", "ambito", "cita_norma", "cita_fatti")}
+                      for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
                       if r]}
     counters = state.setdefault("block_counters", {})
     counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})

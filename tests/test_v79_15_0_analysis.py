@@ -112,13 +112,13 @@ def _sents(texts, sistema=()):
 
 PENAL_SENTENCES = [
     "Paolo Sarti ha venduto online a Giulia Neri una bicicletta.",                                  # S1
-    "Giulia Neri ha pagato 800 euro con un bonifico.",                                               # S2
-    "Secondo la Procura, Paolo Sarti ha usato un falso annuncio per indurre in errore Giulia Neri.",   # S3
+    "Giulia Neri ha pagato 800 euro con un bonifico, con suo danno e profitto di Paolo Sarti, che non era insolvente.",   # S2
+    "Secondo la Procura, Paolo Sarti ha usato artifizi e un falso annuncio per indurre in errore Giulia Neri.",   # S3
     "Giulia Neri afferma che la bicicletta non è mai arrivata.",                                     # S4
-    "Paolo Sarti nega di aver mai pubblicato un falso annuncio.",                                    # S5
+    "Paolo Sarti nega di aver mai usato artifizi o raggiri, indotto in errore Giulia Neri o pubblicato un falso annuncio, né tratto alcun profitto.",   # S5
     "Il pubblico ministero procede per truffa ai sensi dell'art. 640 c.p.",                          # S6
-    "Paolo Sarti dichiara di aver incassato il bonifico di Giulia Neri.",                            # S7
-    "L'indagato dichiara di aver ricevuto il denaro.",                                               # S8
+    "Paolo Sarti dichiara di aver incassato il bonifico di Giulia Neri, traendone un profitto, senza artifizi né induzione in errore.",   # S7
+    "L'indagato dichiara di aver ricevuto il denaro senza indurre nessuno in errore.",               # S8
     "Parte assistita assunta: Paolo Sarti",                                                          # S9 (sistema)
 ]
 PENAL_FRAME = {
@@ -139,7 +139,7 @@ CIVIL_SENTENCES = [
     "Lucia Ferri ha firmato con Marco Vento un contratto preliminare di vendita di un appartamento.",   # S1
     "Lucia Ferri ha versato a Marco Vento 20.000 euro a titolo di caparra confirmatoria.",             # S2
     "Marco Vento sostiene di aver già restituito la caparra a Lucia Ferri.",                           # S3
-    "Marco Vento ha venduto l'appartamento a un terzo prima del rogito.",                              # S4
+    "Marco Vento, inadempiente, ha venduto l'appartamento a un terzo prima del rogito.",               # S4
     "Lucia Ferri dichiara di non aver mai ricevuto alcuna restituzione.",                              # S5
 ]
 CIVIL_FRAME = {
@@ -604,10 +604,14 @@ def _fit(item, norm=None, facts=None):
 def test_the_fit_si_cites_the_articles_periods_and_the_no_the_facts():
     base = {"articolo": "640 c.p.", "ambito": "fattispecie", "condizione": ""}
     res, rec = _fit(dict(base, fit="si", perche="Paolo Sarti ha venduto la bicicletta (S1) e ha usato un falso "
-                                                "annuncio (S3): artifizi o raggiri.", cita_norma=["A640cp.1"]))
+                                                "annuncio (S3): artifizi o raggiri.", cita_norma=["A640cp.1"],
+                         cita_fatti=["S1", "S3"]))              # v79.16.1 (item 2): a «si» cites its facts by id
     assert rec["verified"] and rec["passage"] == ART_640 and rec["facts"] == ["S1", "S3"]
-    res, rec = _fit(dict(base, fit="si", perche="Paolo Sarti ha venduto la bicicletta (S1).", cita_norma=["A646cp.1"]))
+    res, rec = _fit(dict(base, fit="si", perche="Paolo Sarti ha venduto la bicicletta (S1).", cita_norma=["A646cp.1"],
+                         cita_fatti=["S1"]))
     assert not rec["verified"] and res["counters"]["fit_unverified_ids"] == 1
+    res, rec = _fit(dict(base, fit="si", perche="Paolo Sarti ha venduto la bicicletta (S1).", cita_norma=["A640cp.1"]))
+    assert not rec["verified"] and rec["reason"] == "cita_fatti mancante"
     res, rec = _fit(dict(base, fit="no", perche="Giulia Neri ha pagato con un bonifico (S2).", cita_fatti=["S2"]))
     assert rec["verified"] and rec["fact_quotes"] == [PENAL_SENTENCES[1]] and rec["passage"] == ""
     res, rec = _fit(dict(base, fit="no", perche="Paolo Sarti è assistito (S9).", cita_fatti=["S9"]))
@@ -621,7 +625,7 @@ def test_no_string_matcher_is_left_in_the_fit():
                  "_rests_on_passage", "_comma_of"):
         assert not hasattr(ap, name), name
     assert not hasattr(flow, "fact_source")
-    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "5b06ff45a132"
+    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "677c05970c73"   # v79.16.1 (item 2)
 
 
 def test_the_frames_verified_charge_is_protected_from_a_fit_no(monkeypatch):

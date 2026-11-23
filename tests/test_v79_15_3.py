@@ -62,11 +62,11 @@ def test_the_prompt_is_unchanged():
 @pytest.mark.parametrize("esito,cf_,want", [
     ("da_provare", (), "L'accusa deve provare «con artifizi o raggiri» (art. 640 c.p.)"),
     ("contestato", ("S3",), "L'accusa deve provare «con artifizi o raggiri» (art. 640 c.p.)"),
-    ("escluso", ("S5",), "«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai pubblicato un falso "
-                         "annuncio»"),
+    ("escluso", ("S5",), "«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai usato artifizi o raggiri, "
+                         "indotto in errore Giulia Neri o pubblicato un falso annuncio, né tratto alcun profitto»"),
     # the brief gives no defence + provato template: the claimant's provato wording, the element proven as it is
     ("provato", ("S7",), "«con artifizi o raggiri» risulta provato: «Paolo Sarti dichiara di aver incassato il bonifico "
-                         "di Giulia Neri»"),
+                         "di Giulia Neri, traendone un profitto, senza artifizi né induzione in errore»"),
 ])
 def test_the_defences_tesi_by_the_verified_esito(esito, cf_, want):
     inp = T._penal()
@@ -97,7 +97,7 @@ def test_a_provato_tesi_cites_only_the_sentences_no_other_party_asserts():
     line = A.analyse(inp, call=_Model(_penal_reply("provato", ("S3", "S7"))))["analysis"]["linea_principale"]
     assert line["esito_in_gioco"] == "provato"
     assert line["tesi"] == ("«con artifizi o raggiri» risulta provato: «Paolo Sarti dichiara di aver incassato il "
-                            "bonifico di Giulia Neri»")
+                            "bonifico di Giulia Neri, traendone un profitto, senza artifizi né induzione in errore»")
     assert "Secondo la Procura" not in line["tesi"]
 
 
@@ -108,7 +108,8 @@ def test_with_no_verified_role_the_neutral_wording():
     assert inp["side"] == A.SIDE_NEUTRAL and not inp["claimant"]
     for esito, cf_, want in (("da_provare", (), "«con artifizi o raggiri» è da provare"),
                              ("escluso", ("S5",), "«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai "
-                                                  "pubblicato un falso annuncio»")):
+                                                  "usato artifizi o raggiri, indotto in errore Giulia Neri o pubblicato "
+                                                  "un falso annuncio, né tratto alcun profitto»")):
         line = A.analyse(inp, call=_Model(_penal_reply(esito, cf_)))["analysis"]["linea_principale"]
         assert line["tesi"] == want
 
@@ -119,7 +120,8 @@ def test_the_subordinate_line_is_built_on_its_own_articles_verdict():
                    elementi=[_el("640 c.p.", T.E640[0], "da_provare"), _el("641 c.p.", T.E641[0], "escluso", ["S2"])])
     an = A.analyse(T._penal(), call=_Model(reply))["analysis"]
     assert an["linea_subordinata"]["tesi"] == ("«dissimulando il proprio stato d'insolvenza» è escluso: «Giulia Neri ha "
-                                               "pagato 800 euro con un bonifico»")
+                                               "pagato 800 euro con un bonifico, con suo danno e profitto di Paolo Sarti, "
+                                               "che non era insolvente»")
     assert an["linea_subordinata"]["tesi_modello"] == "Seconda."
 
 
@@ -265,11 +267,12 @@ def test_the_defences_objection_on_two_elements_with_the_clients_sentence():
                              _el("640 c.p.", T.E640[1], "contestato", ["S3"])])
     inp = T._penal()
     items = A.objection_items(A.view(A.analyse(inp, call=_Model(reply)), inp))
-    assert items == [{"obiezione": "Secondo la Procura, Paolo Sarti ha usato un falso annuncio per indurre in errore "
-                                   "Giulia Neri",
+    assert items == [{"obiezione": "Secondo la Procura, Paolo Sarti ha usato artifizi e un falso annuncio per indurre in "
+                                   "errore Giulia Neri",
                       "risposta": "L'elemento «con artifizi o raggiri» (art. 640 c.p.) non è provato; l'elemento "
                                   "«inducendo taluno in errore» (art. 640 c.p.) non è provato: «Paolo Sarti nega di aver "
-                                  "mai pubblicato un falso annuncio».", "fonte": "allegazione"}]
+                                  "mai usato artifizi o raggiri, indotto in errore Giulia Neri o pubblicato un falso "
+                                  "annuncio, né tratto alcun profitto».", "fonte": "allegazione"}]
 
 
 def test_an_allegation_naming_no_speaker_is_attributed():
@@ -397,8 +400,8 @@ def test_review_an_escluso_tesi_never_quotes_the_procuras_allegation():
     assert only["esito_in_gioco"] == "escluso"
     assert "Secondo la Procura" not in only["tesi"]
     # the verdict cites only the Procura's sentence; the line cites S5 (the client's denial): the line's sentence
-    assert only["tesi"] == ("«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai pubblicato un falso "
-                            "annuncio»")
+    assert only["tesi"] == ("«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai usato artifizi o raggiri, "
+                            "indotto in errore Giulia Neri o pubblicato un falso annuncio, né tratto alcun profitto»")
     both = A.analyse(inp, call=_Model(_penal_reply("escluso", ("S3", "S5"))))["analysis"]["linea_principale"]
     assert both["tesi"] == only["tesi"]
 

@@ -497,6 +497,32 @@ remedies' articles (`rulings_view`, counter `rulings_off_line_dropped`); D4: no 
 (`remedy_prose_out`). Measurement only: `line_table_weaker` = 1 when the subordinate line holds more provato elements
 than the leading one.
 
+## 5j. v79.16.1 (24 Nov 2026): fit by ids only; fit verdicts feed the analysis; pertinence; the quesiti gate; §8 by rito
+
+No new flag. Under the existing ones: (1) `QUESTION_RETRIEVAL` -- the gate's decision is logged on every case under the
+plain event name `retrieval_quesiti` (79.16.0 wrote `interactive_retrieval_quesiti`, which a grep for the plain name
+missed): `queries`, `source` (frame | numbered_items | questions | none) and, with no search, `reason` (flag_off |
+not_case_first | no_questions); the sources in order are the frame's verified quesiti, the text's numbered items
+(`intake.question_items`), the text's explicit questions (`intake.questions` -- the server's cases whose questions sat
+inside the narrative), none. (2) `APPLICABILITY_FIT` -- a judgment is verified by ids only (`applicability.verify`): a «si»
+and a «dipende» cite the article's periods and the facts, a «no» the facts, every id existing; the perché, the ambito and
+the condizione are recorded and logged, never verified (the content-word, one-sentence, quantity and polarity checks are
+gone: they discarded true verdicts for a word). The prompt's schema asks a «si» for its facts too (prompt hash
+5b06ff45a132 → 677c05970c73). Counters `fit_si_verified`, `fit_dipende_verified` beside `fit_no_verified` and
+`fit_unverified_ids`; each stored judgment carries `cita_norma` / `cita_fatti`. (3) `ANALYSIS_STEP` -- each norm of the
+step's input carries its fit verdict, shown in the prompt's article block as «fit: si (verificato) — <perché>» (the system
+text unchanged, hash 472423ea32d3); a line stands only on the allowed tier (`analysis_step.line_tier`: the verified «si»,
+else the verified «dipende», else the unverified «si» / «dipende», never a «no»); counters `line_from_fit_si`,
+`line_from_fit_dipende`, `line_from_unverified`. A procedural, temporal or remedial element is never the element in play
+(`procedural_element`: the schema's kind, else `data/analysis_step.json` «procedural_patterns» on the element's text); a
+pick on one is refused and re-asked once with the allowed E-ids (`analysis_line_procedural_rejected`). (4) a «provato» or
+an «escluso» needs one cited fact sharing a content lemma with the element's text (`pertinent`: four-letter words cut to
+five characters, «pertinence_stopwords» and the parties' names out); none: «da_provare», logged in the step's line
+(`no_pertinence`) and counted (`analysis_provato_no_pertinence`); a «contestato» is unchanged. (5) §8's blocks are
+selected by the verified frame's rito (`lawyer_method.rito_blocks`: the civil blocks never in a penal opinion, the penal
+ones never in a civil or labour one, a «Termini» line by its code; counter `sections_rito_blocks_dropped`); the
+procedural facts of the charge article are read from every row of the answer, not the chosen refs' rows alone.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

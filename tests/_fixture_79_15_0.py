@@ -184,16 +184,17 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
         # real retrieve_for_quesiti / merge_quesito_rows, the rows fetched from the case's QUESITO_ARTICLES
         search = getattr(case, "quesito_search", None)
         if retrieval_module.question_retrieval_enabled() and search is not None:
-            queries = retrieval_module.quesito_queries(
+            queries, source = retrieval_module.quesito_sources(          # v79.16.1 (item 1): the source read too
                 list(((frame or {}).get("frame") or {}).get("quesiti") or []), dg._case_text(text, request))
-            analysis["quesiti_queries"] = queries
-            extra = {(n, c): row for (n, c, *_), row in zip(getattr(case, "QUESITO_ARTICLES", ()),
-                                                             rows_of(getattr(case, "QUESITO_ARTICLES", ())))}
+            analysis["quesiti_queries"], analysis["quesiti_source"] = queries, source
+            every = tuple(case.ARTICLES) + tuple(getattr(case, "QUESITO_ARTICLES", ()))   # the case's own rows too
+            extra = {(n, c): row for (n, c, *_), row in zip(every, rows_of(every))}
             found, quesiti_log = retrieval_module.retrieve_for_quesiti(
                 None, list(case.DOCUMENTS), queries, search=lambda own, q, index, k: search(q),
                 fetch=lambda own, docs, refs, store: [dict(extra[r]) for r in refs if r in extra])
             rows, added, q_labels = retrieval_module.merge_quesito_rows(rows, found, flow._key)
-            quesiti_log = {**quesiti_log, "added": [f"{r['_article'][0]} {r['_article'][1]}" for r in added],
+            quesiti_log = {**quesiti_log, "source": source, "reason": "" if queries else "no_questions",
+                           "added": [f"{r['_article'][0]} {r['_article'][1]}" for r in added],
                            "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(rows)}
             for x in q_labels:
                 if x not in topic["articles"]:

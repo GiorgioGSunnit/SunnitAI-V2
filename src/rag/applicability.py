@@ -99,7 +99,8 @@ logger = logging.getLogger(__name__)
 FLAG = "APPLICABILITY_FIT"
 DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
                          "applicability.json")
-COUNTERS = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content", "fit_skipped",
+COUNTERS = ("fit_si_verified", "fit_dipende_verified",         # v79.16.1 (item 2): the verified verdicts by value
+            "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content", "fit_skipped",
             "fit_calls", "fit_failed_calls", "fit_timeouts",
             "fit_no_verified",                                     # v79.14.2 (A)
             "fit_unverified_ids", "fit_no_unverified_ids")         # v79.15.0 (item 3)
@@ -520,6 +521,7 @@ def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], cas
     what the contest prints); rec["fact_quotes"]: the cited facts' text; rec["facts"]: the cited, then the named ids.
     case_text: unused (kept for the callers)."""
     rec = _record(norm, item if isinstance(item, dict) else None)
+    rec["articolo"] = rec["article"]            # v79.16.1 (item 2): the downstream key
     if not isinstance(item, dict):
         rec["reason"] = "giudizio non è un oggetto"
         return rec
@@ -532,13 +534,10 @@ def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], cas
     if fit is None:
         rec["reason"] = f"fit fuori schema: {item.get('fit')!r}"
         return rec
-    if ambito not in config()["ambiti"]:
-        rec["reason"] = f"ambito fuori schema: {item.get('ambito')!r}"
-        return rec
-    perche = rec["perche"].strip()
-    if not perche:
-        rec["reason"] = "perché mancante"
-        return rec
+    # v79.16.1 (item 2): verified by ids only -- «ambito» and «perche» are recorded and logged, never verified (the
+    # content-word checks on the perché, the one-sentence rule, the quantity and polarity checks, the condizione's
+    # grounding are gone: they discarded true judgments for a word -- «rifiuta», «beta»). A «si» and a «dipende» cite
+    # the article's periods (cita_norma) and the facts (cita_fatti), a «no» the facts; every id must exist.
     label = str(norm.get("article") or "")
     text = str(norm.get("text") or "")
     by_id = {str(f.get("id")): f for f in facts if isinstance(f, dict) and f.get("id")}
@@ -557,65 +556,25 @@ def verify(item: Any, norm: Dict[str, Any], facts: Sequence[Dict[str, Any]], cas
     if bad_n:
         rec["reason"], rec["ids_failed"] = f"cita_norma: periodo non dell'articolo: {', '.join(bad_n[:6])}", True
         return rec
-    if fit == SI and not cited_n:
+    if fit in (SI, DIPENDE) and not cited_n:
         rec["reason"], rec["ids_failed"] = "cita_norma mancante", True
         return rec
-    if fit in (NO, DIPENDE) and not cited_f:
+    if not cited_f:
         rec["reason"], rec["ids_failed"] = "cita_fatti mancante", True
         return rec
     passage = [periods[i]["text"] for i in cited_n]
     rec["passage"] = " … ".join(passage)
     rec["comma"] = periods[cited_n[0]]["comma"] if cited_n else ""
     rec["fact_quotes"] = [str(by_id[i].get("text") or "") for i in cited_f]
-    if _sentences(_strip_own_reference(_unquoted(perche), label)) > 1:     # «art. 1819 c.c. Il …»
-        rec["reason"] = "perché di più frasi"
-        return rec
-    named = fact_ids(perche, by_id)
-    unknown = [i for i in named if i not in by_id]
-    if unknown:
-        rec["reason"] = f"fatto inesistente: {', '.join(unknown)}"
-        return rec
-    rec["facts"] = list(dict.fromkeys(cited_f + named))
-    fact_texts = [str(by_id[i].get("text") or "") for i in rec["facts"]]
-    ground = " ".join(passage + fact_texts + [str(norm.get("rubrica") or ""), str(norm.get("note") or "")])
-    ids = by_id.keys() | set(named) | set(periods)
-    plain = _strip_ids(_strip_own_reference(perche, label), ids)
-    for pattern in config().get("quote_patterns") or []:            # a quote's words are words like any other
-        plain = re.sub(pattern, lambda m: f" {m.group(1)} ", plain)
-    extra = _ungrounded(plain, ground, _connectives())                          # (c)
-    if fit in (NO, DIPENDE):        # a count or a restriction only as the cited periods' own
-        have = set(_quantities(" ".join(passage)))
-        extra += [w for w in _quantities(plain) if w not in have and w not in extra]
-    if extra:
-        rec["added_content"] = True
-        rec["reason"] = f"contenuto non nei periodi citati, nei fatti o nella nota: {', '.join(extra[:6])}"
-        return rec
-    against = contradicted(plain, fact_texts)                                   # (c) the facts' polarity
-    if against:
-        rec["reason"] = f"contraddice il fatto nominato: {', '.join(against[:6])}"
-        return rec
-    if fit == DIPENDE:                                                          # (d), as 79.13
+    rec["facts"] = list(cited_f)
+    if fit == DIPENDE:
         cond = " ".join(str(item.get("condizione") or "").split())
         rec["condizione"] = cond
-        if not cond:
-            rec["reason"] = "dipende senza condizione"
-            return rec
-        if not cond.endswith("?"):
-            rec["reason"] = "condizione non è una domanda"
-            return rec
-        cond_ids = fact_ids(cond, by_id)
-        if [i for i in cond_ids if i not in by_id]:
-            rec["reason"] = f"condizione con fatto inesistente: {', '.join(i for i in cond_ids if i not in by_id)}"
-            return rec
-        cond_ground = " ".join([text] + [str(f.get("text") or "") for f in by_id.values()])
-        cond_words = _strip_ids(_strip_own_reference(cond, label), by_id.keys() | set(periods))
-        extra = _ungrounded(cond_words, cond_ground, _question_words())
-        extra += [w for w in _quantities(cond_words) if w not in _quantities(" ".join(passage)) and w not in extra]
-        if extra:
-            rec["added_content"] = True
-            rec["reason"] = f"condizione con contenuto non nel testo o nei fatti: {', '.join(extra[:6])}"
-            return rec
-        rec["touches"] = touches(cond, norm)                                    # (e)
+        if cond:
+            try:
+                rec["touches"] = touches(cond, norm)
+            except Exception:       # noqa: BLE001 -- the touches are context, never a verdict
+                pass
     rec["verified"] = True
     return rec
 
@@ -856,6 +815,8 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
         if rec["verified"]:
             counters[f"fit_{rec['fit']}"] += 1
             counters["fit_no_verified"] += int(rec["fit"] == NO)           # v79.14.2 (A)
+            counters["fit_si_verified"] += int(rec["fit"] == SI)           # v79.16.1 (item 2)
+            counters["fit_dipende_verified"] += int(rec["fit"] == DIPENDE)
         else:
             counters["fit_unverified"] += 1
             if rec["added_content"]:
@@ -903,7 +864,8 @@ FIT_PROSE_TITLE = "Norme di cui si contesta l'applicabilità ai fatti"     # v79
 FIT_OPEN_ROW = "dipende dalla risposta a: {question}"
 FIT_OPEN_WHY = "resta da provare: dipende dalla risposta a «{question}»"
 FIT_REMOVED_TRACE = "giudicato non applicabile ai fatti (giudizio di applicabilità)"   # the nightly's ranked trace
-FLOW_COUNTERS = ("fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
+FLOW_COUNTERS = ("fit_si_verified", "fit_dipende_verified",                   # v79.16.1 (item 2)
+                 "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
                  "fit_skipped", "fit_calls", "fit_failed_calls", "fit_timeouts", "norms_removed_by_fit",
                  "fit_kept_named", "fit_added_content_in_effects", "fit_seconds",
                  "fit_no_verified", "fit_removed",                                 # v79.14.2 (A)

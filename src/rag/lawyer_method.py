@@ -459,6 +459,77 @@ def _record_uncertain(state: Dict[str, Any]) -> List[Dict[str, str]]:
         return []
 
 
+def _frame_rito(state: Dict[str, Any]) -> str:
+    """v79.16.1 (item 5): the verified frame's rito (case_frame.held: the frame the answer holds), "" when none."""
+    from . import case_frame
+    try:
+        held = case_frame.held(state) if case_frame.enabled() else None
+        rito = (case_frame._frame(held) if held else {}).get("rito")
+        return str((rito or {}).get("valore") or "") if isinstance(rito, dict) else str(rito or "")
+    except Exception:           # noqa: BLE001
+        return ""
+
+
+# v79.16.1 (item 5): §8's blocks by the verified frame's rito -- the civil-only blocks (the mediazione, the negoziazione
+# assistita, the labour list, the parties to sue, the civil competenza, the trascrizione) never in a penal opinion, the
+# penal-only ones (procedibilità e competenza, the penal profile, the heads of damage) never in a civil or labour one;
+# the «Termini» block keeps only the lines whose articles are of the rito's codes. Nothing with no verified rito.
+CIVIL_BLOCK_TITLES = ("Mediazione", "Negoziazione assistita", "Controversia di lavoro", "Parti da convenire",
+                      "Competenza", "Trascrizione")
+PENAL_BLOCK_TITLES = ("Procedibilità e competenza", "Profilo penale", "Voci di danno")
+CIVIL_RITI = ("civile", "lavoro", "famiglia", "esecuzione")
+_CIVIL_CODES_RE = re.compile(r"\b(?:c\.c\.|c\.p\.c\.|cod(?:ice)?\.?\s+civ)", re.IGNORECASE)
+_PENAL_CODES_RE = re.compile(r"\b(?:c\.p\.(?!c)|c\.p\.p\.|cod(?:ice)?\.?\s+pen)", re.IGNORECASE)
+
+
+def rito_blocks(procedure: str, rito: str, dropped: Optional[List[str]] = None) -> str:
+    """The §8 text with the blocks of the other rito dropped (titles above; a «Termini» line citing only the other
+    rito's codes too); the titles and lines dropped into `dropped`. A block is its bold title paragraph and the
+    paragraphs after it up to the next title (render_computed.render's layout). An unknown rito: the text as it is."""
+    rito = str(rito or "").lower()
+    if rito == "penale":
+        gone_titles, other_codes, own_codes = CIVIL_BLOCK_TITLES, _CIVIL_CODES_RE, _PENAL_CODES_RE
+    elif rito in CIVIL_RITI:
+        gone_titles, other_codes, own_codes = PENAL_BLOCK_TITLES, _PENAL_CODES_RE, _CIVIL_CODES_RE
+    else:
+        return procedure
+    paragraphs = str(procedure or "").split("\n\n")
+    blocks: List[Tuple[str, List[str]]] = []          # (title or "", its paragraphs)
+    for par in paragraphs:
+        head = par.strip()
+        if head.startswith("**") and head.endswith("**") and "\n" not in head:
+            blocks.append((head.strip("*").strip(), [par]))
+        elif blocks:
+            blocks[-1][1].append(par)
+        else:
+            blocks.append(("", [par]))
+    out: List[str] = []
+    for title, pars in blocks:
+        if title and any(title.startswith(t) for t in gone_titles):
+            if dropped is not None:
+                dropped.append(title)
+            continue
+        if title == "Termini":
+            kept_pars = []
+            for par in pars[1:]:
+                lines = []
+                for line in par.split("\n"):
+                    if line.strip() and other_codes.search(line) and not own_codes.search(line):
+                        if dropped is not None:
+                            dropped.append(_plain(line)[:120])
+                        continue
+                    lines.append(line)
+                if any(x.strip() for x in lines):
+                    kept_pars.append("\n".join(lines))
+            if not kept_pars:
+                if dropped is not None:
+                    dropped.append(title)
+                continue
+            pars = [pars[0]] + kept_pars
+        out.extend(pars)
+    return "\n\n".join(out)
+
+
 def _quesiti_articles(state: Dict[str, Any]) -> Dict[str, List[str]]:
     from . import interactive_flow
     try:
@@ -7186,6 +7257,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     extra += [precluded] if precluded else []
     procedure = "\n\n".join([p for p in [checked(procedure, keep=closed_list)] + extra if p]) or \
         "Nessun profilo processuale calcolato sul caso."
+    if verified is not None and ctx.get("frame_rito"):     # v79.16.1 (item 5): §8's blocks by the verified rito
+        rito_dropped: List[str] = []
+        procedure = tracked("rito_blocks", procedure, rito_blocks(procedure, ctx["frame_rito"], rito_dropped))
+        ctx["sections_rito_blocks_dropped"] = len(rito_dropped)
+        log["rito_blocks_dropped"] = rito_dropped
     coherence: List[Dict[str, Any]] = []
     sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ,
                                     ctx=ctx)                    # v79.12.1 (row 16): pertinence before realismo
@@ -7787,6 +7863,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            # (B2, D1, D3) -- [] / {} with the flags off
            "fact_record_facts": _record_facts(state), "record_uncertain": _record_uncertain(state),
            "quesiti_articles": _quesiti_articles(state),
+           "frame_rito": _frame_rito(state),                                   # v79.16.1 (item 5): §8 by this rito
            "events": fact_events(state),
            "family_words": family_words(state, case),                        # v79.9 (C1)
            "charge": dict(state.get("charge") or {}),                         # v79.10.5 (E1): held, by its rule

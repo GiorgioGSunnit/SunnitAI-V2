@@ -142,7 +142,7 @@ def test_a_hypothesis_never_proves_and_the_counterpartys_admission_against_its_i
 def test_without_the_record_the_text_heuristic_decides_and_is_counted():
     model = T._Model(T._reply(T._line("640 c.p.", T.E640[0], "Tesi.", ["S5"], ["A640cp.1"]), elementi=[
         T._el("640 c.p.", T.E640[0], "provato", ["S3"]),             # «Secondo la Procura»: downgraded by the text
-        T._el("640 c.p.", T.E640[1], "provato", ["S2"])]))           # a plain fact: stands
+        T._el("640 c.p.", T.E640[1], "provato", ["S8"])]))           # the client's own, pertinent: stands
     res = A.analyse(T._penal(), call=model)
     els = {e["elemento"]: e for e in res["analysis"]["elementi"]["640 c.p."]}
     assert els[T.E640[0]]["esito"] == "contestato" and els[T.E640[1]]["esito"] == "provato"
@@ -493,6 +493,6 @@ def test_the_measurement_line_table_weaker():
 def test_the_prompts_are_unchanged():
     from src.rag import applicability as ap, writer_rules
     import hashlib
-    assert A.prompt_hash() == "472423ea32d3" and ap.prompt_hash() == "5b06ff45a132"
+    assert A.prompt_hash() == "472423ea32d3" and ap.prompt_hash() == "677c05970c73"    # v79.16.1: the fit's schema
     assert hashlib.sha256(writer_rules.QUESITO_INSTRUCTION.encode()).hexdigest()[:12] == "f7d3c0f2b9a4" or True
     assert "{question}" in writer_rules.QUESITO_INSTRUCTION and writer_rules.REASK_RULE.startswith(" Usa SOLO")
