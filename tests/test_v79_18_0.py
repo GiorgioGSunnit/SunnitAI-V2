@@ -126,9 +126,11 @@ def test_forza_is_the_codes_by_side_and_item_10_ranks_a_claimants_line_by_its_el
     assert tuple(f1["key"]) > tuple(f2["key"]) > tuple(f3["key"])
     g = S.forza("2043 c.c.", "A2043cc:E1", inp)
     assert g["key"] == [1, -1, 0] and g["valutato"] is False       # a remedy whose element is da_provare never above E1
-    # the defence: contestato + da_provare on the line's article, more = stronger
+    # the defence (v79.18.1, C1): the eid's rank (own-facts contestato > da_provare with a ruling > contestato > bare
+    # da_provare > provato), then contestato + da_provare on the line's article
     d = _inp("difesa")
-    assert S.forza("1385 c.c.", "A1385cc:E1", d)["key"] == [2] and S.forza("2043 c.c.", "A2043cc:E1", d)["key"] == [2]
+    assert S.forza("1385 c.c.", "A1385cc:E1", d)["key"] == [0, 2] and S.forza("2043 c.c.", "A2043cc:E1", d)["key"] == [1, 2]
+    assert S.forza("1385 c.c.", "A1385cc:E3", d)["key"] == [1, 2]
 
 
 def test_the_ranking_rule_reorders_by_forza_unless_the_weaker_line_cites_a_ruling():
@@ -178,7 +180,7 @@ def test_the_result_objections_passi_contro_difesa_and_the_id_cited_entries():
     assert [x["eid"] for x in a["linee"]] == ["A1385cc:E1", "A1385cc:E2", "A2043cc:E1"] and a["reordered"] is False
     o1, o2 = a["linee"][0]["obiezione"], a["linee"][1]["obiezione"]
     assert o1 == {"testo": "Anna non si è presentata dal notaio.", "risposta_cita_fatti": ["S2"], "cita_pronunce": ["G2"],
-                  "senza_risposta": False}
+                  "senza_risposta": False, "mismatch": False, "risposta_cita_elementi": []}
     assert o2["senza_risposta"] is True and a["linee"][2]["obiezione"] is None
     assert c["strategy_objections_unanswered"] == 1 and c["strategy_rulings_cited"] == 1 and a["rulings_cited"] == ["G2"]
     # the passi: the principale's open elements -- the model's for E2 (one S-id kept), the code's label for E3

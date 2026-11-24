@@ -87,7 +87,11 @@ STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "stra
 STRATEGY_COUNTERS = ("strategy_calls", "strategy_reasked", "strategy_lines", "strategy_rank_reordered",
                      "strategy_line_rejected", "strategy_objections_unanswered", "strategy_rulings_cited",
                      "strategy_seconds", "strategy_failed", "strategy_bad_id", "strategy_passi_added",
-                     "strategy_contro_difesa_added", "strategy_entries_uncited")
+                     "strategy_contro_difesa_added", "strategy_entries_uncited",
+                     "strategy_riqualificazione_missing", "strategy_objection_mismatch", "strategy_passi_not_concrete")   # v79.18.1
+RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("retrieval_quesiti_standing",)                            # v79.18.1 (C3)
+QA_COUNTERS = QA_COUNTERS + ("prose_rule_without_id_dropped", "rulings_no_passage_dropped",            # v79.18.1 (C7-C9)
+                             "rulings_general_part_dropped", "timestamps_dropped")
 FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_unverified",)                                       # v79.18.0 (A1)
 ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("analysis_line_fallback_set", "analysis_degree_downgraded")   # v79.18.0 (A2, 11)
 
@@ -179,7 +183,7 @@ def strategy_fields(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(got, dict) or not got:
         return {}
     return {k: got.get(k) for k in ("status", "ranked", "reordered", "model_order", "final_order", "risk",
-                                    "objections", "contro_difesa", "prompt_hash", "error") if k in got}
+                                    "objections", "contro_difesa", "riqualificazione", "prompt_hash", "error") if k in got}
 
 
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
@@ -240,6 +244,7 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
             "analysis": analysis_fields(state, events),
             "analysis_counters": _counters(state, ANALYSIS_COUNTERS),
             "strategy": strategy_fields(state), "strategy_counters": _counters(state, STRATEGY_COUNTERS),   # v79.18.0
+            "rites_block": list(state.get("rites_block") or []),                                            # v79.18.1 (C6)
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
             "qa": _counters(state, QA_COUNTERS),
             "stages": stage_seconds(state)}                                     # v79.17.1 (item 8)
@@ -321,6 +326,10 @@ def _row_values(row: Dict[str, Any]) -> Dict[str, Any]:
                                             for x in st.get("ranked") or [])
         flat["strategy.reordered"] = bool(st.get("reordered"))
         flat["strategy.risk"] = st.get("risk") or ""
+        riq = st.get("riqualificazione") or {}
+        flat["strategy.riqualificazione"] = (f"art. {riq.get('articolo')} (linea {riq.get('n')})" if riq.get("linea")
+                                             else f"nessuna ({', '.join(riq.get('alternative') or [])})") if riq else ""
+    flat["rites_block"] = "; ".join(f"{x.get('name')}: {x.get('status')}" for x in row.get("rites_block") or [])
     flat["analysis.status"] = a.get("status")
     flat["analysis.line_tier"] = a.get("line_tier")
     flat["analysis.fallback_skipped_reason"] = a.get("fallback_skipped_reason")
@@ -419,8 +428,14 @@ def case_table(row: Dict[str, Any]) -> str:
                      + (f"; contro-difesa answered {sum(1 for o in st['contro_difesa'] if o.get('answered'))}/{len(st['contro_difesa'])}"
                         if st.get("contro_difesa") else "")
                      + (f"; error {st['error']}" if st.get("error") else "") + " |")
+        riq = st.get("riqualificazione") or {}
+        if riq:
+            lines.append("| riqualificazione | " + (f"art. {riq.get('articolo')} (linea {riq.get('n')})" if riq.get("linea")
+                                                    else f"nessuna tra {', '.join(riq.get('alternative') or []) or '—'}") + " |")
         lines.append("| strategy counters | " + (", ".join(f"{k} {v}" for k, v in (row.get("strategy_counters") or {}).items())
                                                   or "—") + " |")
+    if row.get("rites_block"):          # v79.18.1 (C6): the three riti with their status
+        lines.append("| rites block | " + "; ".join(f"{x.get('name')}: {x.get('status')}" for x in row["rites_block"]) + " |")
     r = row.get("retrieval") or {}
     lines.append(f"| retrieval_quesiti | queries {_show(r.get('queries'))}, source {_show(r.get('source'))}, reason "
                  f"{_show(r.get('reason'))}, added {_show(r.get('added'))}"

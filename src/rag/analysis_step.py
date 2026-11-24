@@ -2270,11 +2270,13 @@ LABEL_QA_MAIN = "La linea principale è: {line}."
 LAW_STATEMENTS_TITLE = "**Affermazioni di diritto verificate**"
 ESITO_LABELS = {PROVATO: "provato", CONTESTATO: "contestato", DA_PROVARE: "da provare", ESCLUSO: "escluso"}
 CONTESTED_BY = "contestato (allegazione {di_parte})"
+CONTESTED_BY_ACCUSA = "contestato (contestazione dell'accusa)"     # v79.18.1 (C7): the accusation's charge sentence
+ACCUSA_LABEL = "contestazione dell'accusa"
 TABLE_HEAD = ("| Elemento | Fatti citati | Esito |", "|---|---|---|")
 SOLUTIONS_HEAD = ("| Linea | Articolo | Elemento in gioco | Tesi | Fatti citati |", "|---|---|---|---|---|")
 # v79.15.1 (item 4): the prose review's counters (ProseReview, prose_counters) -- the rendering's too
 PROSE_COUNTERS = ("qa_sentences_replaced", "qa_sentences_dropped_dependent", "prose_excluded_article_dropped",
-                  "prose_unfitted_article_dropped", "objections_sentences_dropped")
+                  "prose_unfitted_article_dropped", "objections_sentences_dropped", "prose_rule_without_id_dropped")
 RENDER_COUNTERS = ("qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
                    "legacy_disagrees_esito") + PROSE_COUNTERS
 
@@ -2426,8 +2428,28 @@ def summary_text(v: Dict[str, Any], lines: Optional[Sequence[Tuple[str, Any]]] =
 def esito_text(e: Dict[str, Any]) -> str:
     if e.get("esito") == CONTESTATO and e.get("parte_che_afferma"):
         from . import issue_records
+        if is_authority(e["parte_che_afferma"]):        # v79.18.1 (C7): the accusation contests, it does not allege
+            return CONTESTED_BY_ACCUSA
         return CONTESTED_BY.format(di_parte=issue_records.of_party(e["parte_che_afferma"]))
     return ESITO_LABELS.get(e.get("esito"), ESITO_LABELS[DA_PROVARE])
+
+
+def is_authority(name: Any) -> bool:
+    """v79.18.1 (C7): the party is the accusing authority (data «authority_words»: accusa, Procura, PM, …)."""
+    low = fold(name)
+    if not low:
+        return False
+    for w in config().get("authority_words") or []:
+        w = fold(w)
+        if re.search(rf"(?<![\w.]){re.escape(w)}(?![\w])" if "." in w else rf"\b{re.escape(w)}\b", low):
+            return True
+    return False
+
+
+def party_label(parte: Any) -> str:
+    """v79.18.1 (C7): «allegazione di <parte>» for a party, «contestazione dell'accusa» for the accusing authority."""
+    from . import issue_records
+    return ACCUSA_LABEL if is_authority(parte) else f"allegazione {issue_records.of_party(str(parte))}"
 
 
 def _cell(text: Any) -> str:
@@ -2561,6 +2583,7 @@ def risk_word(v: Dict[str, Any]) -> str:
 # my drafts: labels and one-sentence bridges built from verified data only -- never a model text
 OPEN_QUESTION = "se «{elemento}» (art. {art}) risulti provato"
 CONTESTED_QUESTION = "se «{elemento}» (art. {art}) sia provato oltre l'allegazione{di_parte}"
+CONTESTED_QUESTION_ACCUSA = "se «{elemento}» (art. {art}) sia provato oltre la contestazione dell'accusa"   # v79.18.1 (C7)
 QUESTION_BRIDGE = "La questione è se «{elemento}» dell'art. {art} sia {esito}, posto che {fatto}."
 # v79.17.0 (item 5): §3 with the pretesa -- «La questione è se <pretesa> sia fondata sull'art. X, posto che …»
 PRETESA_BRIDGE = "La questione è se {tipo} «{contenuto}» sia fondata sull'art. {art}, posto che {fatto}."
@@ -2585,10 +2608,13 @@ def open_elements(v: Dict[str, Any]) -> List[Dict[str, Any]]:
             if e.get("esito") == DA_PROVARE:
                 q = OPEN_QUESTION.format(elemento=_flat(e.get("elemento")), art=label)
             elif e.get("esito") == CONTESTATO:
-                from . import issue_records
                 parte = e.get("parte_che_afferma")
-                q = CONTESTED_QUESTION.format(elemento=_flat(e.get("elemento")), art=label,
-                                              di_parte=f" {issue_records.of_party(parte)}" if parte else "")
+                if parte and is_authority(parte):          # v79.18.1 (C7)
+                    q = CONTESTED_QUESTION_ACCUSA.format(elemento=_flat(e.get("elemento")), art=label)
+                else:
+                    from . import issue_records
+                    q = CONTESTED_QUESTION.format(elemento=_flat(e.get("elemento")), art=label,
+                                                  di_parte=f" {issue_records.of_party(parte)}" if parte else "")
             else:
                 continue
             out.append({"elemento": _flat(e.get("elemento")), "article": label, "esito": e["esito"],
@@ -2619,7 +2645,7 @@ def record_facts_split(facts: Sequence[Dict[str, Any]], v: Dict[str, Any], narra
                 certi.append(text)              # allegation -- certo
                 cliente += 1
                 continue
-            ipotesi.append({"text": text, "how": f"allegazione {issue_records.of_party(who)}" if who else "allegazione"})
+            ipotesi.append({"text": text, "how": party_label(who) if who else "allegazione"})   # v79.18.1 (C7)
         else:
             ipotesi.append({"text": text, "how": "ipotesi"})
     lim = limits or {}
@@ -2646,11 +2672,12 @@ def client_said(who: Any, v: Dict[str, Any]) -> bool:
     return any(w.startswith(stem) for w in re.findall(r"[^\W\d_]+", name.lower()) for stem in flow.CLIENT_SIDE_STEMS)
 
 
-def verify_points(v: Dict[str, Any], uncertain: Sequence[Dict[str, str]] = ()) -> List[str]:
+def verify_points(v: Dict[str, Any], uncertain: Sequence[Dict[str, str]] = (), frame_fields: bool = True) -> List[str]:
     """§10 (A3): the open elements' questions (open_elements), then the record's uncertain items (fact_record.
-    uncertain_items: a fact stated as a hypothesis, a stretch the model left out) -- code-written, no prose restated."""
+    uncertain_items: a fact stated as a hypothesis, a stretch the model left out) -- code-written, no prose restated.
+    v79.18.1 (C7): frame_fields False -- the frame's unverified fields stay out of the body (the log keeps them)."""
     out = [f"Da verificare {e['question']}." for e in open_elements(v)]
-    for field, why in (v.get("frame_unverified") or {}).items():      # v79.17.0 (item 5): the frame's dropped fields
+    for field, why in (v.get("frame_unverified") or {}).items() if frame_fields else []:    # v79.17.0 (item 5)
         out.append(FRAME_UNVERIFIED_POINT.format(field=field, why="; ".join(str(x) for x in why or []) or "non verificato"))
     for item in uncertain or []:
         label = UNCERTAIN_LABELS.get(str(item.get("kind") or ""), "Da verificare")
@@ -2862,7 +2889,9 @@ def objection_items(v: Dict[str, Any]) -> List[Dict[str, str]]:
             if not frase:
                 continue
             key = "allegazione" if o.get("nominata", True) else "allegazione_attribuita"
-            said = str(cfg.get(key) or "{frase}").format(
+            if is_authority(o.get("parte")):        # v79.18.1 (C7): «contestazione dell'accusa», never an allegation
+                key = "contestazione_accusa"
+            said = str(cfg.get(key) or ("Contestazione dell'accusa: «{frase}»" if key == "contestazione_accusa" else "{frase}")).format(
                 frase=_stop(frase), di_parte=issue_records.of_party(o.get("parte") or ""))
             els = o.get("elementi") or []
         else:
@@ -3347,11 +3376,14 @@ def prose_counters(events: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     article (the last four over the three sites). Each sentence in one counter only."""
     out = {k: 0 for k in list(_SITE_DROPPED.values()) + list(_KIND_COUNTER.values())}
     out["prose_unknown_id_dropped"] = 0         # v79.17.0 (item 4): a sentence citing an id that does not exist
+    out["prose_rule_without_id_dropped"] = 0    # v79.18.1 (C9): a rule on article X with no A-id of X
     for e in events or []:
         if e.get("esito") == DROPPED:
             key = _SITE_DROPPED.get(e.get("sede"))
             if e.get("motivo") == "id_inesistente":
                 out["prose_unknown_id_dropped"] += 1
+            if e.get("motivo") == "regola_senza_id":
+                out["prose_rule_without_id_dropped"] += 1
         else:
             key = _KIND_COUNTER.get(e.get("esito"))
         if key:

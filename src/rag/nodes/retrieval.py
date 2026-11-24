@@ -2198,6 +2198,9 @@ def question_retrieval_enabled() -> bool:
 SOURCE_FRAME, SOURCE_ITEMS, SOURCE_QUESTIONS, SOURCE_NONE = "frame", "numbered_items", "questions", "none"
 
 
+STANDING_PENAL_QUESITO = "qualificazione alternativa del fatto"     # v79.18.1 (C3): the penal pretesa's standing question
+
+
 def quesito_sources(frame_quesiti: Optional[List[str]], text: str) -> "tuple[List[str], str]":
     """v79.16.1 (item 1): (the questions searched, their source) in this order -- the frame's verified quesiti
     (SOURCE_FRAME); none, the numbered items of the user's text (intake.question_items, SOURCE_ITEMS); none, the

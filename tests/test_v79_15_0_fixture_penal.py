@@ -176,7 +176,8 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     assert col and all(x.startswith("646 c.p.") for x in col), col
     provati = [x for x in col if x.endswith("| provato")]
     assert len(provati) == 1 and "possesso" in provati[0], col
-    assert sum(1 for x in col if "| contestato (allegazione" in x) == 2, col
+    assert sum(1 for x in col if "| contestato (allegazione" in x) == 1, col          # the società's
+    assert sum(1 for x in col if "| contestato (contestazione dell'accusa)" in x) == 1, col   # v79.18.1 (C7): the Procura's
     norme = H.section(answer, "norme")
     assert "**Rimedi e parte generale collegati alla linea**: art. 62-bis c.p." in norme
     assert "**Circostanze**" not in norme and "62-bis c.p.**" not in norme

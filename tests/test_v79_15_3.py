@@ -267,8 +267,8 @@ def test_the_defences_objection_on_two_elements_with_the_clients_sentence():
                              _el("640 c.p.", T.E640[1], "contestato", ["S3"])])
     inp = T._penal()
     items = A.objection_items(A.view(A.analyse(inp, call=_Model(reply)), inp))
-    assert items == [{"obiezione": "Secondo la Procura, Paolo Sarti ha usato artifizi e un falso annuncio per indurre in "
-                                   "errore Giulia Neri",
+    assert items == [{"obiezione": "Contestazione dell'accusa: «Secondo la Procura, Paolo Sarti ha usato artifizi e un falso "
+                                   "annuncio per indurre in errore Giulia Neri»",        # v79.18.1 (C7)
                       "risposta": "L'elemento «con artifizi o raggiri» (art. 640 c.p.) non è provato; l'elemento "
                                   "«inducendo taluno in errore» (art. 640 c.p.) non è provato: «Paolo Sarti nega di aver "
                                   "mai usato artifizi o raggiri, indotto in errore Giulia Neri o pubblicato un falso "
@@ -492,7 +492,7 @@ def test_fixture_penal_indagato(monkeypatch, tmp_path):
     assert step["side"] == A.SIDE_DEFENCE and step["claimant"] is False
     assert step["tesi_modello"]["linea_principale"] not in answer
     obiezioni = H.section(answer, "obiezioni")
-    assert obiezioni.startswith(f"**Obiezione 1.** {X.PENAL.PROCURA}.\n**Risposta.** L'elemento «per procurare a sé o "
+    assert obiezioni.startswith(f"**Obiezione 1.** Contestazione dell'accusa: «{X.PENAL.PROCURA}».\n**Risposta.** L'elemento «per procurare a sé o "
                                 "ad altri un ingiusto profitto» (art. 646 c.p.) non è provato: «Dario Melis nega di "
                                 "aver trattenuto il denaro».")
     assert f"**Obiezione 2.** {X.PENAL.SOCIETA}.\n**Risposta.**" in obiezioni

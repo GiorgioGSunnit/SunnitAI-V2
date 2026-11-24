@@ -2102,6 +2102,52 @@ def precluded_block(lines: Sequence[str], procedure: str = "") -> str:
     return f"{RITI_PRECLUDED_HEAD}:\n" + "\n".join(f"- {x}" for x in said) if said else ""
 
 
+RITES_HEAD = "**Riti alternativi**"           # v79.18.1 (C6, my draft): §8's block, the three riti always
+RITE_STATUS_WORDS = {AVAILABLE: "ammesso", POSSIBLE: "possibile", TO_VERIFY_RITE: "da verificare", PRECLUDED: "escluso"}
+
+
+def rites_block(statuses: Sequence[Dict[str, Any]]) -> str:
+    """v79.18.1 (C6): §8's riti block from the charge's statuses (charge_rites) -- every rito of the table (the
+    sentencing line aside), each «<name>: ammesso | possibile | da verificare | escluso — <why, the status line's own
+    words>»; never the precluded one alone. "" with no status."""
+    rows = []
+    for x in statuses or []:
+        if not x.get("rite", True):
+            continue
+        line = str(x.get("line") or "")
+        name = str(x.get("name") or line.split(":")[0]).strip()
+        reason = line.split(":", 1)[1].strip() if ":" in line else line
+        rows.append(f"- {name}: {RITE_STATUS_WORDS.get(x.get('status'), x.get('status'))} — {reason}")
+    return f"{RITES_HEAD}\n" + "\n".join(rows) if rows else ""
+
+
+def rite_lines_out(text: str) -> str:
+    """v79.18.1 (C6): the rendered §8's own rito lines removed (rites_block prints the three), a block title left with
+    nothing under it removed with them."""
+    blocks = []
+    for block in (text or "").split("\n\n"):
+        lines = [ln for ln in block.split("\n")
+                 if not (ln.lstrip().startswith("-") and any(rx.search(ln) for rx in RITE_NAMES.values()))]
+        if lines and all(ln.strip().startswith("**") and ln.strip().endswith("**") or not ln.strip() for ln in lines):
+            continue            # a bold title alone
+        if lines and any(ln.strip() for ln in lines):
+            blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+_TIMESTAMP_RE = re.compile(r"\s*\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b")
+
+
+def timestamps_out(text: str, log: Optional[List[str]] = None) -> str:
+    """v79.18.1 (C7): a machine timestamp («2026-11-24T12:01:16», «2026-11-24 12:01») never in the body -- removed,
+    logged."""
+    def sub(m: "re.Match") -> str:
+        if log is not None:
+            log.append(m.group(0).strip())
+        return ""
+    return _TIMESTAMP_RE.sub(sub, text or "")
+
+
 def rite_stage_lines(statuses: Sequence[Dict[str, Any]]) -> List[str]:
     """v79.10.3 (C1): §8's «Riti alternativi» block for the charge -- each rito's line as its status gives it (admitted,
     «da verificare sulla pena edittale», precluded with why); the sentencing line is no rito."""
@@ -5948,7 +5994,14 @@ def same_point(a: str, b: str) -> bool:
     return min(len(x), len(y)) >= 3 and len(x & y) / min(len(x), len(y)) >= 0.85
 
 
-def collect_points(sections: List[Tuple[str, str]], points: Optional[List[str]] = None
+def point_article(point: str) -> str:
+    """v79.18.1 (C7): the first article a point names («640 c.p.»), "" when none."""
+    from . import citations
+    refs = citations.article_refs(point or "")
+    return f"{refs[0][0]} {refs[0][1]}".strip() if refs else ""
+
+
+def collect_points(sections: List[Tuple[str, str]], points: Optional[List[str]] = None, article_refs: bool = False
                    ) -> Tuple[List[Tuple[str, str]], List[str]]:
     """Every «da verificare» marker of the sections taken out: its point collected (numbered once, the same point
     once), in the body only the reference «(v. punto N)» -- the reader still sees what is open, the text says it once.
@@ -5974,6 +6027,9 @@ def collect_points(sections: List[Tuple[str, str]], points: Optional[List[str]] 
 
         def ref(m, form: str, none: str = "") -> str:
             n = point_at(m)
+            if n and article_refs:          # v79.18.1 (C7): the point's article in the body, never «v. punto N»
+                art = point_article(points[n - 1])
+                return form.format(ref=f"art. {art}") if art else none
             return form.format(ref=POINT_REF.format(n=n)) if n else none
 
         def paren(m):
@@ -6368,9 +6424,25 @@ def orientations_section(plan: Dict[str, Any], rulings: Sequence[Any], log: Opti
     return "\n".join(lines) if lines else NO_POINTS_LINE
 
 
-def rulings_view(ctx: Dict[str, Any], allowed: Sequence[str], dropped: Optional[List[str]] = None) -> Dict[str, Any]:
+def ruling_on_line(r: Dict[str, Any], line_articles: Sequence[str], element_words: set) -> bool:
+    """v79.18.1 (C8): a ruling on an article other than the lines' (a general-part article: 40, 41, 43 c.p., a remedy)
+    is printed only when its passage cites a line article's number or one of the lines' element words."""
+    from . import analysis_step
+    passage = analysis_step.fold(r.get("passage"))
+    for label in line_articles:
+        num = analysis_step.art_parts(label)[0]
+        if num and re.search(rf"(?<![\d-]){re.escape(num)}(?![\d-])", passage):
+            return True
+    return any(w in passage for w in element_words)
+
+
+def rulings_view(ctx: Dict[str, Any], allowed: Sequence[str], dropped: Optional[List[str]] = None,
+                 verified: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """v79.16.0 (D3): the ctx with its rulings record read through a view holding only the rulings, orientations and
-    landmarks on an allowed article (the lines', the quesiti's, the remedies'); the others' articles into dropped."""
+    landmarks on an allowed article (the lines', the quesiti's, the remedies'); the others' articles into dropped.
+    v79.18.1 (C8): with the verified view, a ruling without a passage is not listed (ctx["rulings_no_passage_dropped"])
+    and one on an article other than the lines' only when its passage cites the line's article or an element of it
+    (ruling_on_line; ctx["rulings_general_part_dropped"])."""
     rec = ctx.get("rulings_record")
     if not rec or not allowed:
         return ctx
@@ -6380,7 +6452,23 @@ def rulings_view(ctx: Dict[str, Any], allowed: Sequence[str], dropped: Optional[
         [str(k) for k in rec.get("landmarks") or {} if not on(k)]
     if dropped is not None:
         dropped += gone
-    view = {**rec, "kept": [r for r in rec.get("kept") or [] if on(r.get("article"))],
+    kept = [r for r in rec.get("kept") or [] if on(r.get("article"))]
+    if verified is not None:            # v79.18.1 (C8)
+        from . import analysis_step
+        line_arts = analysis_step.line_articles(verified)
+        words = {w for label in line_arts for e in ((verified.get("analysis") or {}).get("elementi") or {}).get(label) or []
+                 for w in re.findall(r"[a-zà-ü]{6,}", analysis_step.fold(e.get("elemento")))}
+        no_passage = [r for r in kept if not r.get("passage")]
+        kept = [r for r in kept if r.get("passage")]
+        general = [r for r in kept if not any(_same_label(r.get("article"), x) for x in line_arts)
+                   and not ruling_on_line(r, line_arts, words)]
+        kept = [r for r in kept if r not in general]
+        ctx["rulings_no_passage_dropped"] = len(no_passage)
+        ctx["rulings_general_part_dropped"] = len(general)
+        if dropped is not None:
+            dropped += [f"{r.get('article')} (senza passaggio)" for r in no_passage]
+            dropped += [f"{r.get('article')} (parte generale, passaggio non sulla linea)" for r in general]
+    view = {**rec, "kept": kept,
             "orientations": [o for o in rec.get("orientations") or [] if on(o.get("article"))],
             "landmarks": {k: v for k, v in (rec.get("landmarks") or {}).items() if on(k)}}
     return {**ctx, "rulings_record": view}
@@ -7316,8 +7404,15 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         norms_parts.append(f"**{C.OTHER_PROFILES_SECTION}**\n\n" + "\n".join(profiles))
     procedure = next((by_title[t] for t in PROCEDURE_FROM if by_title.get(t)), "")
     extra = [x for x in [ctx.get("temporal")] + [f"Litisconsorzio: {x}" for x in ctx.get("litisconsorzio") or []] if x]
-    precluded = precluded_block(ctx.get("riti_precluded") or [], procedure)       # v79.10.3 (C1): §8 says them
-    extra += [precluded] if precluded else []
+    rites_three = rites_block(ctx.get("rites") or []) if verified is not None else ""
+    if rites_three:                     # v79.18.1 (C6): the three riti with their status and why, never the precluded alone
+        procedure = rite_lines_out(procedure)
+        extra.append(rites_three)
+        ctx["rites_block"] = [{"id": x.get("id"), "name": x.get("name"), "status": x.get("status")}
+                              for x in ctx.get("rites") or [] if x.get("rite", True)]
+    else:
+        precluded = precluded_block(ctx.get("riti_precluded") or [], procedure)       # v79.10.3 (C1): §8 says them
+        extra += [precluded] if precluded else []
     procedure = "\n\n".join([p for p in [checked(procedure, keep=closed_list)] + extra if p]) or \
         "Nessun profilo processuale calcolato sul caso."
     if verified is not None and ctx.get("frame_rito"):     # v79.16.1 (item 5): §8's blocks by the verified rito
@@ -7475,7 +7570,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         quesiti_labels = [x for labels in (ctx.get("quesiti_articles") or {}).values() for x in labels]
         allowed = analysis_step.allowed_ruling_articles(verified, quesiti_labels)
         off_line: List[str] = []
-        orientations = orientations_text(rulings_view(ctx, allowed, off_line), plan, rulings, rulings_out,
+        orientations = orientations_text(rulings_view(ctx, allowed, off_line, verified), plan, rulings, rulings_out,
                                          orientation_points, excluded, dropped_log)
         ctx["rulings_off_line_dropped"] = len(off_line)
         log["rulings_off_line_dropped"] = off_line
@@ -7519,6 +7614,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     headless_log: List[str] = []        # v79.9 (D4): a ruling's reference whole or not at all, every written section
     keyed = [(k, x if k == "orientamenti" else tracked("citations", x, whole_citations(x, headless_log)))
              for k, x in keyed]
+    if verified is not None:            # v79.18.1 (C7): no machine timestamp in the body
+        ts_log: List[str] = []
+        keyed = [(k, tracked("timestamps", x, timestamps_out(x, ts_log))) for k, x in keyed]
+        ctx["timestamps_dropped"] = len(ts_log)
+        log["timestamps_dropped"] = ts_log
     ctx["excluded_dropped"] = list(dict.fromkeys(list(ctx.get("excluded_dropped") or []) + dropped_log))
     log["excluded_dropped"] = ctx["excluded_dropped"]          # v79.14.3 (item 4)
     log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
@@ -7558,13 +7658,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # v79.16.0 (A3): with the record, §10 opens with the verified lines' open elements and the record's uncertain
     # items, code-written; §4's prose is not scanned for points (no prose restated from §4)
     skipped = {exempt} | ({title("norme")} if record_facts else set())
-    head_points = analysis_step.verify_points(verified, ctx.get("record_uncertain") or []) if record_facts else []
+    head_points = analysis_step.verify_points(verified, ctx.get("record_uncertain") or [], frame_fields=False) \
+        if record_facts else []         # v79.18.1 (C7): the frame's unverified fields logged, not printed
+    if verified is not None:
+        log["frame_unverified"] = dict(verified.get("frame_unverified") or {})
     if strategy:                        # v79.18.0 (B): §10 opens with the passi; an element a passo names is not asked again
         named = strategy_step.passi_elements(strategy)
         head_points = strategy_step.passi_points(strategy, verified) + [
             p for p in head_points if not any(f"«{e}»" in p for e in named)]
     collected, points = collect_points([(title(k), x) for k, x in keyed if title(k) not in skipped],
-                                       head_points + list(ctx.get("points") or []))
+                                       head_points + list(ctx.get("points") or []),
+                                       article_refs=verified is not None)     # v79.18.1 (C7): the article, no «v. punto N»
     for q in ctx.get("open_questions") or []:
         if not any(same_point(q, p) for p in points):
             points.append(q)

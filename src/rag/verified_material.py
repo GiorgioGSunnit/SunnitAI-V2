@@ -27,6 +27,7 @@ from .analysis_step import (ARTICLE_EXCLUDED, ARTICLE_UNFITTED, DROPPED, ESITO_L
                             SITE_QA, _cited, _flat, _lines, bare_cited, line_text, same_article)
 
 UNKNOWN_ID = "id_inesistente"
+RULE_WITHOUT_ID = "regola_senza_id"         # v79.18.1 (C9): a rule attributed to article X with no A-id of X
 TITLE = "MATERIALE VERIFICATO (il solo materiale di questa sezione)"
 ID_RULE = (" Cita ogni norma con l'id del periodo su cui ti fondi tra parentesi quadre (es. [A1385cc.1]) e ogni fatto con "
            "il suo id (es. [S3]): il codice sostituisce gli id con il riferimento alla norma e con la citazione del fatto. "
@@ -245,7 +246,22 @@ def review_sentence(sentence: str, vm: Dict[str, Any], site: str, events: List[D
     if loose:
         events.append({"sede": site, "esito": ARTICLE_UNFITTED, "testo": text[:200], "articoli": loose})
         return ""
+    missing = rule_without_id(text, cited, ids, vm)       # v79.18.1 (C9)
+    if missing:
+        events.append({"sede": site, "esito": DROPPED, "testo": text[:200], "articoli": missing, "motivo": RULE_WITHOUT_ID})
+        return ""
     return render_ids(sentence, vm)
+
+
+def rule_without_id(text: str, cited: Sequence[str], ids: Sequence[str], vm: Dict[str, Any]) -> List[str]:
+    """v79.18.1 (C9): the articles a sentence attributes a rule to (it names them and holds a rule verb --
+    analysis_step's qa_statements verbs) without citing one of their period ids; [] when every named article has its
+    A-id, or the sentence states no rule."""
+    from . import analysis_step
+    if not analysis_step._qa_verb_re().search(text or ""):
+        return []
+    with_id = {_article_of_id(i, vm) for i in ids if i.startswith("A")}
+    return [x for x in cited if x and not any(same_article(x, y) for y in with_id if y)]
 
 
 def review_text(text: str, vm: Dict[str, Any], site: str, events: List[Dict[str, Any]],

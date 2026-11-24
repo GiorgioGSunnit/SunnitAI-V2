@@ -134,6 +134,36 @@ def with_recall(fit_reply: Callable[[Any, Any], str]) -> Callable[[Any, Any], st
     return call
 
 
+_ID_IN_SENTENCE = re.compile(r"\[A[0-9a-z]+\.\d+\]")
+
+
+def with_ids(text: str, labels) -> str:
+    """v79.18.1 (C9): the faked writer cites its articles' period ids as the real one is told to (verified_material.
+    ID_RULE) -- after the first mention of each case article in a sentence that carries none, « [A<token>.1]»; the
+    rendering takes the id back out (verified_material.render_ids), so the fixtures' texts print as written."""
+    from src.rag import citations
+    out_lines = []
+    for line in str(text or "").split("\n"):
+        pieces = re.split(r"(?<=[.!?])\s+(?=[A-ZÀ-Ü«\"])", line)
+        done = []
+        for piece in pieces:
+            if _ID_IN_SENTENCE.search(piece) or not piece.strip():
+                done.append(piece)
+                continue
+            seen = set()
+            for pos, (num, code) in sorted(citations.article_cites(piece), key=lambda x: -x[0]):
+                label = f"{num} {code}"
+                if label not in labels or label in seen:
+                    continue
+                seen.add(label)
+                m = re.compile(r"artt?\.\s*" + re.escape(num) + r"\s*" + re.escape(code).replace(r"\ ", r"\s*")).search(piece, pos)
+                if m and piece[m.end():].strip():        # a mention closing the sentence keeps its own stop: no id there
+                    piece = piece[:m.end()] + f" [A{ap.article_token(label)}.1]" + piece[m.end():]
+            done.append(piece)
+        out_lines.append(" ".join(done))
+    return "\n".join(out_lines)
+
+
 def rows_of(articles):
     return [{"_article": [n, c], "_grade": 3, "s": {"name": f"{n}.0.0", "plain_text": text, "titolo_articolo": rubrica},
              "d": {"id": doc, "name": name}} for n, c, text, rubrica, doc, name in articles]
@@ -168,6 +198,7 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
                 monkeypatch.setattr(mod, attr, F._refused)
     assert defensive_generation._call_chat is F._refused and ai_chat._call_chat is F._refused
     labels = [f"{n} {c}" for n, c, *_ in case.ARTICLES]
+    id_labels = labels + [f"{n} {c}" for n, c, *_ in getattr(case, "QUESITO_ARTICLES", ())]    # v79.18.1 (C9)
     model = AnalysisModel(case.analysis_reply)
     monkeypatch.setattr(cf, "_default_call", lambda m, k: json.dumps(case.FRAME_REPLY, ensure_ascii=False))
     monkeypatch.setattr(ap, "_default_call", with_recall(case.fit_reply))     # v79.17.2: the recall answered too
@@ -182,7 +213,9 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
         def thesis(messages, n, **kw):
             ids = re.findall(r"^- \[(T\d+)\]", messages[-1].content, re.MULTILINE)
             valued = {i: {"pro": "p", "contro": "c", "argomento": "a", "realismo": "medio"} for i in ids}
-            reply = {"valutazioni": valued, "obiezioni": list(objections)}
+            reply = {"valutazioni": valued, "obiezioni": [{**o, "obiezione": with_ids(o.get("obiezione") or "", id_labels),
+                                                          "risposta": with_ids(o.get("risposta") or "", id_labels)}
+                                                         for o in objections]}       # v79.18.1 (C9): the ids cited
             return [json.dumps(reply, ensure_ascii=False)] * max(1, int(n or 1))
         monkeypatch.setattr(ai_chat, "call_chat_n", thesis)
     monkeypatch.setattr(ptw, "negation_review", lambda items, known, call=None: [])
@@ -249,7 +282,8 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
             have = [x for x in labels if x in (writer.state.get("records") or {})]
             special = getattr(case, "writer_question", None)
             text = special(title) if special and str(title).endswith("?") else None
-            out.append((title, text if text is not None else "\n\n".join(case.writer_line(x) for x in have)))
+            text = text if text is not None else "\n\n".join(case.writer_line(x) for x in have)
+            out.append((title, with_ids(text, id_labels)))
         return out
     writer.state = {}
     monkeypatch.setattr(flow, "analyse_case", round1)

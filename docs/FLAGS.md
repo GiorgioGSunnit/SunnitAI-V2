@@ -706,6 +706,35 @@ decides first, never a clause word; with the article's text in the corpus only a
 the client stated is certo in §2, never «allegazione», and the client is never the party «che afferma» of a contestato.
 The analysis, fit, frame and recall prompts are unchanged.
 
+## 5q. v79.18.1 (24 Nov 2026): section C of 79.18.0 -- the penal defence review
+
+No new flag. C1 `strategy_step.defence_rank` / `forza`: the defence's order is (a) an element contestato by the client's
+own facts (a cited fact accertato or stated by the client: `mark_own`), (b) an element da_provare where a ruling the
+linea cites (its `cita_pronunce` or `condizione`) sets a condition the facts do not show, (c) a bare da_provare, then the
+open count -- never «most da_provare». C2 a linea's `condizione`: a G-id attached to its eid, verified by id and on the
+line's article, printed beside the element. C3 a penal defence (`penal_defence`: the frame's rito penal, side difesa)
+needs a «riqualificare» linea on another article of the set when there is one (`alternative_articles`): missing, the
+re-ask asks for it, then the code prints «nessuna qualificazione alternativa tra le norme applicabili (art. …)» in §6
+(`strategy_riqualificazione_missing`); a penal pretesa adds the standing quesito «qualificazione alternativa del fatto»
+(`retrieval.STANDING_PENAL_QUESITO`) to the questions searched, through the family gate (`retrieval_quesiti_standing`).
+C4 an obiezione's risposta declares the eids / G-ids it rests on (`risposta_cita_elementi`); an element whose esito does
+not fit the side (defence: contestato / da_provare / escluso; claimant: provato) is a mismatch -- re-asked once, then
+printed «senza risposta nei fatti narrati» (`strategy_objection_mismatch`). C5 a passo must name a concrete proof to
+acquire (data `passi_words`) and not restate its element (`restatement_overlap`): else re-asked once, then the code's
+label (`strategy_passi_not_concrete`). C6 `lawyer_method.rites_block`: §8 prints the three riti (abbreviato,
+patteggiamento, messa alla prova) each with its status word (ammesso / possibile / da verificare / escluso) and the
+reason, the rendered rito lines removed (`rite_lines_out`); `state["rites_block"]` for the replay. C7 the frame's
+unverified fields are logged (`log["frame_unverified"]`) and no longer printed in §10; machine timestamps are removed
+from the body (`timestamps_out`, `timestamps_dropped`); a point reference prints the point's article (`collect_points`
+with `article_refs`, `point_article`) and never «v. punto N»; the accusing authority's charge sentence is a
+«contestazione dell'accusa» (`analysis_step.is_authority`, `party_label`: §2's label, the table's esito, §10's question,
+§7's objection, the strategy's contro-difesa). C8 `lawyer_method.rulings_view` with the verified view: a ruling without
+a passage is not listed (`rulings_no_passage_dropped`); a ruling on an article other than the lines' (40, 41, 43 c.p.,
+a remedy) only when its passage cites the line's article number or an element's word (`ruling_on_line`,
+`rulings_general_part_dropped`). C9 `verified_material.rule_without_id`: a sentence attributing a rule (a qa_statements
+verb) to article X with no A-id of X is dropped (`prose_rule_without_id_dropped`). The strategy prompt changed (hash
+logged); the analysis, fit, frame and recall prompts are unchanged.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

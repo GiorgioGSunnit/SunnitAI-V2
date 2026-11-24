@@ -1688,6 +1688,17 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
             quesiti_gate_log({"queries": 0, "source": "", "reason": "flag_off"})
         from . import case_frame        # v79.17.1 (item 6): the frame's verified rito, read by the family gate
         analysis["frame_rito"] = case_frame.verified_rito(frame) if frame else ""
+        # v79.18.1 (C3): a penal pretesa adds the standing quesito «qualificazione alternativa del fatto» to the
+        # questions searched (through the family gate as the others)
+        if retrieval_module.question_retrieval_enabled() and analysis["frame_rito"] in case_frame.PENAL_RITI \
+                and isinstance(analysis.get("quesiti_queries"), list):
+            from . import lawyer_method
+            standing = retrieval_module.STANDING_PENAL_QUESITO
+            if not any(lawyer_method.same_line(standing, q) for q in analysis["quesiti_queries"]):
+                analysis["quesiti_queries"] = list(analysis["quesiti_queries"]) + [standing]
+                analysis["quesiti_standing"] = standing
+                if not analysis.get("quesiti_source") or analysis["quesiti_source"] == retrieval_module.SOURCE_NONE:
+                    analysis["quesiti_source"] = "standing"
         _isolated("relative_periods", lambda: relative_periods(analysis, text, request))      # v60g (6)
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
         found = _analysed_and_retrieved(text, request, lang, analysis, t0, meter, pending)
@@ -8077,6 +8088,7 @@ def quesiti_counters(state: Dict[str, Any]) -> None:
         counters["fit_kept_from_quesiti"] = len([x for x in got.get("added") or []
                                                  if x in records and not (records.get(x) or {}).get("dropped")])
     counters["family_rito_dropped"] = len((state.get("family_gate") or {}).get("rito_dropped") or [])   # v79.17.1
+    counters["retrieval_quesiti_standing"] = int(bool((state.get("analysis") or {}).get("quesiti_standing")))   # v79.18.1 (C3)
     counters["qa_questions_detected"] = len(asked_questions(state))
 
 
@@ -8186,6 +8198,9 @@ def legacy_plan_logged(state: Dict[str, Any], contexts: Sequence[Optional[Dict[s
     for k in analysis_step.RENDER_COUNTERS:
         if k not in ("legacy_disagrees_line", "legacy_disagrees_esito"):
             counters[k] = sum(int(c.get(k) or 0) for c in ctxs)
+    for k in ("rulings_no_passage_dropped", "rulings_general_part_dropped", "timestamps_dropped"):   # v79.18.1 (C7, C8)
+        counters[k] = sum(int(c.get(k) or 0) for c in ctxs)
+    state["rites_block"] = next((list(c["rites_block"]) for c in ctxs if c.get("rites_block")), [])   # v79.18.1 (C6)
     state["legacy_plan"] = _jsonable(plans)
     for p in plans:
         vlog("legacy_plan", p)

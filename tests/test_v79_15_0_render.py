@@ -75,7 +75,7 @@ def test_the_tables_are_the_verified_verdicts_and_the_remedies_are_named_only():
     assert result["counters"]["analysis_provato_downgraded"] == 1         # S3: «Secondo la Procura, …»
     tables = A.norms_tables(v)
     assert "**Art. 640 c.p.** — Truffa" in tables and "| Elemento | Fatti citati | Esito |" in tables
-    assert "| con artifizi o raggiri | Secondo la Procura" in tables and "| contestato (allegazione " in tables
+    assert "| con artifizi o raggiri | Secondo la Procura" in tables and "| contestato (contestazione dell'accusa)" in tables
     assert "| inducendo taluno in errore | Paolo Sarti dichiara di aver incassato" in tables and "| provato |" in tables
     assert "| escluso |" in tables
     assert "Esiti dell'art. 640 c.p.: provato 1 su 3; contestato 1 su 3; da provare 0 su 3; escluso 1 su 3." in tables
@@ -100,7 +100,7 @@ def test_the_summary_solutions_and_conclusions_carry_the_verified_line_only():
     # v79.16.0 (D2): §9 opens with the §4 counts, the lines after them
     assert concl.splitlines()[0].startswith("**Esiti dell'art. 640 c.p.**: provato 1 su 3")
     assert concl.splitlines()[1].startswith("**Linea principale**: art. 640 c.p.")
-    assert "**Contestati**: «con artifizi o raggiri» (contestato (allegazione " in concl
+    assert "**Contestati**: «con artifizi o raggiri» (contestato (contestazione dell'accusa))" in concl     # v79.18.1 (C7)
 
 
 def test_the_counts_never_trip_the_count_sentence_rule():

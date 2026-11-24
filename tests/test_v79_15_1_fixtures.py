@@ -424,7 +424,7 @@ def test_the_penal_fixture_one_objection_per_allegation(monkeypatch, tmp_path):
     obiezioni = H.section(answer, "obiezioni")
     # v79.15.3 (item 3): one plain form for both -- the sentence as written, the status in words (the defence: «non è
     # provato»), the client's own sentence
-    assert f"**Obiezione 1.** {PENAL.PROCURA}.\n**Risposta.** L'elemento «per procurare a sé o ad altri un ingiusto " \
+    assert f"**Obiezione 1.** Contestazione dell'accusa: «{PENAL.PROCURA}».\n**Risposta.** L'elemento «per procurare a sé o ad altri un ingiusto " \
            "profitto» (art. 646 c.p.) non è provato: «Dario Melis nega di aver trattenuto il denaro»." in obiezioni
     assert f"**Obiezione 2.** {PENAL.SOCIETA}.\n**Risposta.** L'elemento «si appropria il denaro o la cosa mobile " \
            "altrui di cui abbia» (art. 646 c.p.) non è provato." in obiezioni
