@@ -1120,6 +1120,15 @@ def count_fallback(counters: Dict[str, Any], field: str) -> None:
         counters[key] = int(counters.get(key) or 0) + 1
 
 
+def verified_rito(result: Optional[Dict[str, Any]]) -> str:
+    """v79.18.0 (item 6): the frame's rito when the model's value was verified («rito» in result["verified"]) and is
+    not the unknown one; "" otherwise (a rule-filled rito restricts nothing: the family gate reads this only)."""
+    if not isinstance(result, dict) or "rito" not in (result.get("verified") or []):
+        return ""
+    value = str((_frame(result).get("rito") or {}).get("valore") or "").strip()
+    return "" if not value or value == (config().get("unknown") or "sconosciuto") else value
+
+
 def role_unknown(result: Optional[Dict[str, Any]]) -> bool:
     """The frame's verified role is «sconosciuto»: the honesty line prints and neither side's wording is used."""
     role = _frame(result).get("ruolo") or {}

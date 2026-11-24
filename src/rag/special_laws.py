@@ -59,6 +59,7 @@ def laws() -> List[Dict[str, Any]]:
             logger.warning("special_laws: %s not read: %s", LAWS_FILE, exc)
             data, raw = {}, []
         _LAWS["families"] = _compile_families(data.get("families") or {})
+        _LAWS["rito_families"] = _read_rito_families(data.get("rito_families") or {})     # v79.18.0 (item 6)
         for law in raw:
             try:
                 signals = [law["signal"]] if law.get("signal") else list(law.get("signal_all") or [])
@@ -108,6 +109,27 @@ def _compile_families(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         except (AttributeError, TypeError, ValueError, re.error) as exc:
             logger.warning("special_laws: family %r skipped: %s", name, exc)
     return out
+
+
+def _read_rito_families(raw: Dict[str, Any]) -> Dict[str, List[str]]:
+    """v79.18.0 (item 6): {rito: [the special-law families a case of that rito may cite]} from the table's
+    «rito_families» («_about» aside); a value that is no list is skipped, logged."""
+    out: Dict[str, List[str]] = {}
+    for rito, fams in (raw or {}).items():
+        if str(rito).startswith("_"):
+            continue
+        if not isinstance(fams, list):
+            logger.warning("special_laws: rito_families %r skipped: not a list", rito)
+            continue
+        out[str(rito)] = [str(x) for x in fams if str(x or "").strip()]
+    return out
+
+
+def rito_families() -> Dict[str, List[str]]:
+    """v79.18.0 (item 6): the table's «rito_families» -- the frame's rito -> the families it admits beside the codes
+    (family_gate.decide); {} when the table has none."""
+    laws()
+    return _LAWS.get("rito_families") or {}
 
 
 def families() -> Dict[str, Dict[str, Any]]:

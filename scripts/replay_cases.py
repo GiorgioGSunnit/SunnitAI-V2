@@ -19,6 +19,11 @@ the model --base-url / --model name (LLM_BASE_URL, LLM_MODEL: the GPU host), the
   retrieval    the «retrieval_quesiti» gate line (queries, source, reason, the labels added)
   qa           the Q&A counters (qa_questions_detected, qa_answer_reasked, qa_answer_insufficient, the qa_sentences_*)
   seconds      the wall time of the case
+  stages       v79.18.0 (item 8): the seconds per stage as the flow measured them -- frame (the frame step, inside the
+               intake: frame_seconds), record (the fact record: records_s), extraction (round 1's analysis: analysis_s),
+               retrieval (round 1's rest: retrieval_s), fit (applicability_s), analysis (the analysis step's), write (the
+               answer's time less the fit's and the step's), total (the flow's single_shot_s). A measurement, no
+               optimisation: the diff shows each stage «before → now» beside the wall seconds.
 
 The JSON (--out) holds the version, the model, the flags and the cases; --baseline (a JSON this script wrote) adds the
 diff: per case, every value that moved, «before → now» (the markdown --report, also printed). Nothing here changes
@@ -67,6 +72,9 @@ QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insuffic
                "sections_dedup_dropped", "rulings_off_line_dropped", "sections_rito_blocks_dropped")
 FIELD_KEYS = ("tipo", "contenuto", "contro", "valore", "intake", "articolo", "descrizione", "testo", "nome",
               "ruolo_nel_fatto", "lato")       # v79.17.0: the pretesa's fields first
+RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("retrieval_quesiti_gated", "family_rito_dropped")      # v79.18.0 (item 6)
+ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("candidates_no_elements_excluded",)                      # v79.18.0 (item 7)
+STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "write", "total")       # v79.18.0 (item 8)
 
 
 # --- the measurement --------------------------------------------------------------------------------------------------
@@ -134,7 +142,42 @@ def analysis_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict
 
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
     gate = _event(events, "retrieval_quesiti") or state.get("quesiti_retrieval") or {}
-    return {k: gate.get(k) for k in ("queries", "source", "reason", "added") if k in gate}
+    out = {k: gate.get(k) for k in ("queries", "source", "reason", "added") if k in gate}
+    if gate.get("gated"):           # v79.18.0 (item 6): the questions' rows the family gate refused
+        out["gated"] = [f"{x.get('article')} ({x.get('why') or x.get('family')})" for x in gate["gated"]]
+    return out
+
+
+def stage_seconds(state: Dict[str, Any]) -> Dict[str, float]:
+    """v79.18.0 (item 8): {stage: seconds} from what the flow measured (STAGES; a stage the flow did not time is left
+    out): frame -- the frame step's frame_seconds (state["case_frame"]["counters"]); record -- timings records_s;
+    extraction / retrieval -- round 1's analysis_s / retrieval_s; fit -- applicability_s (else fit_seconds); analysis --
+    the step's seconds (else analysis_seconds); write -- single_shot_timings answer_s less the fit's and the step's;
+    total -- the flow's total_s."""
+    state = state or {}
+    t = state.get("timings") or {}
+    c = state.get("block_counters") or {}
+    cf = (state.get("case_frame") or {}).get("counters") or {}
+    sst = state.get("single_shot_timings") or {}
+    fit = t.get("applicability_s", c.get("fit_seconds"))
+    analysis = (state.get("analysis_step") or {}).get("seconds", c.get("analysis_seconds"))
+    answer = sst.get("answer_s")
+    write = None
+    if answer is not None:
+        write = max(0.0, float(answer) - float(fit or 0) - float(analysis or 0))
+    raw = {"frame": cf.get("frame_seconds", c.get("frame_seconds")), "record": t.get("records_s"),
+           "extraction": t.get("analysis_s"), "retrieval": t.get("retrieval_s"), "fit": fit, "analysis": analysis,
+           "write": write, "total": sst.get("total_s", t.get("single_shot_s"))}
+    out: Dict[str, float] = {}
+    for k in STAGES:
+        v = raw.get(k)
+        if v is None:
+            continue
+        try:
+            out[k] = round(float(v), 1)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _counters(state: Dict[str, Any], keys: Sequence[str]) -> Dict[str, Any]:
@@ -153,7 +196,8 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
             "analysis": analysis_fields(state, events),
             "analysis_counters": _counters(state, ANALYSIS_COUNTERS),
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
-            "qa": _counters(state, QA_COUNTERS)}
+            "qa": _counters(state, QA_COUNTERS),
+            "stages": stage_seconds(state)}                                     # v79.18.0 (item 8)
 
 
 class _Capture:
@@ -255,6 +299,10 @@ def diff_rows(now: Sequence[Dict[str, Any]], before: Sequence[Dict[str, Any]]) -
         changes = [{"key": k, "before": a.get(k), "now": b.get(k)} for k in sorted(set(a) | set(b))
                    if a.get(k) != b.get(k)]
         changes.append({"key": "seconds", "before": prev.get("seconds"), "now": row.get("seconds")})
+        for k in STAGES:            # v79.18.0 (item 8): each stage's seconds beside the wall time, always shown
+            a_s, b_s = (prev.get("stages") or {}).get(k), (row.get("stages") or {}).get(k)
+            if a_s is not None or b_s is not None:
+                changes.append({"key": f"seconds.{k}", "before": a_s, "now": b_s})
         out.append({"id": row.get("id"), "new": False, "changes": changes})
     for r in before:
         if r.get("id") not in {x.get("id") for x in now}:
@@ -297,9 +345,14 @@ def case_table(row: Dict[str, Any]) -> str:
                  + " |")
     r = row.get("retrieval") or {}
     lines.append(f"| retrieval_quesiti | queries {_show(r.get('queries'))}, source {_show(r.get('source'))}, reason "
-                 f"{_show(r.get('reason'))}, added {_show(r.get('added'))} |")
+                 f"{_show(r.get('reason'))}, added {_show(r.get('added'))}"
+                 + (f", gated {_show(r.get('gated'))}" if r.get("gated") else "") + " |")
+    lines.append("| retrieval counters | " + ", ".join(f"{k} {v}" for k, v in (row.get("retrieval_counters") or {}).items())
+                 + " |")
     lines.append("| qa | " + ", ".join(f"{k} {v}" for k, v in (row.get("qa") or {}).items()) + " |")
     lines.append(f"| seconds | {row.get('seconds')} |")
+    stages = row.get("stages") or {}      # v79.18.0 (item 8): where the time goes, stage by stage
+    lines.append("| stages (s) | " + (", ".join(f"{k} {stages[k]}" for k in STAGES if k in stages) or "—") + " |")
     return "\n".join(lines)
 
 

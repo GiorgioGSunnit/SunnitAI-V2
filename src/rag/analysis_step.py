@@ -202,7 +202,10 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             # a «provato» / «escluso» with no pertinent cited fact (item 4)
             "line_from_fit_si", "line_from_fit_dipende", "line_from_unverified", "analysis_line_procedural_rejected",
             "analysis_provato_no_pertinence",
-            "analysis_line_context_rejected", "analysis_line_quesito_only")        # v79.17.0 (item 2)
+            "analysis_line_context_rejected", "analysis_line_quesito_only",        # v79.17.0 (item 2)
+            # v79.18.0 (item 7): the fitted articles with no schema element -- context only, never a line candidate,
+            # not in the prompt's article block
+            "candidates_no_elements_excluded")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
@@ -826,10 +829,28 @@ def build_messages(inp: Dict[str, Any]) -> List[Any]:
     tier, allowed = line_tier(inp)      # v79.16.2 (item 2): each norm's rank in the preference order (fit on)
     ranks = {} if tier == TIER_ALL else {a: (i + 1, len(allowed)) for i, a in enumerate(allowed)}
     parts.append(f"{labels['norms']}:\n\n" + "\n\n".join(_norm_block(n, ranks.get(n["article"]))
-                                                            for n in inp.get("norms") or []))
+                                                            for n in listed_norms(inp)))      # v79.18.0 (item 7)
     qs = inp.get("questions") or []
     parts.append(f"{labels['questions']}:\n" + ("\n".join(f"- {q}" for q in qs) if qs else labels["none"]))
     return [SystemMessage(content=prompt_system()), HumanMessage(content="\n\n".join(parts))]
+
+
+def has_elements(norm: Dict[str, Any]) -> bool:
+    """v79.18.0 (item 7): the norm carries at least one schema element (the record's requisites, make_input)."""
+    return bool(norm.get("elements"))
+
+
+def listed_norms(inp: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.18.0 (item 7): the norms the prompt's article block lists -- those with at least one element, and the remedy
+    set (marked, never a candidate: listed for its periods, the remedies section's); a non-remedy article with no
+    element is context only (no_element_articles): not listed, never offered, never a line."""
+    return [n for n in inp.get("norms") or [] if has_elements(n) or n.get("remedy")]
+
+
+def no_element_articles(inp: Dict[str, Any]) -> List[str]:
+    """v79.18.0 (item 7): the fitted articles with no schema element (the remedy set aside: never a candidate anyway)
+    -- counted candidates_no_elements_excluded, logged «context_only_no_elements»."""
+    return [n["article"] for n in inp.get("norms") or [] if not has_elements(n) and not n.get("remedy")]
 
 
 def line_elements(norm: Dict[str, Any], inp: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -879,8 +900,9 @@ def line_tier(inp: Dict[str, Any], kind: str = "linea_principale") -> Tuple[str,
     remedy. v79.16.2 (item 2): a preference, not a gate -- the list holds every tier, in that order; _verify_line refuses
     a «no» only. With no fit judgment on any norm (the fit off): every non-remedy norm (TIER_ALL). v79.17.0 (item 2):
     with the binding on the pretesa applied (governs_sets), the leading line's list holds the pretesa's articles only,
-    the subordinate's those and the quesiti's; a context-only norm is in neither."""
-    norms = [n for n in inp.get("norms") or [] if not n.get("remedy")]
+    the subordinate's those and the quesiti's; a context-only norm is in neither. v79.18.0 (item 7): a norm with no
+    schema element is in no list (context only)."""
+    norms = [n for n in inp.get("norms") or [] if not n.get("remedy") and has_elements(n)]    # v79.18.0 (item 7)
     gs = governs_sets(inp)
     if gs["applied"]:               # the pretesa's articles (the subordinate: the quesiti's too); a norm the fit never
         allowed_g = set(gs["pretesa"]) | (set(gs["quesiti"]) if kind != "linea_principale" else set())    # judged stays
@@ -1363,6 +1385,9 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
     norm = m["norms"][label]
     if norm.get("remedy"):
         return None, f"art. {label}: rimedio o parte generale, mai una linea"
+    if not has_elements(norm):              # v79.18.0 (item 7): no schema element -> context only, never a line
+        return None, (f"art. {label}: nessun elemento dello schema, solo contesto, mai una linea: ammessi "
+                      f"{', '.join(f'art. {x}' for x in line_tier(inp, kind)[1]) or config()['labels']['none']}")
     if norm.get("fit") == FIT_NO:           # v79.16.1 (item 3): never a «no»; v79.16.2 (item 2): an unverified or
         return None, f"art. {label}: fit «no», mai una linea"     # unjudged norm is allowed (a preference, not a gate)
     gs = governs_sets(inp)                  # v79.17.0 (item 2): the binding on the pretesa -- a context-only norm is
@@ -1923,6 +1948,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
     t0 = started if started is not None else time.time()
     deadline = float(config().get("deadline_s") or 40)
     counters = empty_counters()
+    counters["candidates_no_elements_excluded"] = len(no_element_articles(inp))     # v79.18.0 (item 7)
     calls: List[Dict[str, Any]] = []
     status, error, analysis, reasons, rejected = NO_INPUT, "", None, [], []
     if inp.get("norms") and inp.get("sentences"):
@@ -1960,6 +1986,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
             analysis["rejected"] = rejected
             for k, v in checked["counters"].items():
                 counters[k] = v if k in STRING_COUNTERS else counters.get(k, 0) + v     # v79.15.2: a string kept
+            counters["candidates_no_elements_excluded"] = len(no_element_articles(inp))    # counted once, from the input
         else:
             counters["analysis_failed"] = 1
             counters["analysis_timeouts"] = int(first["status"] == TIMEOUT)
@@ -1969,6 +1996,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
             analysis["rejected"] = []
             for k, v in checked["counters"].items():
                 counters[k] = v if k in STRING_COUNTERS else counters.get(k, 0) + v
+            counters["candidates_no_elements_excluded"] = len(no_element_articles(inp))
     if status == NO_INPUT:
         counters[SKIPPED_REASON] = SKIP_NO_INPUT
     counters["analysis_calls"] = len(calls)
@@ -1990,6 +2018,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                            "facts_cited": facts_cited_log(result["analysis"]),           # v79.16.0 (A4): the F-ids
                            "no_pertinence": no_pertinence_log(result["analysis"]),       # v79.16.1 (item 4)
                            "line_tier": line_tier(inp)[0] if inp.get("norms") else "",   # v79.16.1 (item 3)
+                           "context_only_no_elements": no_element_articles(inp),        # v79.18.0 (item 7)
                            "exceptions": (result["analysis"] or {}).get("eccezioni") or [],
                            "objections": [{"fonte": o.get("fonte"), "sid": o.get("sid"), "parte": o.get("parte"),
                                            "eids": [e.get("eid") for e in o.get("elementi") or []] or [o.get("eid")]}

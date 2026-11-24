@@ -585,6 +585,26 @@ by a non-client party (`lawyer_method.record_allegations`). `data/institution_la
 and `tags`; the lavoro, amministrativo, tributario, famiglia and fallimentare sets added (data only). `scripts/replay_cases.py`
 reports the pretesa, `asked`, the frame and binding counters; `data/replay_cases/batch_2/` holds six more synthetic cases.
 
+## 5m. v79.18.0 (24 Nov 2026), items 6-8: the questions through the family gate with the frame's rito; no-element
+## articles context only; the replay's seconds per stage
+
+No new flag. (6) `QUESTION_RETRIEVAL` + `CASE_FRAME` -- the questions' rows pass the same family gate as the facts' rows
+before they join the candidates (`interactive_flow.gate_quesito_rows`, source «quesiti»): an article outside the case's
+families is not retrieved for a quesito and never enters «by_quesito» (counter `retrieval_quesiti_gated`; the log line
+`retrieval_quesiti` lists `gated`). The gate reads the frame's verified rito (`case_frame.verified_rito`, carried as
+`analysis["frame_rito"]`; a rule-filled or unknown rito restricts nothing): `data/special_laws.json` «rito_families» maps
+each rito to the special-law families it admits beside the codes (`special_laws.rito_families`, `family_gate.context(rito=)`,
+`decide` → `rito_refused`, why «fuori dal rito <rito> (<famiglia>)» -- after the user's naming, before the rules and the
+doors; the codes and an unknown family never gated). The facts' rows pass the same rule (counter `family_rito_dropped`,
+`family_gate.rito_dropped`). The table is Code's draft for the lawyer's review (data only). (7) `ANALYSIS_STEP` -- a fitted
+article with no schema element is context only: not in the prompt's article block (`analysis_step.listed_norms`; the remedy
+set stays listed, marked), in no line list (`line_tier`), refused as a line (`_verify_line`: «nessun elemento dello schema,
+solo contesto»), counted once from the input (`candidates_no_elements_excluded`, log `context_only_no_elements`). The
+system prompts are unchanged (analysis_step 472423ea32d3, applicability c60a2f78634c, case_frame 44d4b100df83). (8)
+`scripts/replay_cases.py` reports `stages` per case -- frame, record, extraction, retrieval, fit, analysis, write, total
+seconds as the flow measured them (`stage_seconds`), in the table («stages (s)») and the diff («seconds.<stage>»); no
+optimisation.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

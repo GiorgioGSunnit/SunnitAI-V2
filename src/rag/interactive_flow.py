@@ -780,6 +780,22 @@ def cap_anchors(rows: Sequence[Dict[str, Any]], rule_topics: Sequence[Dict[str, 
     return list(dict.fromkeys(out))
 
 
+def gate_quesito_rows(rows: Sequence[Dict[str, Any]], fam_ctx: Dict[str, Any], named: set,
+                      overrides: Optional[List[Dict[str, Any]]] = None
+                      ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """v79.18.0 (item 6): (the questions' rows the family gate admits, the rows it dropped -- each {article, doc,
+    family, source «quesiti», why}) -- family_gate.gate with the retrieval's own context (the frame's rito included), so
+    an article outside the case's families is not retrieved for a quesito; the override doors as the retrieval's
+    (overrides appended). A gate that fails keeps every row (logged)."""
+    from . import family_gate
+    got = _isolated("family_gate_quesiti", lambda: family_gate.gate(list(rows or []), fam_ctx, named, "quesiti",
+                                                                    overrides), None)
+    if got is None:
+        return list(rows or []), []
+    kept, dropped, _ = got
+    return kept, dropped
+
+
 def quesiti_gate_log(data: Dict[str, Any]) -> None:
     """v79.16.1 (item 1): the «retrieval_quesiti» line under its plain name (not the flow's «interactive_» prefix, the
     name 79.16.0's line had and the server grep missed): the gate's decision on every case -- queries, source (frame |
@@ -920,6 +936,20 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                     _isolated("first_read_texts", lambda: article_text.fill_texts(session, added, store_))
                 article_rows = list(article_rows) + added
                 search_log = {**search_log, "new": len(added), "s": round(time.time() - t_search, 1)}
+        # v74: every route -- a special law's article without its signal never reaches grading
+        from . import special_laws             # v65: a special law only with its domain signal in the first read
+        named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
+        words = special_laws.read_text(first_read) if first_read else case
+        # v79.10 (A5, review): the family context before the special-law gate -- its override doors reach the table's
+        # laws (a row special_laws.gate drops stays when a door admits it), its dropped rows reach the alarm.
+        # v79.18.0 (item 6): built here, before the questions' search, with the frame's verified rito (analysis
+        # ["frame_rito"]: analyse_case) -- the questions' rows pass the same gate before they join the candidates
+        from . import family_gate
+        fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [],
+                                      rito=str(analysis.get("frame_rito") or ""))
+        special_overrides: List[Dict[str, Any]] = []
+        quesiti_dropped: List[Dict[str, Any]] = []
+        quesiti_dropped_rows: List[Dict[str, Any]] = []
         from .nodes import retrieval as retrieval_module
         if retrieval_module.question_retrieval_enabled():     # v79.16.0 (B): the questions searched
             queries = list(analysis.get("quesiti_queries") or [])
@@ -936,12 +966,20 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 q_rows, q_log = _isolated("quesiti_search", lambda: retrieval_module.retrieve_for_quesiti(
                     session, documents, queries, store=store_), ([], {"queries": len(queries), "per_quesito": []})) \
                     or ([], {"queries": len(queries), "per_quesito": []})
+                # v79.18.0 (item 6): the family gate on the questions' rows first -- an article outside the case's
+                # families (the frame's rito among them) is not retrieved for a quesito: never in «by_quesito»
+                q_before = list(q_rows)
+                q_rows, quesiti_dropped = gate_quesito_rows(q_rows, fam_ctx, named_keys, special_overrides)
+                q_kept_ids = {id(r) for r in q_rows}
+                quesiti_dropped_rows = [r for r in q_before if id(r) not in q_kept_ids]   # the shadow grading's
                 article_rows, q_added, q_labels = retrieval_module.merge_quesito_rows(article_rows, q_rows, _key)
                 if q_added:
                     _isolated("quesiti_texts", lambda: article_text.fill_texts(session, q_added, store_))
                 must += q_labels            # graded past the cap, as the first read's hits
                 q_log = {**q_log, "source": source, "reason": "", "added": [_label_of_row(r) for r in q_added],
-                         "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(article_rows)}
+                         "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(article_rows),
+                         "gated": [{k: x.get(k) for k in ("article", "family", "why")} for x in quesiti_dropped],
+                         "rito": fam_ctx.get("rito") or ""}                     # v79.18.0 (item 6)
                 out["quesiti_retrieval"] = q_log
                 quesiti_gate_log(q_log)
         links = topic_step.GraphLinks(session, documents)
@@ -1018,15 +1056,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 must = [a for a in must if _key(_parse_label(a)) not in gone]
                 out["general_part_gate"] = {"dropped": general_out + regime_out}
                 _log("general_part_gate", out["general_part_gate"])
-        # v74: every route -- a special law's article without its signal never reaches grading
-        from . import special_laws             # v65: a special law only with its domain signal in the first read
-        named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
-        words = special_laws.read_text(first_read) if first_read else case
-        # v79.10 (A5, review): the family context before the special-law gate -- its override doors reach the table's
-        # laws (a row special_laws.gate drops stays when a door admits it), its dropped rows reach the alarm
-        from . import family_gate
-        fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [])
-        special_overrides: List[Dict[str, Any]] = []
+        # v74: every route -- a special law's article without its signal never reaches grading (special_laws.gate;
+        # the family context and the user-named keys are built above, before the questions' search)
 
         def special_door(row: Dict[str, Any]) -> bool:
             return bool(_isolated("family_override", lambda: family_gate.rescued(
@@ -1046,7 +1077,9 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _log("special_law_gate", out["special_law_gate"])
         # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
         # anchors' included, and the area gate's «altri profili» rows (family_gate)
-        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides),
+        fam = {"modules": fam_ctx["modules"], "dropped": list(quesiti_dropped), "admitted": [],    # v79.18.0 (item 6):
+               "overrides": list(special_overrides),                        # the questions' rows the gate dropped too
+               "rito": fam_ctx.get("rito") or "", "rito_families": fam_ctx.get("rito_families"),
                "modules_active": dict(fam_ctx.get("modules_active") or {}),        # v79.12.1: each with its signal
                # v79.12.5 (item 10): the counterparty's qualification -- professional, and the word that made it
                "professional": bool(fam_ctx.get("professional")), "qualifier": str(fam_ctx.get("qualifier") or ""),
@@ -1057,7 +1090,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if special_overrides:
             _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
         # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
-        fam_dropped_rows: List[Dict[str, Any]] = list(special_dropped_rows)
+        fam_dropped_rows: List[Dict[str, Any]] = list(special_dropped_rows) + quesiti_dropped_rows    # v79.18.0
         for name, part in (("retrieval", "article_rows"), ("regimes", "regime_rows"), ("altri profili", "outside")):
             rows_now = {"article_rows": article_rows, "regime_rows": regime_rows, "outside": outside}[part]
             call_overrides: List[Dict[str, Any]] = []
@@ -1088,6 +1121,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {_key(_parse_label(x["article"])) for x in fam["dropped"]}
             anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
             must = [a for a in must if _key(_parse_label(a)) not in gone]
+        fam["rito_dropped"] = family_gate.rito_dropped(fam["dropped"])     # v79.18.0 (item 6): the rito's own drops
         out["family_gate"] = fam
         _log("family_gate", fam)
         if case_first:
@@ -1652,6 +1686,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
             analysis["quesiti_source"] = got[1] if got else "error"       # v79.16.1 (item 1): frame | numbered_items
         else:                           # v79.16.1 (item 1): the gate's decision on every case, never silent
             quesiti_gate_log({"queries": 0, "source": "", "reason": "flag_off"})
+        from . import case_frame        # v79.18.0 (item 6): the frame's verified rito, read by the family gate
+        analysis["frame_rito"] = case_frame.verified_rito(frame) if frame else ""
         _isolated("relative_periods", lambda: relative_periods(analysis, text, request))      # v60g (6)
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
         found = _analysed_and_retrieved(text, request, lang, analysis, t0, meter, pending)
@@ -7928,15 +7964,19 @@ def fact_record_facts(state: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def quesiti_counters(state: Dict[str, Any]) -> None:
     """v79.16.0: block_counters retrieval_quesiti_queries, retrieval_quesiti_added (the labels the questions brought
-    in), fit_kept_from_quesiti (those still held after the fit) and qa_questions_detected (the questions asked)."""
+    in), fit_kept_from_quesiti (those still held after the fit) and qa_questions_detected (the questions asked).
+    v79.18.0 (item 6): retrieval_quesiti_gated (the questions' rows the family gate refused), family_rito_dropped (the
+    rows -- the facts' and the questions' -- the frame's rito refused)."""
     counters = state.setdefault("block_counters", {})
     got = state.get("quesiti_retrieval") or {}
     if got:
         counters["retrieval_quesiti_queries"] = int(got.get("queries") or 0)
         counters["retrieval_quesiti_added"] = list(got.get("added") or [])
+        counters["retrieval_quesiti_gated"] = len(got.get("gated") or [])       # v79.18.0 (item 6)
         records = state.get("records") or {}
         counters["fit_kept_from_quesiti"] = len([x for x in got.get("added") or []
                                                  if x in records and not (records.get(x) or {}).get("dropped")])
+    counters["family_rito_dropped"] = len((state.get("family_gate") or {}).get("rito_dropped") or [])   # v79.18.0
     counters["qa_questions_detected"] = len(asked_questions(state))
 
 
