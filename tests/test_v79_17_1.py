@@ -193,9 +193,14 @@ def test_the_row_the_table_and_the_diff_carry_the_stages():
 
 # --- 9. the pretesa's binding always has a set: the recall ---------------------------------------------------------------
 
-NORMS_9 = [P.NORM, dict(P.NORM, article="1384 c.c.", rubrica="Riduzione della penale",
-                        text="La penale può essere diminuita equamente dal giudice. Il giudice valuta l'interesse."),
-           dict(P.NORM, article="1218 c.c.", rubrica="Responsabilità del debitore", text="Il debitore è tenuto al risarcimento.")]
+# v79.17.2 (item 1): the set holds substantive articles only -- each norm here carries one schema element (1218 c.c. is in
+# the remedy set: never in the set, whatever the verdict or the recall says of it)
+_EL = [{"id": "R1", "testo": "la clausola penale"}]
+NORMS_9 = [dict(P.NORM, elements=_EL),
+           dict(P.NORM, article="1384 c.c.", rubrica="Riduzione della penale", elements=_EL,
+                text="La penale può essere diminuita equamente dal giudice. Il giudice valuta l'interesse."),
+           dict(P.NORM, article="1218 c.c.", rubrica="Responsabilità del debitore", elements=_EL,
+                text="Il debitore è tenuto al risarcimento.")]
 PRETESA_9 = "domanda: «pagamento di una penale»"
 
 
@@ -242,10 +247,12 @@ def test_the_recall_runs_when_no_verdict_governs_the_pretesa_and_its_ids_bind():
     model = _Fit(_verdicts({"1382 c.c.": [], "1384 c.c.": ["Q1"], "1218 c.c.": None}), '{"governa_pretesa": ["A1382cc", "A0cc"]}')
     res = ap.judge(NORMS_9, P.FACTS, "convenuto", call=model, pretesa=PRETESA_9, quesiti=["La penale è riducibile?"])
     c = res["counters"]
-    assert len(model.seen) == 2 and "- A1218cc: 1218 c.c." in model.seen[1]      # the three fitted articles offered
+    assert len(model.seen) == 2 and "- A1218cc: 1218 c.c." not in model.seen[1]   # v79.17.2: the remedy article not offered
+    assert "- A1382cc: 1382 c.c." in model.seen[1] and "- A1384cc: 1384 c.c." in model.seen[1]
     assert c["fit_governs_pretesa"] == 0 and c["fit_pretesa_recall"] == 1 and c["fit_pretesa_recall_empty"] == 0
     assert res["pretesa_recall"]["status"] == "ok" and res["pretesa_recall"]["articles"] == ["1382 c.c."]
-    assert res["pretesa_recall"]["dropped"] == ["A0cc"] and res["pretesa_recall"]["ids_given"] == ["A1382cc", "A1384cc", "A1218cc"]
+    assert res["pretesa_recall"]["dropped"] == ["A0cc"] and res["pretesa_recall"]["ids_given"] == ["A1382cc", "A1384cc"]
+    assert res["by_article"]["1382 c.c."]["substantive"] is True and res["by_article"]["1218 c.c."]["substantive"] is False
     by = res["by_article"]
     assert by["1382 c.c."]["governs"] == ["pretesa"] and by["1382 c.c."]["governs_recalled"] is True
     assert by["1384 c.c."]["governs"] == ["Q1"] and not by["1384 c.c."].get("governs_recalled")
@@ -275,20 +282,33 @@ def test_an_empty_or_failed_recall_leaves_the_set_empty_and_is_counted():
     assert ap.recall_verify('{"governa_pretesa": ["A1382cc"]}', NORMS_9)[0] == ["1382 c.c."]
 
 
-def test_no_recall_when_a_verdict_governs_the_pretesa_or_no_pretesa_is_given():
-    model = _Fit(_verdicts({"1382 c.c.": ["pretesa"], "1384 c.c.": ["Q1"], "1218 c.c.": []}), '{"governa_pretesa": ["A1218cc"]}')
+def test_the_recall_always_runs_with_a_pretesa_and_unites_with_the_tags_never_without_one():
+    # v79.17.2 (item 1): a verdict tags 1382; the recall still runs and adds 1384 -- the set is the union
+    model = _Fit(_verdicts({"1382 c.c.": ["pretesa"], "1384 c.c.": ["Q1"], "1218 c.c.": []}), '{"governa_pretesa": ["A1384cc"]}')
     res = ap.judge(NORMS_9, P.FACTS, "convenuto", call=model, pretesa=PRETESA_9, quesiti=["Q?"])
-    assert len(model.seen) == 1 and res["pretesa_recall"]["status"] == "not_needed"
-    assert res["counters"]["fit_pretesa_recall"] == 0 and res["counters"]["fit_governs_pretesa"] == 1
+    assert len(model.seen) == 2 and res["pretesa_recall"]["status"] == "ok"
+    assert res["counters"]["fit_pretesa_recall"] == 1 and res["counters"]["fit_governs_pretesa"] == 1
+    assert res["by_article"]["1382 c.c."]["governs"] == ["pretesa"] and not res["by_article"]["1382 c.c."].get("governs_recalled")
+    assert res["by_article"]["1384 c.c."]["governs"] == ["Q1", "pretesa"] and res["by_article"]["1384 c.c."]["governs_recalled"]
     model = _Fit(_verdicts({"1382 c.c.": []}), '{"governa_pretesa": ["A1382cc"]}')
     res = ap.judge(NORMS_9, P.FACTS, "convenuto", call=model, quesiti=["Q?"])          # quesiti alone: no pretesa
     assert len(model.seen) == 1 and res["counters"]["fit_pretesa_recall"] == 0
-    # no fitted norm (every verdict unverified): nothing to recall, the call never made
+    # v79.17.2 (item 1): every verdict unverified -- the recall still runs (an unverified verdict is no reason to call the
+    # corpus silent): the substantive norms not removed by a verified «no» are offered, the answer binds
     bad = json.dumps({"giudizi": [{"articolo": n["article"], "fit": "si", "perche": "x", "cita_norma": [], "cita_fatti": [],
                                    "condizione": "", "ambito": "fattispecie", "governa": []} for n in NORMS_9]})
     model = _Fit(bad, '{"governa_pretesa": ["A1382cc"]}')
     res = ap.judge(NORMS_9, P.FACTS, "convenuto", call=model, pretesa=PRETESA_9)
-    assert len(model.seen) == 1 and res["pretesa_recall"]["status"] == "skipped" and res["counters"]["fit_pretesa_recall"] == 0
+    assert len(model.seen) == 2 and res["pretesa_recall"]["status"] == "ok" and res["counters"]["fit_pretesa_recall"] == 1
+    assert res["pretesa_recall"]["ids_given"] == ["A1382cc", "A1384cc"]           # 1218 c.c.: the remedy set
+    assert res["by_article"]["1382 c.c."]["governs"] == ["pretesa"] and res["by_article"]["1382 c.c."]["governs_recalled"]
+    assert res["by_article"]["1382 c.c."]["verified"] is False
+    # a verified «no» is never offered
+    no = json.dumps({"giudizi": [{"articolo": "1382 c.c.", "fit": "no", "perche": "x", "cita_norma": [], "cita_fatti": ["S1"],
+                                  "condizione": "", "ambito": "fattispecie", "governa": []}]})
+    model = _Fit(no, '{"governa_pretesa": ["A1382cc"]}')
+    res = ap.judge(NORMS_9[:1], P.FACTS, "convenuto", call=model, pretesa=PRETESA_9)
+    assert res["by_article"]["1382 c.c."]["verified"] is True and res["pretesa_recall"]["status"] == "skipped"
 
 
 def test_the_replay_row_carries_the_binding_and_the_recall():

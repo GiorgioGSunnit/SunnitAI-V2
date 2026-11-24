@@ -620,6 +620,34 @@ in the subordinate's only when tagged (`line_tier`, the re-ask's «[solo linea s
 (`_verify_line`, counter `analysis_line_outside_rito_rejected`; log `outside_rito`, `rito`). A rito not in the table, no
 rito, a special law or the Costituzione: nothing restricted. The system prompts of the fit and the step are unchanged.
 
+## 5n. v79.17.2 (24 Nov 2026): the governs-pretesa set is substantive and always recalled; the leading line in the set,
+## always; the honesty line
+
+No new flag. (1) `APPLICABILITY_FIT` + `CASE_FRAME` -- the candidates for the governs-pretesa set (a verdict's tag or the
+recall's answer) are substantive articles only: at least one schema element (the record's requisites), not in the remedy
+set (`data/remedy_articles.json`, `when_contractual` with a contractual frame), not of a procedural code
+(`data/applicability.json` «procedural_codes»: cpc, cpp, cpa) -- `applicability.substantive`. The recall always runs when a
+pretesa is given, over the substantive articles the fit did not remove (a verified «si» / «dipende», an unverified verdict,
+an unjudged norm -- never a verified «no»: an unverified verdict is no reason to call the corpus silent), and its answer is
+united with the verdicts' «pretesa» tags on substantive articles (`applicability.apply_recall`). It runs after the records
+are decomposed (`interactive_flow.pretesa_recall_step`, after `decompose_records`: a named or charged article gets its
+requisites there, after the fit), and the binding is computed again there (`binding_pretesa`: «enforced» -- a pretesa was
+given; «nonsubstantive_tagged» -- a tag the set refused; counters `binding_set_size`, `binding_empty_honesty`); its seconds
+go into `fit_seconds`. (2) `ANALYSIS_STEP` -- the step reads the flow's set (`make_input(binding=)`, `inputs`;
+`governs_sets` «enforced»: the set among the step's norms, possibly empty, applied whatever the norms' tags): the leading
+line must be in it, always -- an article outside it, a norm the fit never judged, a quesito-governed article are refused
+(`_verify_line`, counter `analysis_line_outside_set_rejected`); the subordinate may be the set's or a quesito-governed
+article; the frame's charge and the rubrica fallback pick inside the set only (`finish`, `rubrica_fallback(allowed=)`). An
+empty set: no line and no fallback pick -- the honesty line «Il corpus non copre la pretesa: nessun articolo applicabile
+la governa.» (`HONESTY_LINE`, my draft) printed in §1 before the lines (`summary_text`), the leading line «da determinare»,
+`analysis_fallback_skipped_reason` «binding_empty», counter `analysis_binding_empty_honesty`. Why 79.17.1 accepted 1225 c.c.
+and 2043 c.c. outside the set while refusing 1454 c.c.: the step recomputed the set from its own norms' tags and treated an
+unjudged norm as allowed; in caparra the set's only article (1385 c.c.) was not among the step's norms and in
+infiltrazioni it (1218 c.c.) was in the remedy set, so the step saw no binding and picked freely; in opposizione the set's
+645 c.p.c. was among the norms, the binding held and 1454 c.c. (a quesito's) was refused as the leading line. The replay's
+row carries «honesty line» and the counters. The system prompts are unchanged (analysis_step 472423ea32d3, applicability
+c60a2f78634c, the recall 1a584033916f).
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

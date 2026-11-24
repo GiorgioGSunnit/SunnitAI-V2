@@ -115,6 +115,24 @@ def eid(parsed: Dict[str, Any], article: str, text: str) -> str:
     return norm["eids"][norm["elements"].index(text)]
 
 
+def with_recall(fit_reply: Callable[[Any, Any], str]) -> Callable[[Any, Any], str]:
+    """v79.17.2 (item 1): the pretesa's recall (applicability.recall_messages: «PRETESA … ARTICOLI APPLICABILI») answered
+    by the case's fit_reply when it knows the message, else -- a fixture written before the recall -- with every id the
+    message lists (the set is every substantive fitted article: the fixture's lines stand as they were)."""
+    def call(messages, kwargs):
+        human = messages[-1].content
+        if human.startswith("PRETESA") and "ARTICOLI APPLICABILI" in human:
+            try:
+                got = fit_reply(messages, kwargs)
+                if "governa_pretesa" in json.loads(got):
+                    return got
+            except Exception:       # noqa: BLE001 -- the fixture's fake reads facts the recall message has not
+                pass
+            return json.dumps({"governa_pretesa": re.findall(r"^- (A\w+):", human, re.MULTILINE)})
+        return fit_reply(messages, kwargs)
+    return call
+
+
 def rows_of(articles):
     return [{"_article": [n, c], "_grade": 3, "s": {"name": f"{n}.0.0", "plain_text": text, "titolo_articolo": rubrica},
              "d": {"id": doc, "name": name}} for n, c, text, rubrica, doc, name in articles]
@@ -151,7 +169,7 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     labels = [f"{n} {c}" for n, c, *_ in case.ARTICLES]
     model = AnalysisModel(case.analysis_reply)
     monkeypatch.setattr(cf, "_default_call", lambda m, k: json.dumps(case.FRAME_REPLY, ensure_ascii=False))
-    monkeypatch.setattr(ap, "_default_call", case.fit_reply)
+    monkeypatch.setattr(ap, "_default_call", with_recall(case.fit_reply))     # v79.17.2: the recall answered too
     monkeypatch.setattr(A, "_default_call", model)
     objections = getattr(case, "objections", None)
     if objections is None:

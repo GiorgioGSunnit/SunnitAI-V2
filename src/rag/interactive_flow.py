@@ -6396,6 +6396,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         fit_hook([], {})
     if fit_on:                  # v79.13.0: the «dipende» elements «da provare», on the records as decomposed now
         _isolated("applicability_force", lambda: fit_force(state))
+        _isolated("pretesa_recall", lambda: pretesa_recall_step(state))     # v79.17.2 (item 1): the set, on the
         keys = fit_removed_keys(state)
         topics = [t for t in topics if t.get("articles") or "articles" not in t]    # one left with no article: gone
         if not topics:
@@ -7832,22 +7833,34 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     (the context-only labels) into block_counters; logged «binding_pretesa». v79.17.1 (item 9): "recalled" -- the
     articles the pretesa's recall (applicability.pretesa_recall) put in the set when the first pass named none; they are
     in "principale" too (their verdict's governs carries «pretesa», governs_recalled), so the set is always the recall's
-    when it ran -- possibly empty (fit_pretesa_recall_empty: applied False, as before)."""
+    when it ran -- possibly empty (fit_pretesa_recall_empty: applied False, as before). v79.17.2 (item 1): the set holds
+    substantive articles only (applicability.substantive: a verdict's «pretesa» tag on a remedy, a procedural or a
+    no-element article goes to "nonsubstantive_tagged", never into the set); "enforced" -- the fit was given a pretesa:
+    the analysis step's leading line must be in the set, and an empty set means the honesty line (binding_set_size,
+    binding_empty_honesty)."""
     fit = state.get("applicability") or {}
+    enforced = bool(fit.get("governs_asked")) and bool(str(fit.get("pretesa") or "").strip())   # v79.17.2 (item 1)
     out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
-                           "context_only": [], "recalled": []}
+                           "context_only": [], "recalled": [], "enforced": enforced, "nonsubstantive_tagged": []}
     if out["asked"]:
         for j in fit.get("judgments") or []:
-            if not isinstance(j, dict) or not j.get("verified") or j.get("fit") not in ("si", "dipende"):
+            if not isinstance(j, dict):
                 continue
             label = str(j.get("article") or "")
+            recalled = bool(j.get("governs_recalled")) and j.get("substantive", True)   # v79.17.2 (item 1): the
+            if recalled:                                    # recall's answer -- a substantive norm the fit did not
+                out["principale"].append(label)             # remove, its verdict verified or not
+                out["recalled"].append(label)
+            if not j.get("verified") or j.get("fit") not in ("si", "dipende"):
+                continue
             if not isinstance(j.get("governs"), list):      # the verdict said nothing of it: neither set
                 continue
             gov = list(j["governs"])
-            if "pretesa" in gov:
-                out["principale"].append(label)
-                if j.get("governs_recalled"):
-                    out["recalled"].append(label)
+            if "pretesa" in gov and not recalled:
+                if j.get("substantive", True):              # v79.17.2 (item 1): substantive articles only in the set
+                    out["principale"].append(label)
+                else:
+                    out["nonsubstantive_tagged"].append(label)
             for tok in gov:
                 if tok.startswith("Q"):
                     out["quesiti"].setdefault(tok, []).append(label)
@@ -7857,6 +7870,8 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     counters = state.setdefault("block_counters", {})
     counters["binding_pretesa_applied"] = int(out["applied"])
     counters["binding_pretesa_excluded"] = list(out["context_only"]) if out["applied"] else []
+    counters["binding_set_size"] = len(out["principale"])                      # v79.17.2 (item 1)
+    counters["binding_empty_honesty"] = int(enforced and not out["principale"])
     _log("binding_pretesa", out)
     return out
 
@@ -8126,8 +8141,12 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     # v79.17.0 (item 3): the pretesa and the numbered quesiti the verdicts' «governa» refers to
     pretesa_txt, quesiti_list = fit_pretesa_quesiti(state)
     # v79.15.0 (item 3): every judgment verified by the ids it cites (the facts' S-ids, the article's period ids)
+    from . import analysis_step as _as            # v79.17.2 (item 1): the frame's contractual flag for the remedy set
+    held_frame = case_frame._frame(case_frame.held(state)) if case_frame.enabled() and case_frame.held(state) else {}
     result = applicability.judge(norms, facts, role, started=started, frame_context=context, pretesa=pretesa_txt,
-                                 quesiti=quesiti_list)
+                                 quesiti=quesiti_list, contractual=_as.is_contractual(held_frame), recall=False)
+    # v79.17.2 (item 1): the recall runs later, on the records as decomposed (pretesa_recall_step): here the named and
+    # the charged articles have no requisites yet, so nothing could tell a substantive article from a bare one
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
     known = [f["id"] for f in facts]
@@ -8172,12 +8191,15 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         "judgments": [{k: r.get(k) for k in ("article", "fit", "verified", "reason", "added_content", "passage",
                                              "perche", "condizione", "ambito", "cita_norma", "cita_fatti",
                                              "governs",                    # v79.17.0 (item 3): what the norm decides
-                                             "governs_recalled")}          # v79.17.1 (item 9): by the recall
+                                             "governs_recalled",           # v79.17.1 (item 9): by the recall
+                                             "substantive")}               # v79.17.2 (item 1): may be in the set
                       for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
                       if r],
         "governs_asked": bool(result.get("governs_asked")), "quesiti": list(quesiti_list),       # v79.17.0 (item 3)
         "pretesa": pretesa_txt,
-        "pretesa_recall": dict(result.get("pretesa_recall") or {})}       # v79.17.1 (item 9): the recall's record
+        "pretesa_recall": dict(result.get("pretesa_recall") or {}),       # v79.17.1 (item 9): the recall's record
+        "rubriche": {n["article"]: n.get("rubrica") or "" for n in norms},     # v79.17.2: the recall's message
+        "contractual": _as.is_contractual(held_frame)}
     state["binding_pretesa"] = binding_pretesa(state)       # v79.17.0 (item 2): the candidate sets for the lines
     counters = state.setdefault("block_counters", {})
     counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})
@@ -8198,6 +8220,42 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
                                             for e in done["open"]],
                                    "counters": {k: counters.get(k) for k in applicability.FLOW_COUNTERS}})
     return removed
+
+
+def pretesa_recall_step(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.17.2 (item 1): the pretesa's recall on the records as decomposed -- every fitted article's elements are known
+    now (a named or charged article gets its requisites in decompose_records, after the fit), so applicability
+    .substantive can tell the set's candidates (at least one element, not a remedy, not a procedural code); the recall
+    always runs over them (applicability.apply_recall: the verdicts' governs updated, fit_pretesa_recall counters) and
+    the binding is computed again (binding_pretesa: the set, binding_set_size, binding_empty_honesty). Its seconds
+    into fit_seconds / applicability_s (the replay's fit stage). Nothing without a fit or a pretesa."""
+    from . import applicability
+    fit = state.get("applicability") or {}
+    if not fit or not str(fit.get("pretesa") or "").strip():
+        return {}
+    started = time.time()
+    records = state.get("records") or {}
+    rubriche = fit.get("rubriche") or {}
+    norms = []
+    for j in fit.get("judgments") or []:
+        label = str(j.get("article") or "")
+        rec = records.get(label) if isinstance(records.get(label), dict) else {}
+        norms.append({"article": label, "rubrica": rubriche.get(label) or rec.get("rubrica") or "",
+                      "elements": [{"id": r.get("id"), "testo": r.get("text")} for r in rec.get("requisites") or []
+                                   if isinstance(r, dict) and r.get("id")] if rec and not rec.get("dropped") else []})
+    result = {"judgments": fit.get("judgments") or [], "counters": {}, "pretesa_recall": fit.get("pretesa_recall") or {}}
+    contractual = bool(fit.get("contractual"))
+    recall = applicability.apply_recall(result, norms, str(fit.get("pretesa") or ""),
+                                        substantive_of=lambda n: applicability.substantive(n, contractual))
+    fit["pretesa_recall"] = dict(recall)
+    counters = state.setdefault("block_counters", {})
+    for k in ("fit_pretesa_recall", "fit_pretesa_recall_empty"):
+        counters[k] = int(result["counters"].get(k, 0))
+    seconds = round(time.time() - started, 3)
+    counters["fit_seconds"] = round(float(counters.get("fit_seconds") or 0) + seconds, 3)
+    state.setdefault("timings", {})["applicability_s"] = counters["fit_seconds"]
+    state["binding_pretesa"] = binding_pretesa(state)
+    return recall
 
 
 def fit_force(state: Dict[str, Any]) -> Dict[str, List[str]]:

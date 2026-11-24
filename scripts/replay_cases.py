@@ -59,7 +59,8 @@ FIT_COUNTERS = ("fit_si", "fit_si_verified", "fit_dipende", "fit_dipende_verifie
                 "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",          # v79.17.0 (item 3)
                 "fit_pretesa_recall", "fit_pretesa_recall_empty")                          # v79.17.1 (item 9)
 FRAME_COUNTERS = ("frame_pretesa_verified", "frame_pretesa_derived", "frame_asked_side",      # v79.17.0 (item 1)
-                  "binding_pretesa_applied", "binding_pretesa_excluded")                     # v79.17.0 (item 2)
+                  "binding_pretesa_applied", "binding_pretesa_excluded",                     # v79.17.0 (item 2)
+                  "binding_set_size", "binding_empty_honesty")                                # v79.17.2 (item 1)
 ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
                      "analysis_line_rejected", "analysis_line_procedural_rejected", "analysis_line_undetermined",
                      "analysis_line_fallback_rubrica", "analysis_frame_charge_missing", "analysis_provato_downgraded",
@@ -67,7 +68,8 @@ ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "a
                      "analysis_fallback_skipped_reason", "line_from_fit_si", "line_from_fit_dipende",
                      "line_from_unverified", "line_table_weaker",
                      "analysis_line_context_rejected", "analysis_line_quesito_only",       # v79.17.0 (item 2)
-                     "analysis_line_outside_rito_rejected")                                  # v79.17.1 (item 9)
+                     "analysis_line_outside_rito_rejected",                                  # v79.17.1 (item 9)
+                     "analysis_line_outside_set_rejected", "analysis_binding_empty_honesty")   # v79.17.2 (items 1-2)
 RETRIEVAL_COUNTERS = ("retrieval_quesiti_queries", "retrieval_quesiti_added")
 QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insufficient", "qa_answer_fragment",
                "qa_sentences_replaced", "qa_sentences_dropped", "qa_sentences_dropped_dependent",
@@ -132,6 +134,7 @@ def analysis_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict
                           "esito_in_gioco": x.get("esito_in_gioco")})
     return {"status": step.get("status") or line.get("status") or "",
             "line_tier": line.get("line_tier") or "",
+            "honesty": str(analysis.get("honesty") or line.get("honesty") or ""),      # v79.17.2 (item 1)
             "fallback_skipped_reason": (step.get("counters") or {}).get("analysis_fallback_skipped_reason")
             or line.get("fallback_skipped_reason") or "",
             "lines": lines,
@@ -288,6 +291,7 @@ def _row_values(row: Dict[str, Any]) -> Dict[str, Any]:
     flat["analysis.status"] = a.get("status")
     flat["analysis.line_tier"] = a.get("line_tier")
     flat["analysis.fallback_skipped_reason"] = a.get("fallback_skipped_reason")
+    flat["analysis.honesty"] = a.get("honesty") or ""
     for x in a.get("lines") or []:
         flat[f"analysis.{x.get('kind')}"] = f"{x.get('articolo')} {x.get('eid') or ''} {x.get('stato')}".strip()
     for art, els in (a.get("esiti") or {}).items():
@@ -353,6 +357,8 @@ def case_table(row: Dict[str, Any]) -> str:
                      + (f", dropped {_show(rc.get('dropped'))}" if rc.get("dropped") else "") + " |")
     lines.append(f"| analysis status / tier / fallback | {_show(a.get('status'))} / {_show(a.get('line_tier'))} / "
                  f"{_show(a.get('fallback_skipped_reason'))} |")
+    if a.get("honesty"):
+        lines.append(f"| honesty line | {a['honesty']} |")
     for x in a.get("lines") or []:
         lines.append(f"| analysis.{x.get('kind')} | art. {x.get('articolo')} {x.get('eid') or ''} ({x.get('stato')}"
                      f"{', ' + str(x.get('esito_in_gioco')) if x.get('esito_in_gioco') else ''}) |")

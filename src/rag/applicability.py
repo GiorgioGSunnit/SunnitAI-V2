@@ -845,6 +845,25 @@ def recall_verify(reply: Any, norms: Sequence[Dict[str, Any]]) -> Tuple[List[str
     return sorted(kept, key=order.index), dropped
 
 
+def procedural_codes() -> List[str]:
+    """data «procedural_codes»: the article_key code keys of the procedural codes (cpc, cpp, cpa)."""
+    return [str(x).lower() for x in config().get("procedural_codes") or []]
+
+
+def substantive(norm: Dict[str, Any], contractual: bool = False) -> bool:
+    """v79.17.2 (item 1): the norm may govern the pretesa -- at least one schema element (the record's requisites, as
+    norm_input carries them), not in the remedy / general-part set (analysis_step.is_remedy; contractual: the frame's,
+    for the «when_contractual» entries), not of a procedural code (procedural_codes). Anything else is context or a
+    remedy, never the governs-pretesa set's."""
+    from . import analysis_step
+    label = str(norm.get("article") or "")
+    if not [e for e in norm.get("elements") or [] if isinstance(e, dict) and str(e.get("testo") or "").strip()]:
+        return False
+    if analysis_step.is_remedy(label, contractual):
+        return False
+    return analysis_step.art_parts(label)[1] not in procedural_codes()
+
+
 def pretesa_recall(norms: Sequence[Dict[str, Any]], pretesa: str,
                    call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
                    budget_s: Optional[float] = None) -> Dict[str, Any]:
@@ -882,6 +901,45 @@ def pretesa_recall(norms: Sequence[Dict[str, Any]], pretesa: str,
     return out
 
 
+def apply_recall(result: Dict[str, Any], norms: Sequence[Dict[str, Any]], pretesa: str,
+                 call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
+                 substantive_of: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Dict[str, Any]:
+    """v79.17.2 (item 1): the recall on a judge result -- every record gets rec["substantive"] (substantive_of(norm);
+    default substantive()), the recall runs over the substantive norms not removed by a verified «no» (norms: by the
+    records' order, {article, rubrica, elements}), the kept articles get «pretesa» in their governs (governs_recalled), the
+    counters fit_pretesa_recall / fit_pretesa_recall_empty and result["pretesa_recall"] set; logged
+    «applicability_pretesa_recall». No pretesa: nothing (status not_needed). Returns the recall's record."""
+    judge_of = substantive_of or substantive
+    by_label = {str(n.get("article") or ""): n for n in norms}
+    records = [r for r in result.get("judgments") or [] if r]
+    for rec in records:
+        rec["substantive"] = bool(judge_of(by_label.get(str(rec.get("article") or ""), {"article": rec.get("article")})))
+    recall = result.get("pretesa_recall") or {"status": "not_needed", "articles": [], "dropped": [], "ids_given": [],
+                                              "seconds": 0.0, "error": ""}
+    counters = result.setdefault("counters", empty_counters())
+    if not str(pretesa or "").strip():
+        result["pretesa_recall"] = recall
+        return recall
+    # the candidates: the substantive norms the fit did not remove -- a verified «si» / «dipende», an unverified verdict,
+    # an unjudged norm; never a verified «no» (an unverified verdict is no reason to call the corpus silent)
+    fitted = [r for r in records if r.get("substantive") and not (r.get("verified") and r.get("fit") == NO)]
+    recall = pretesa_recall([by_label.get(str(r["article"]), {"article": r["article"]}) for r in fitted], pretesa, call)
+    if recall["status"] != "skipped":
+        counters["fit_pretesa_recall"] = 1
+        counters["fit_pretesa_recall_empty"] = int(recall["status"] == "ok" and not recall["articles"])
+        for rec in fitted:
+            if rec["article"] in recall["articles"]:
+                gov = list(rec["governs"]) if isinstance(rec.get("governs"), list) else []
+                rec["governs"] = gov + ([GOVERNS_PRETESA] if GOVERNS_PRETESA not in gov else [])
+                rec["governs_recalled"] = True
+    if recall["status"] not in ("ok", "skipped"):
+        logger.warning("applicability: pretesa recall %s: %s", recall["status"], recall["error"])
+    _log("applicability_pretesa_recall", {k: recall.get(k) for k in ("status", "ids_given", "articles", "dropped",
+                                                                      "seconds", "error", "prompt_hash")})
+    result["pretesa_recall"] = recall
+    return recall
+
+
 # --- the step ---------------------------------------------------------------------------------------------------------
 
 def empty_counters() -> Dict[str, int]:
@@ -891,7 +949,8 @@ def empty_counters() -> Dict[str, int]:
 def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role: str = "",
           call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
           started: Optional[float] = None, frame_context: str = "", case_text: str = "",
-          pretesa: str = "", quesiti: Sequence[str] = ()) -> Dict[str, Any]:
+          pretesa: str = "", quesiti: Sequence[str] = (), contractual: bool = False, recall: bool = True
+          ) -> Dict[str, Any]:
     """The step over the admitted candidates. norms: [{article, text, rubrica, note?, elements?, schema?}]; facts:
     [{id, text, certainty}]; role: the client's. Every norm gets a record (judgments, input order; by_article); only a
     verified one may have an effect -- the caller's. No facts: nothing is sent (every record «nessun fatto»).
@@ -899,7 +958,11 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
     frame_context: v79.14.0 -- the verified case frame as the calls' context (case_frame.fit_context); "" none.
     case_text: unused since v79.15.0 (item 3: the fit verified by ids; kept for the callers). v79.17.0 (item 3):
     pretesa (case_frame.pretesa_text) and quesiti (the numbered questions) -- given, each verdict's «governa» is read
-    (verify: rec["governs"]) and counted (fit_governs_pretesa, fit_governs_quesiti, fit_context_only)."""
+    (verify: rec["governs"]) and counted (fit_governs_pretesa, fit_governs_quesiti, fit_context_only). v79.17.2
+    (item 1): with a pretesa, the recall (pretesa_recall) always runs over the substantive fitted norms (substantive:
+    contractual is the frame's), whatever the verdicts tagged; each record says rec["substantive"]. recall False: the
+    caller runs it later (interactive_flow.pretesa_recall_step: after the records are decomposed, when every candidate's
+    elements are known) through apply_recall."""
     t0 = started if started is not None else time.time()
     quesiti = [str(q) for q in quesiti or [] if str(q or "").strip()]
     governs_asked = bool(str(pretesa or "").strip() or quesiti)
@@ -982,30 +1045,15 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
             logger.info("applicability: %s unverified: %s", rec["article"], rec["reason"])
             _log("applicability_fit_discard", {"article": rec["article"], "reason": rec["reason"],
                                                "fit": rec["fit"], "perche": rec["perche"][:300]})
-    recall: Dict[str, Any] = {"status": "not_needed", "articles": [], "dropped": [], "ids_given": [], "seconds": 0.0,
-                              "error": ""}
-    if str(pretesa or "").strip() and counters["fit_governs_pretesa"] == 0:       # v79.17.1 (item 9): the binding
-        fitted = [(i, r) for i, r in enumerate(records)                           # always has a set
-                  if i in sent and r and r["verified"] and r["fit"] in (SI, DIPENDE)]
-        recall = pretesa_recall([norms[i] for i, _ in fitted], pretesa, call)
-        if recall["status"] != "skipped":
-            counters["fit_pretesa_recall"] = 1
-            counters["fit_pretesa_recall_empty"] = int(recall["status"] == "ok" and not recall["articles"])
-            for i, rec in fitted:
-                if rec["article"] in recall["articles"]:
-                    gov = list(rec["governs"]) if isinstance(rec.get("governs"), list) else []
-                    rec["governs"] = gov + ([GOVERNS_PRETESA] if GOVERNS_PRETESA not in gov else [])
-                    rec["governs_recalled"] = True
-        if recall["status"] not in ("ok", "skipped"):
-            logger.warning("applicability: pretesa recall %s: %s", recall["status"], recall["error"])
-        _log("applicability_pretesa_recall", {k: recall.get(k) for k in ("status", "ids_given", "articles", "dropped",
-                                                                          "seconds", "error", "prompt_hash")})
     total = time.time() - t0
     result = {"prompt_hash": prompt_hash(), "judgments": records,
               "by_article": {str(r["article"]): r for r in records if r is not None},
               "counters": counters, "timing": {"total_s": round(total, 3), "calls": calls}, "log": log,
               "governs_asked": governs_asked, "quesiti_n": len(quesiti),        # v79.17.0 (item 3)
-              "pretesa_recall": recall}                                         # v79.17.1 (item 9)
+              "pretesa_recall": {"status": "not_needed", "articles": [], "dropped": [], "ids_given": [],
+                                 "seconds": 0.0, "error": ""}}                   # v79.17.1 (item 9)
+    if recall:
+        apply_recall(result, norms, pretesa, call, lambda n: substantive(n, contractual))
     _log("applicability_fit", {"prompt_hash": result["prompt_hash"], "counters": counters,
                                "total_s": result["timing"]["total_s"], "calls": calls})
     return result
@@ -1139,7 +1187,7 @@ def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[
             continue
         entry = {k: rec.get(k) for k in ("article", "fit", "perche", "passage", "comma", "facts", "condizione",
                                          "ambito", "touches", "added_content", "fact_quotes", "cita_fatti",
-                                         "cita_norma", "governs", "governs_recalled")}
+                                         "cita_norma", "governs", "governs_recalled", "substantive")}
         label = str(rec.get("article") or "")
         if rec["fit"] == NO:
             named = es.norm_label(label) in guard or " ".join(label.lower().split()) in guard

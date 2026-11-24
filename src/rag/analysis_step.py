@@ -208,7 +208,10 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "candidates_no_elements_excluded",
             # v79.17.1 (item 9): a line on an article whose code is outside the frame's rito (1439 c.c. in a penal case)
             # refused -- as the leading line always, as the subordinate unless the fit tagged it (outside_rito)
-            "analysis_line_outside_rito_rejected")
+            "analysis_line_outside_rito_rejected",
+            # v79.17.2 (item 2): a leading line outside the governs-pretesa set (a subordinate outside the set and the
+            # quesiti's) refused; the binding enforced with an empty set: the honesty line, no fallback pick
+            "analysis_line_outside_set_rejected", "analysis_binding_empty_honesty")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
@@ -230,6 +233,8 @@ SKIP_NO_NAMED_CHARGE = "no_named_charge"        # no verified leading line, and 
 SKIP_NO_RUBRICA_MATCH = "no_rubrica_match"      # a named charge / claim, but no fitted rubrica equal to it
 SKIP_STEP_FAILED = "step_failed"                # the input unread (v79.16.2: a failed call runs the fallbacks instead)
 SKIP_NO_INPUT = "no_input"                      # no fitted norm or no sentence: nothing called
+SKIP_BINDING_EMPTY = "binding_empty"            # v79.17.2 (item 1): the set is empty -- the honesty line, no pick
+HONESTY_LINE = "Il corpus non copre la pretesa: nessun articolo applicabile la governa."    # v79.17.2 (item 1), my draft
 STRING_COUNTERS = (SKIPPED_REASON,)
 
 
@@ -651,7 +656,7 @@ def named_issues(frame: Optional[Dict[str, Any]], older: Sequence[str] = ()) -> 
 
 def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]], sentences: Sequence[Dict[str, Any]],
                questions: Sequence[str] = (), client: str = "", client_roles: Sequence[str] = (),
-               older_issues: Sequence[str] = ()) -> Dict[str, Any]:
+               older_issues: Sequence[str] = (), binding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The step's input. frame: the verified frame's fields (only verified ones; {} none); norms: [{article, text,
     rubrica, elements: [{id, testo, schema_kind?, special?}]}] -- the fitted norms; sentences: [{id, text, certainty,
     source, alleged_by?}] numbered as the flow numbers them (a «sistema» one left out, the numbers kept); questions: the
@@ -659,7 +664,9 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
     older_issues: the older frame's central_issue_candidates' names the caller checked (v79.15.1, the rubrica
     fallback). v79.15.1: each element gets its E-id («eid», element_id), «eccezione» and «eccezione_fonte»
     (exception_of); the input carries «claimant» and «issues» (named_issues). v79.15.3: «side» / «side_why»
-    (client_side: attore | difesa | neutro, from the verified frame only); «claimant» is side == attore."""
+    (client_side: attore | difesa | neutro, from the verified frame only); «claimant» is side == attore. v79.17.2
+    (item 1): binding -- the flow's binding on the pretesa (interactive_flow.binding_pretesa: enforced, principale);
+    carried as «binding» {"enforced", "pretesa": its articles}; None: the sets are read from the norms' governs."""
     f = dict(frame or {})
     contractual = is_contractual(f)
     charge = _cf().charge_label({"frame": f}) if (f.get("addebito_o_domanda") or {}).get("articolo") else ""
@@ -700,7 +707,9 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
                                                                               _flat(q)],
             "client": client, "client_roles": [str(r) for r in client_roles or [] if str(r or "").strip()],
             "charge": charge, "contractual": contractual, "claimant": side == SIDE_CLAIMANT,
-            "side": side, "side_why": side_why, "issues": named_issues(f, older_issues)}
+            "side": side, "side_why": side_why, "issues": named_issues(f, older_issues),
+            "binding": {"enforced": bool((binding or {}).get("enforced")),
+                        "pretesa": [str(x) for x in (binding or {}).get("principale") or []]} if binding else None}
 
 
 def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -733,9 +742,10 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         j = fits.get(flow._key(flow._parse_label(label)))             # v79.16.1 (item 3): the fit's verdict
         if j is not None:
             n["fit"], n["fit_verified"], n["fit_perche"] = j.get("fit"), bool(j.get("verified")), j.get("perche") or ""
-            if (state.get("applicability") or {}).get("governs_asked") and j.get("verified") \
-                    and j.get("fit") in (FIT_SI, FIT_DIPENDE) and isinstance(j.get("governs"), list):    # v79.17.0
-                n["governs"] = list(j["governs"])                                                        # (item 2)
+            if (state.get("applicability") or {}).get("governs_asked") and isinstance(j.get("governs"), list) and (
+                    (j.get("verified") and j.get("fit") in (FIT_SI, FIT_DIPENDE))         # v79.17.0 (item 2)
+                    or j.get("governs_recalled")):             # v79.17.2 (item 1): the recall's, verified or not
+                n["governs"] = list(j["governs"])
         norms.append(n)
     sents = state.get("sentences") or flow.case_sentences(state)
     questions = list(frame.get("quesiti") or []) or flow.asked_questions(state)
@@ -744,7 +754,8 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         roles = flow.client_roles(state)
     except Exception:           # noqa: BLE001 -- no role read: the client's name and side words only
         roles = []
-    return make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents))
+    return make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents),
+                      binding=state.get("binding_pretesa") if isinstance(state.get("binding_pretesa"), dict) else None)
 
 
 def older_issues(state: Dict[str, Any], sentences: Sequence[Dict[str, Any]] = ()) -> List[str]:
@@ -916,11 +927,16 @@ def _canon_fit_value(value: Any) -> Optional[str]:
 def governs_sets(inp: Dict[str, Any]) -> Dict[str, Any]:
     """v79.17.0 (item 2): the binding on the pretesa as the step reads it from the norms' «governs» -- {"applied": a
     norm governs the pretesa, "pretesa": its articles, "quesiti": the articles governing a quesito only, "context":
-    the verified norms governing neither (never a line)}; applied False when no norm carries a governs list."""
+    the verified norms governing neither (never a line)}; applied False when no norm carries a governs list. v79.17.2
+    (items 1-2): with inp["binding"] enforced (the fit was given a pretesa) the pretesa set is the flow's (binding_pretesa
+    .principale, among this input's norms) -- possibly empty -- and applied is True whatever the norms' tags: the
+    leading line must be in it, nothing unjudged stands in for it."""
     norms = [n for n in inp.get("norms") or [] if not n.get("remedy")]
     with_gov = [n for n in norms if isinstance(n.get("governs"), list)]
-    out = {"applied": False, "pretesa": [], "quesiti": [], "context": []}
-    if not with_gov:
+    binding = inp.get("binding") if isinstance(inp.get("binding"), dict) else None
+    enforced = bool(binding and binding.get("enforced"))
+    out = {"applied": False, "pretesa": [], "quesiti": [], "context": [], "enforced": enforced}
+    if not with_gov and not enforced:
         return out
     for n in with_gov:
         gov = n["governs"]
@@ -930,7 +946,12 @@ def governs_sets(inp: Dict[str, Any]) -> Dict[str, Any]:
             out["quesiti"].append(n["article"])
         else:
             out["context"].append(n["article"])
-    out["applied"] = bool(out["pretesa"])
+    if enforced:                    # v79.17.2 (items 1-2): the flow's set, among this input's norms, is the set
+        labels = {n["article"] for n in norms}
+        out["pretesa"] = [x for x in binding.get("pretesa") or [] if x in labels]
+        out["quesiti"] = [x for x in out["quesiti"] if x not in out["pretesa"]]
+        out["context"] = [x for x in out["context"] if x not in out["pretesa"]]
+    out["applied"] = bool(out["pretesa"]) or enforced
     return out
 
 
@@ -950,7 +971,8 @@ def line_tier(inp: Dict[str, Any], kind: str = "linea_principale") -> Tuple[str,
     gs = governs_sets(inp)
     if gs["applied"]:               # the pretesa's articles (the subordinate: the quesiti's too); a norm the fit never
         allowed_g = set(gs["pretesa"]) | (set(gs["quesiti"]) if kind != "linea_principale" else set())    # judged stays
-        norms = [n for n in norms if n["article"] in allowed_g or not isinstance(n.get("governs"), list)]
+        norms = [n for n in norms if n["article"] in allowed_g       # -- unless the binding is enforced (v79.17.2)
+                 or (not gs.get("enforced") and not isinstance(n.get("governs"), list))]
     if not any(n.get("fit") for n in inp.get("norms") or []):
         return TIER_ALL, [n["article"] for n in norms]
     verified = lambda n, fit: n.get("fit") == fit and bool(n.get("fit_verified"))    # noqa: E731
@@ -1444,6 +1466,16 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
         return None, (f"art. {label}: codice fuori dal rito {rito_out} e il fit non lo riferisce né alla pretesa né a "
                       f"un quesito: solo contesto, mai una linea: ammessi {ok}")
     gs = governs_sets(inp)                  # v79.17.0 (item 2): the binding on the pretesa -- a context-only norm is
+    if gs.get("enforced"):                  # v79.17.2 (item 2): the leading line in the set, always; the subordinate
+        allowed_set = set(gs["pretesa"]) | (set(gs["quesiti"]) if kind != "linea_principale" else set())   # in the
+        if label not in allowed_set and not (gs["applied"] and label in gs["context"]) \
+                and not (gs["applied"] and kind == "linea_principale" and label in gs["quesiti"]):   # set or the quesiti's
+            counters["analysis_line_outside_set_rejected"] += 1
+            if kind == "linea_principale" and not gs["pretesa"]:
+                return None, f"art. {label}: {HONESTY_LINE[:-1]}: nessuna linea principale"
+            return None, (f"art. {label}: fuori dall'insieme che governa la pretesa"
+                          + (" e dai quesiti" if kind != "linea_principale" else "")
+                          + f": ammessi {', '.join(f'art. {x}' for x in sorted(allowed_set, key=m['labels'].index)) or config()['labels']['none']}")
     if gs["applied"] and label in gs["context"]:            # never a line, a quesito's only the subordinate
         counters["analysis_line_context_rejected"] += 1
         return None, (f"art. {label}: solo contesto (il fit non lo riferisce né alla pretesa né a un quesito), mai una "
@@ -1735,17 +1767,20 @@ def empty_checked(inp: Dict[str, Any]) -> Dict[str, Any]:
             "charge_missing": bool(inp.get("charge")), "reply": {}, "counters": empty_counters(), "raised": []}
 
 
-def rubrica_fallback(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def rubrica_fallback(inp: Dict[str, Any], allowed: Optional[Sequence[str]] = None) -> Optional[Dict[str, Any]]:
     """v79.15.1 (item 2): the leading line from the frame's named charges / claims (inp «issues»: named_issues) -- the
     first name whose rubrica_key equals a fitted norm's rubrica's (no fuzzy match), the remedy set left out, its first
     such norm in the input's order: stato FALLBACK_LINE, no element in play, no id cited, tesi FALLBACK_TESI on the
-    norm's rubrica as the input has it (penal: penal_frame); None when no name matches."""
+    norm's rubrica as the input has it (penal: penal_frame); None when no name matches. v79.17.2 (item 2): allowed --
+    the governs-pretesa set when the binding is enforced: a norm outside it is never the fallback's line either."""
     for name in inp.get("issues") or []:
         key = rubrica_key(name)
         if not key:
             continue
         for n in inp.get("norms") or []:
             if n.get("remedy") or not n.get("rubrica") or rubrica_key(n["rubrica"]) != key:
+                continue
+            if allowed is not None and n["article"] not in allowed:
                 continue
             tesi = FALLBACK_TESI["penale" if penal_frame(inp.get("frame"), n["article"]) else "civile"]
             return {"articolo": n["article"], "elemento_in_gioco": None, "elemento_id": None, "eid": None,
@@ -1884,15 +1919,22 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
     principale, subordinata = lines.get("linea_principale"), lines.get("linea_subordinata")
     charge = inp.get("charge") or ""
     frame_label = ""
-    if checked.get("charge_missing") and charge:
-        counters["analysis_frame_charge_missing"] = 1
+    gs_f = governs_sets(inp)
+    in_set = (lambda label: not gs_f.get("enforced") or (resolve(label, m["labels"]) or label) in gs_f["pretesa"])
+    if checked.get("charge_missing") and charge and in_set(charge):     # v79.17.2 (item 2): the frame's charge leads
+        counters["analysis_frame_charge_missing"] = 1                   # only when it is in the enforced set
         counters[SKIPPED_REASON] = SKIP_FRAME_CHARGE        # v79.15.2: the frame's article leads, no rubrica read
         frame_label = resolve(charge, m["labels"]) or charge
         subordinata = principale or subordinata
         principale = {"articolo": frame_label, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
                       "tesi": "", "cita_fatti": [], "cita_norma": [], "stato": FRAME_LINE}
+    elif principale is None and governs_sets(inp).get("enforced") and not governs_sets(inp)["pretesa"]:
+        counters["analysis_line_undetermined"] = 1          # v79.17.2 (item 1): the set is empty -- the honesty line,
+        counters["analysis_binding_empty_honesty"] = 1      # never a fallback pick (the frame's charge, a rubrica)
+        counters[SKIPPED_REASON] = SKIP_BINDING_EMPTY
+        principale = undetermined_line()
     elif principale is None:
-        principale = rubrica_fallback(inp)
+        principale = rubrica_fallback(inp, gs_f["pretesa"] if gs_f.get("enforced") else None)   # v79.17.2 (item 2)
         if principale is not None:
             counters["analysis_line_fallback_rubrica"] = 1
             counters[SKIPPED_REASON] = ""
@@ -1935,7 +1977,8 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             "claimant": bool(inp.get("claimant")), "side": inp.get("side") or SIDE_NEUTRAL, "obiezioni": objections,
             "eccezioni": [{"articolo": label, "eid": e.get("eid"), "fonte": e.get("eccezione_fonte")}
                           for label, els in elements.items() for e in els if e.get("eccezione")],
-            "rejected": checked.get("rejected") or [], "fallback_skipped_reason": counters.get(SKIPPED_REASON) or ""}
+            "rejected": checked.get("rejected") or [], "fallback_skipped_reason": counters.get(SKIPPED_REASON) or "",
+            "honesty": HONESTY_LINE if counters.get(SKIPPED_REASON) == SKIP_BINDING_EMPTY else ""}   # v79.17.2 (item 1)
 
 
 def line_table_weaker(principale: Optional[Dict[str, Any]], subordinata: Optional[Dict[str, Any]],
@@ -2026,7 +2069,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                     for k in ("analysis_line_rejected", "analysis_line_exception", "analysis_bad_eid",
                               "analysis_line_procedural_rejected",           # v79.16.1 (item 3): the first reply's too
                               "analysis_line_context_rejected", "analysis_line_quesito_only",     # v79.17.0 (item 2)
-                              "analysis_line_outside_rito_rejected"):                              # v79.17.1 (item 9)
+                              "analysis_line_outside_rito_rejected",                               # v79.17.1 (item 9)
+                              "analysis_line_outside_set_rejected"):                                # v79.17.2 (item 2)
                         again["counters"][k] += checked["counters"][k]
                     again["raised"] = list(checked.get("raised") or []) + [
                         r for r in again.get("raised") or [] if r not in (checked.get("raised") or [])]
@@ -2074,6 +2118,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                            "line_tier": line_tier(inp)[0] if inp.get("norms") else "",   # v79.16.1 (item 3)
                            "context_only_no_elements": no_element_articles(inp),        # v79.17.1 (item 7)
                            "outside_rito": outside_rito_articles(inp),                   # v79.17.1 (item 9)
+                           "binding": governs_sets(inp) if inp.get("norms") else {},     # v79.17.2 (items 1-2)
+                           "honesty": (result["analysis"] or {}).get("honesty") or "",
                            "rito": frame_rito(inp.get("frame")),
                            "exceptions": (result["analysis"] or {}).get("eccezioni") or [],
                            "objections": [{"fonte": o.get("fonte"), "sid": o.get("sid"), "parte": o.get("parte"),
@@ -2275,6 +2321,9 @@ def summary_text(v: Dict[str, Any]) -> str:
     """§1: the leading line and the subordinate one, labels and the verified text only. v79.17.0 (item 5): the pretesa
     first (v["pretesa_line"]: case_frame.pretesa_line -- a derived one with its banner), then the lines."""
     head = [str(v.get("pretesa_line") or "")] if v.get("pretesa_line") else []
+    a = v.get("analysis") if isinstance(v.get("analysis"), dict) else {}
+    if a.get("honesty"):                    # v79.17.2 (item 1): the set is empty -- said before the lines
+        head.append(str(a["honesty"]))
     return "\n\n".join(head + [f"{label}: {line_text(x)}." for label, x in _lines(v)])
 
 
