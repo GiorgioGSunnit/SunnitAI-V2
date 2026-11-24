@@ -203,9 +203,12 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "line_from_fit_si", "line_from_fit_dipende", "line_from_unverified", "analysis_line_procedural_rejected",
             "analysis_provato_no_pertinence",
             "analysis_line_context_rejected", "analysis_line_quesito_only",        # v79.17.0 (item 2)
-            # v79.18.0 (item 7): the fitted articles with no schema element -- context only, never a line candidate,
+            # v79.17.1 (item 7): the fitted articles with no schema element -- context only, never a line candidate,
             # not in the prompt's article block
-            "candidates_no_elements_excluded")
+            "candidates_no_elements_excluded",
+            # v79.17.1 (item 9): a line on an article whose code is outside the frame's rito (1439 c.c. in a penal case)
+            # refused -- as the leading line always, as the subordinate unless the fit tagged it (outside_rito)
+            "analysis_line_outside_rito_rejected")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
@@ -829,28 +832,65 @@ def build_messages(inp: Dict[str, Any]) -> List[Any]:
     tier, allowed = line_tier(inp)      # v79.16.2 (item 2): each norm's rank in the preference order (fit on)
     ranks = {} if tier == TIER_ALL else {a: (i + 1, len(allowed)) for i, a in enumerate(allowed)}
     parts.append(f"{labels['norms']}:\n\n" + "\n\n".join(_norm_block(n, ranks.get(n["article"]))
-                                                            for n in listed_norms(inp)))      # v79.18.0 (item 7)
+                                                            for n in listed_norms(inp)))      # v79.17.1 (item 7)
     qs = inp.get("questions") or []
     parts.append(f"{labels['questions']}:\n" + ("\n".join(f"- {q}" for q in qs) if qs else labels["none"]))
     return [SystemMessage(content=prompt_system()), HumanMessage(content="\n\n".join(parts))]
 
 
 def has_elements(norm: Dict[str, Any]) -> bool:
-    """v79.18.0 (item 7): the norm carries at least one schema element (the record's requisites, make_input)."""
+    """v79.17.1 (item 7): the norm carries at least one schema element (the record's requisites, make_input)."""
     return bool(norm.get("elements"))
 
 
 def listed_norms(inp: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """v79.18.0 (item 7): the norms the prompt's article block lists -- those with at least one element, and the remedy
+    """v79.17.1 (item 7): the norms the prompt's article block lists -- those with at least one element, and the remedy
     set (marked, never a candidate: listed for its periods, the remedies section's); a non-remedy article with no
     element is context only (no_element_articles): not listed, never offered, never a line."""
     return [n for n in inp.get("norms") or [] if has_elements(n) or n.get("remedy")]
 
 
 def no_element_articles(inp: Dict[str, Any]) -> List[str]:
-    """v79.18.0 (item 7): the fitted articles with no schema element (the remedy set aside: never a candidate anyway)
+    """v79.17.1 (item 7): the fitted articles with no schema element (the remedy set aside: never a candidate anyway)
     -- counted candidates_no_elements_excluded, logged «context_only_no_elements»."""
     return [n["article"] for n in inp.get("norms") or [] if not has_elements(n) and not n.get("remedy")]
+
+
+@lru_cache(maxsize=1)
+def _rito_codes() -> Dict[str, frozenset]:
+    """data «rito_codes»: the frame's rito -> the article_key code keys of its family."""
+    return {str(k): frozenset(str(c) for c in v) for k, v in (config().get("rito_codes") or {}).items()
+            if isinstance(v, (list, tuple))}
+
+
+def frame_rito(frame: Optional[Dict[str, Any]]) -> str:
+    """The frame's rito (valore, else intake -- as penal_frame reads it); "" with none."""
+    rito = (frame or {}).get("rito") if isinstance((frame or {}).get("rito"), dict) else {}
+    return str(rito.get("valore") or rito.get("intake") or "")
+
+
+def outside_rito(norm: Dict[str, Any], inp: Dict[str, Any]) -> str:
+    """v79.17.1 (item 9): the rito whose family the article's code is outside of (1439 c.c. in a penal case), "" when
+    nothing restricts it: no rito, a rito not in the table, a code not in the table (a special law, the Costituzione),
+    or the rito's own code."""
+    table = _rito_codes()
+    rito = frame_rito(inp.get("frame"))
+    own = table.get(rito)
+    if not own:
+        return ""
+    code = art_parts(norm.get("article"))[1]
+    known = frozenset().union(*table.values())
+    return rito if code and code in known and code not in own else ""
+
+
+def governs_tagged(norm: Dict[str, Any]) -> bool:
+    """The fit tagged the norm as governing the pretesa or a quesito (a governs list with a token)."""
+    return isinstance(norm.get("governs"), list) and bool(norm["governs"])
+
+
+def outside_rito_articles(inp: Dict[str, Any]) -> List[str]:
+    """v79.17.1 (item 9): the fitted non-remedy articles whose code is outside the frame's rito (logged)."""
+    return [n["article"] for n in inp.get("norms") or [] if not n.get("remedy") and outside_rito(n, inp)]
 
 
 def line_elements(norm: Dict[str, Any], inp: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -900,9 +940,13 @@ def line_tier(inp: Dict[str, Any], kind: str = "linea_principale") -> Tuple[str,
     remedy. v79.16.2 (item 2): a preference, not a gate -- the list holds every tier, in that order; _verify_line refuses
     a «no» only. With no fit judgment on any norm (the fit off): every non-remedy norm (TIER_ALL). v79.17.0 (item 2):
     with the binding on the pretesa applied (governs_sets), the leading line's list holds the pretesa's articles only,
-    the subordinate's those and the quesiti's; a context-only norm is in neither. v79.18.0 (item 7): a norm with no
-    schema element is in no list (context only)."""
-    norms = [n for n in inp.get("norms") or [] if not n.get("remedy") and has_elements(n)]    # v79.18.0 (item 7)
+    the subordinate's those and the quesiti's; a context-only norm is in neither. v79.17.1 (item 7): a norm with no
+    schema element is in no list (context only). v79.17.1 (item 9): a norm whose code is outside the frame's rito
+    (outside_rito) is never in the leading line's list and in the subordinate's only when the fit tagged it as governing
+    the pretesa or a quesito (governs_tagged)."""
+    norms = [n for n in inp.get("norms") or [] if not n.get("remedy") and has_elements(n)]    # v79.17.1 (item 7)
+    # v79.17.1 (item 9): a code outside the frame's rito -- never the leading line; the subordinate only when tagged
+    norms = [n for n in norms if not outside_rito(n, inp) or (kind != "linea_principale" and governs_tagged(n))]
     gs = governs_sets(inp)
     if gs["applied"]:               # the pretesa's articles (the subordinate: the quesiti's too); a norm the fit never
         allowed_g = set(gs["pretesa"]) | (set(gs["quesiti"]) if kind != "linea_principale" else set())    # judged stays
@@ -975,8 +1019,8 @@ def allowed_text(inp: Dict[str, Any]) -> str:
         if n.get("remedy") or not ids:
             continue
         tag = "" if tier == TIER_ALL else f" [{tier_tag(n)}]"
-        if gs["applied"] and label in gs["quesiti"]:            # v79.17.0 (item 2): a quesito's article, subordinate only
-            tag += " [solo linea subordinata]"
+        if (gs["applied"] and label in gs["quesiti"]) or outside_rito(n, inp):    # v79.17.0 (item 2): a quesito's
+            tag += " [solo linea subordinata]"      # article, subordinate only; v79.17.1 (item 9): a code outside the rito
         rows.append(f"- A{_ap().article_token(n['article'])} (art. {n['article']}): {', '.join(ids)}{tag}")
     return "\n".join(rows) or f"- {config()['labels']['none']}"
 
@@ -1385,11 +1429,20 @@ def _verify_line(raw: Any, inp: Dict[str, Any], m: Dict[str, Any], counters: Dic
     norm = m["norms"][label]
     if norm.get("remedy"):
         return None, f"art. {label}: rimedio o parte generale, mai una linea"
-    if not has_elements(norm):              # v79.18.0 (item 7): no schema element -> context only, never a line
+    if not has_elements(norm):              # v79.17.1 (item 7): no schema element -> context only, never a line
         return None, (f"art. {label}: nessun elemento dello schema, solo contesto, mai una linea: ammessi "
                       f"{', '.join(f'art. {x}' for x in line_tier(inp, kind)[1]) or config()['labels']['none']}")
     if norm.get("fit") == FIT_NO:           # v79.16.1 (item 3): never a «no»; v79.16.2 (item 2): an unverified or
         return None, f"art. {label}: fit «no», mai una linea"     # unjudged norm is allowed (a preference, not a gate)
+    rito_out = outside_rito(norm, inp)      # v79.17.1 (item 9): a code outside the frame's rito (1439 c.c. in a penal
+    if rito_out and (kind == "linea_principale" or not governs_tagged(norm)):    # case): subordinate only, and only
+        counters["analysis_line_outside_rito_rejected"] += 1                     # when the fit tagged it
+        ok = ", ".join(f"art. {x}" for x in line_tier(inp, kind)[1]) or config()["labels"]["none"]
+        if kind == "linea_principale":
+            return None, (f"art. {label}: codice fuori dal rito {rito_out}, mai linea principale"
+                          + (", al più subordinata" if governs_tagged(norm) else ", solo contesto") + f": ammessi {ok}")
+        return None, (f"art. {label}: codice fuori dal rito {rito_out} e il fit non lo riferisce né alla pretesa né a "
+                      f"un quesito: solo contesto, mai una linea: ammessi {ok}")
     gs = governs_sets(inp)                  # v79.17.0 (item 2): the binding on the pretesa -- a context-only norm is
     if gs["applied"] and label in gs["context"]:            # never a line, a quesito's only the subordinate
         counters["analysis_line_context_rejected"] += 1
@@ -1948,7 +2001,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
     t0 = started if started is not None else time.time()
     deadline = float(config().get("deadline_s") or 40)
     counters = empty_counters()
-    counters["candidates_no_elements_excluded"] = len(no_element_articles(inp))     # v79.18.0 (item 7)
+    counters["candidates_no_elements_excluded"] = len(no_element_articles(inp))     # v79.17.1 (item 7)
     calls: List[Dict[str, Any]] = []
     status, error, analysis, reasons, rejected = NO_INPUT, "", None, [], []
     if inp.get("norms") and inp.get("sentences"):
@@ -1972,7 +2025,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                     again = verify(second["data"], inp)
                     for k in ("analysis_line_rejected", "analysis_line_exception", "analysis_bad_eid",
                               "analysis_line_procedural_rejected",           # v79.16.1 (item 3): the first reply's too
-                              "analysis_line_context_rejected", "analysis_line_quesito_only"):    # v79.17.0 (item 2)
+                              "analysis_line_context_rejected", "analysis_line_quesito_only",     # v79.17.0 (item 2)
+                              "analysis_line_outside_rito_rejected"):                              # v79.17.1 (item 9)
                         again["counters"][k] += checked["counters"][k]
                     again["raised"] = list(checked.get("raised") or []) + [
                         r for r in again.get("raised") or [] if r not in (checked.get("raised") or [])]
@@ -2018,7 +2072,9 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                            "facts_cited": facts_cited_log(result["analysis"]),           # v79.16.0 (A4): the F-ids
                            "no_pertinence": no_pertinence_log(result["analysis"]),       # v79.16.1 (item 4)
                            "line_tier": line_tier(inp)[0] if inp.get("norms") else "",   # v79.16.1 (item 3)
-                           "context_only_no_elements": no_element_articles(inp),        # v79.18.0 (item 7)
+                           "context_only_no_elements": no_element_articles(inp),        # v79.17.1 (item 7)
+                           "outside_rito": outside_rito_articles(inp),                   # v79.17.1 (item 9)
+                           "rito": frame_rito(inp.get("frame")),
                            "exceptions": (result["analysis"] or {}).get("eccezioni") or [],
                            "objections": [{"fonte": o.get("fonte"), "sid": o.get("sid"), "parte": o.get("parte"),
                                            "eids": [e.get("eid") for e in o.get("elementi") or []] or [o.get("eid")]}

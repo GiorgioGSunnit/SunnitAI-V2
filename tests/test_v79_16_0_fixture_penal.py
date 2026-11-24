@@ -90,6 +90,8 @@ def _sid(parsed_or_human, start):
 
 def fit_reply(messages, kwargs):
     human = messages[-1].content
+    if human.startswith("PRETESA") and "ARTICOLI APPLICABILI" in human:     # v79.17.1 (item 9): the pretesa's recall --
+        return json.dumps({"governa_pretesa": ["A640cp"]})                    # the first pass tags no «governa» here
     paid = _sid(human, "Marta Serra ha pagato")
     items = {"640 c.p.": F._fit_item("640 c.p.", "si", f"Marta Serra ha pagato ({paid}): «procura a sé o ad altri un "
                                                      "ingiusto profitto con altrui danno».", cf=[paid]),

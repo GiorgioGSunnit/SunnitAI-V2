@@ -85,6 +85,8 @@ _sid = CIVIL._sid
 
 def fit_reply(messages, kwargs):
     human = messages[-1].content
+    if human.startswith("PRETESA") and "ARTICOLI APPLICABILI" in human:     # v79.17.1 (item 9): the pretesa's recall --
+        return json.dumps({"governa_pretesa": ["A1385cc"]})                    # the first pass tags no «governa» here
     paid = _sid(human, "Anna Corsi ha versato")
     signed = _sid(human, "Anna Corsi ha firmato")
     items = {"1385 c.c.": F._fit_item("1385 c.c.", "si", f"Anna Corsi ha versato la somma ({paid}): «a titolo di "

@@ -783,7 +783,7 @@ def cap_anchors(rows: Sequence[Dict[str, Any]], rule_topics: Sequence[Dict[str, 
 def gate_quesito_rows(rows: Sequence[Dict[str, Any]], fam_ctx: Dict[str, Any], named: set,
                       overrides: Optional[List[Dict[str, Any]]] = None
                       ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """v79.18.0 (item 6): (the questions' rows the family gate admits, the rows it dropped -- each {article, doc,
+    """v79.17.1 (item 6): (the questions' rows the family gate admits, the rows it dropped -- each {article, doc,
     family, source «quesiti», why}) -- family_gate.gate with the retrieval's own context (the frame's rito included), so
     an article outside the case's families is not retrieved for a quesito; the override doors as the retrieval's
     (overrides appended). A gate that fails keeps every row (logged)."""
@@ -942,7 +942,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         words = special_laws.read_text(first_read) if first_read else case
         # v79.10 (A5, review): the family context before the special-law gate -- its override doors reach the table's
         # laws (a row special_laws.gate drops stays when a door admits it), its dropped rows reach the alarm.
-        # v79.18.0 (item 6): built here, before the questions' search, with the frame's verified rito (analysis
+        # v79.17.1 (item 6): built here, before the questions' search, with the frame's verified rito (analysis
         # ["frame_rito"]: analyse_case) -- the questions' rows pass the same gate before they join the candidates
         from . import family_gate
         fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [],
@@ -966,7 +966,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 q_rows, q_log = _isolated("quesiti_search", lambda: retrieval_module.retrieve_for_quesiti(
                     session, documents, queries, store=store_), ([], {"queries": len(queries), "per_quesito": []})) \
                     or ([], {"queries": len(queries), "per_quesito": []})
-                # v79.18.0 (item 6): the family gate on the questions' rows first -- an article outside the case's
+                # v79.17.1 (item 6): the family gate on the questions' rows first -- an article outside the case's
                 # families (the frame's rito among them) is not retrieved for a quesito: never in «by_quesito»
                 q_before = list(q_rows)
                 q_rows, quesiti_dropped = gate_quesito_rows(q_rows, fam_ctx, named_keys, special_overrides)
@@ -979,7 +979,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 q_log = {**q_log, "source": source, "reason": "", "added": [_label_of_row(r) for r in q_added],
                          "labels": q_labels, "by_quesito": retrieval_module.quesito_labels(article_rows),
                          "gated": [{k: x.get(k) for k in ("article", "family", "why")} for x in quesiti_dropped],
-                         "rito": fam_ctx.get("rito") or ""}                     # v79.18.0 (item 6)
+                         "rito": fam_ctx.get("rito") or ""}                     # v79.17.1 (item 6)
                 out["quesiti_retrieval"] = q_log
                 quesiti_gate_log(q_log)
         links = topic_step.GraphLinks(session, documents)
@@ -1077,7 +1077,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _log("special_law_gate", out["special_law_gate"])
         # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
         # anchors' included, and the area gate's «altri profili» rows (family_gate)
-        fam = {"modules": fam_ctx["modules"], "dropped": list(quesiti_dropped), "admitted": [],    # v79.18.0 (item 6):
+        fam = {"modules": fam_ctx["modules"], "dropped": list(quesiti_dropped), "admitted": [],    # v79.17.1 (item 6):
                "overrides": list(special_overrides),                        # the questions' rows the gate dropped too
                "rito": fam_ctx.get("rito") or "", "rito_families": fam_ctx.get("rito_families"),
                "modules_active": dict(fam_ctx.get("modules_active") or {}),        # v79.12.1: each with its signal
@@ -1090,7 +1090,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if special_overrides:
             _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
         # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
-        fam_dropped_rows: List[Dict[str, Any]] = list(special_dropped_rows) + quesiti_dropped_rows    # v79.18.0
+        fam_dropped_rows: List[Dict[str, Any]] = list(special_dropped_rows) + quesiti_dropped_rows    # v79.17.1
         for name, part in (("retrieval", "article_rows"), ("regimes", "regime_rows"), ("altri profili", "outside")):
             rows_now = {"article_rows": article_rows, "regime_rows": regime_rows, "outside": outside}[part]
             call_overrides: List[Dict[str, Any]] = []
@@ -1121,7 +1121,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {_key(_parse_label(x["article"])) for x in fam["dropped"]}
             anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
             must = [a for a in must if _key(_parse_label(a)) not in gone]
-        fam["rito_dropped"] = family_gate.rito_dropped(fam["dropped"])     # v79.18.0 (item 6): the rito's own drops
+        fam["rito_dropped"] = family_gate.rito_dropped(fam["dropped"])     # v79.17.1 (item 6): the rito's own drops
         out["family_gate"] = fam
         _log("family_gate", fam)
         if case_first:
@@ -1686,7 +1686,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
             analysis["quesiti_source"] = got[1] if got else "error"       # v79.16.1 (item 1): frame | numbered_items
         else:                           # v79.16.1 (item 1): the gate's decision on every case, never silent
             quesiti_gate_log({"queries": 0, "source": "", "reason": "flag_off"})
-        from . import case_frame        # v79.18.0 (item 6): the frame's verified rito, read by the family gate
+        from . import case_frame        # v79.17.1 (item 6): the frame's verified rito, read by the family gate
         analysis["frame_rito"] = case_frame.verified_rito(frame) if frame else ""
         _isolated("relative_periods", lambda: relative_periods(analysis, text, request))      # v60g (6)
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
@@ -7829,10 +7829,13 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     only candidates for the leading line), "quesiti": {Qn: its articles} (candidates for that question's answer and
     for the subordinate line), "context_only": the verified norms governing neither (schede, never a line),
     "asked": the fit was given a pretesa or quesiti}. Counters binding_pretesa_applied, binding_pretesa_excluded
-    (the context-only labels) into block_counters; logged «binding_pretesa»."""
+    (the context-only labels) into block_counters; logged «binding_pretesa». v79.17.1 (item 9): "recalled" -- the
+    articles the pretesa's recall (applicability.pretesa_recall) put in the set when the first pass named none; they are
+    in "principale" too (their verdict's governs carries «pretesa», governs_recalled), so the set is always the recall's
+    when it ran -- possibly empty (fit_pretesa_recall_empty: applied False, as before)."""
     fit = state.get("applicability") or {}
     out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
-                           "context_only": []}
+                           "context_only": [], "recalled": []}
     if out["asked"]:
         for j in fit.get("judgments") or []:
             if not isinstance(j, dict) or not j.get("verified") or j.get("fit") not in ("si", "dipende"):
@@ -7843,6 +7846,8 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
             gov = list(j["governs"])
             if "pretesa" in gov:
                 out["principale"].append(label)
+                if j.get("governs_recalled"):
+                    out["recalled"].append(label)
             for tok in gov:
                 if tok.startswith("Q"):
                     out["quesiti"].setdefault(tok, []).append(label)
@@ -7965,18 +7970,18 @@ def fact_record_facts(state: Dict[str, Any]) -> List[Dict[str, Any]]:
 def quesiti_counters(state: Dict[str, Any]) -> None:
     """v79.16.0: block_counters retrieval_quesiti_queries, retrieval_quesiti_added (the labels the questions brought
     in), fit_kept_from_quesiti (those still held after the fit) and qa_questions_detected (the questions asked).
-    v79.18.0 (item 6): retrieval_quesiti_gated (the questions' rows the family gate refused), family_rito_dropped (the
+    v79.17.1 (item 6): retrieval_quesiti_gated (the questions' rows the family gate refused), family_rito_dropped (the
     rows -- the facts' and the questions' -- the frame's rito refused)."""
     counters = state.setdefault("block_counters", {})
     got = state.get("quesiti_retrieval") or {}
     if got:
         counters["retrieval_quesiti_queries"] = int(got.get("queries") or 0)
         counters["retrieval_quesiti_added"] = list(got.get("added") or [])
-        counters["retrieval_quesiti_gated"] = len(got.get("gated") or [])       # v79.18.0 (item 6)
+        counters["retrieval_quesiti_gated"] = len(got.get("gated") or [])       # v79.17.1 (item 6)
         records = state.get("records") or {}
         counters["fit_kept_from_quesiti"] = len([x for x in got.get("added") or []
                                                  if x in records and not (records.get(x) or {}).get("dropped")])
-    counters["family_rito_dropped"] = len((state.get("family_gate") or {}).get("rito_dropped") or [])   # v79.18.0
+    counters["family_rito_dropped"] = len((state.get("family_gate") or {}).get("rito_dropped") or [])   # v79.17.1
     counters["qa_questions_detected"] = len(asked_questions(state))
 
 
@@ -8166,11 +8171,13 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         "timing": result.get("timing") or {},
         "judgments": [{k: r.get(k) for k in ("article", "fit", "verified", "reason", "added_content", "passage",
                                              "perche", "condizione", "ambito", "cita_norma", "cita_fatti",
-                                             "governs")}                   # v79.17.0 (item 3): what the norm decides
+                                             "governs",                    # v79.17.0 (item 3): what the norm decides
+                                             "governs_recalled")}          # v79.17.1 (item 9): by the recall
                       for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
                       if r],
         "governs_asked": bool(result.get("governs_asked")), "quesiti": list(quesiti_list),       # v79.17.0 (item 3)
-        "pretesa": pretesa_txt}
+        "pretesa": pretesa_txt,
+        "pretesa_recall": dict(result.get("pretesa_recall") or {})}       # v79.17.1 (item 9): the recall's record
     state["binding_pretesa"] = binding_pretesa(state)       # v79.17.0 (item 2): the candidate sets for the lines
     counters = state.setdefault("block_counters", {})
     counters.update({k: int(v) for k, v in (result.get("counters") or {}).items()})

@@ -1121,7 +1121,7 @@ def count_fallback(counters: Dict[str, Any], field: str) -> None:
 
 
 def verified_rito(result: Optional[Dict[str, Any]]) -> str:
-    """v79.18.0 (item 6): the frame's rito when the model's value was verified («rito» in result["verified"]) and is
+    """v79.17.1 (item 6): the frame's rito when the model's value was verified («rito» in result["verified"]) and is
     not the unknown one; "" otherwise (a rule-filled rito restricts nothing: the family gate reads this only)."""
     if not isinstance(result, dict) or "rito" not in (result.get("verified") or []):
         return ""

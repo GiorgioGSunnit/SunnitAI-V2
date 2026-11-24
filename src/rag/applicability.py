@@ -100,7 +100,8 @@ FLAG = "APPLICABILITY_FIT"
 DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
                          "applicability.json")
 GOVERNS_PRETESA = "pretesa"           # v79.17.0 (item 3): the governs token for the pretesa; a quesito's is «Q<n>»
-COUNTERS = ("fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",     # v79.17.0 (item 3)
+COUNTERS = ("fit_pretesa_recall", "fit_pretesa_recall_empty",                     # v79.17.1 (item 9)
+            "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",     # v79.17.0 (item 3)
             "fit_si_verified", "fit_dipende_verified",         # v79.16.1 (item 2): the verified verdicts by value
             "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content", "fit_skipped",
             "fit_calls", "fit_failed_calls", "fit_timeouts",
@@ -785,6 +786,102 @@ def call_batch(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]],
     return {"status": "ok", "seconds": time.time() - started, "items": _match(items, norms), "error": ""}
 
 
+# --- v79.17.1 (item 9): the pretesa's recall -- the binding always has a set ----------------------------------------------
+# After the fit, when no verified verdict says it governs the pretesa (fit_governs_pretesa == 0), one more call: the
+# pretesa alone and the fitted articles (the verified «si» / «dipende») by their ids; the answer is the ids that govern
+# it, possibly none. The code keeps the ids it gave and drops the rest (recall_verify); the kept articles get «pretesa»
+# in their governs (rec["governs_recalled"] True), so binding_pretesa and the analysis step read one set. Counters
+# fit_pretesa_recall (the call made), fit_pretesa_recall_empty (the verified answer empty); logged «applicability_pretesa_recall».
+
+def recall_config() -> Dict[str, Any]:
+    return config().get("pretesa_recall") or {}
+
+
+def recall_prompt_system() -> str:
+    return "\n".join(recall_config().get("prompt_system") or [])
+
+
+def recall_prompt_hash() -> str:
+    return hashlib.sha256(recall_prompt_system().encode("utf-8")).hexdigest()[:12]
+
+
+def recall_messages(pretesa: str, norms: Sequence[Dict[str, Any]]) -> List[Any]:
+    """[system, human]: the pretesa and the fitted articles as «- A<token>: <article> (<rubrica>)», nothing else."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    rows = [f"- A{article_token(n.get('article'))}: {n.get('article')} ({n.get('rubrica') or 'nessuna rubrica'})"
+            for n in norms]
+    human = (f"PRETESA (ciò che è chiesto o contestato nel caso):\n{' '.join(str(pretesa or '').split())}\n\n"
+             f"ARTICOLI APPLICABILI (id: articolo):\n" + "\n".join(rows))
+    return [SystemMessage(content=recall_prompt_system()), HumanMessage(content=human)]
+
+
+def recall_verify(reply: Any, norms: Sequence[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    """(the fitted articles' labels the reply's ids name, in the norms' order; the ids dropped): an id is kept when it is
+    one given («A640cp», any case, «A» optional) or the article's own label however spelt (article_key); a repeat
+    counted once; anything else dropped. A reply with no list: ([], [the reply's shape])."""
+    from .llm_reply import parse_json_reply
+    data = parse_json_reply(reply if isinstance(reply, str) else str(reply or ""))
+    if isinstance(data, dict):
+        data = data.get("governa_pretesa", data.get("ids", data.get("articoli")))
+    if not isinstance(data, list):
+        return [], ["nessuna lista nella risposta"]
+    by_id: Dict[str, str] = {}
+    for n in norms:
+        label = str(n.get("article") or "")
+        by_id[article_token(label).lower()] = label
+        by_id.setdefault(" ".join(label.lower().split()), label)
+        by_id.setdefault("|".join(article_key(label)), label)
+    kept: List[str] = []
+    dropped: List[str] = []
+    for x in data:
+        raw = " ".join(str(x or "").split())
+        key = re.sub(r"^a", "", raw.lower()) if re.fullmatch(r"[Aa][0-9a-z]+", raw) else raw.lower()
+        label = by_id.get(key) or by_id.get(raw.lower()) or by_id.get("|".join(article_key(raw)))
+        if label is None:
+            dropped.append(raw[:40])
+        elif label not in kept:
+            kept.append(label)
+    order = [str(n.get("article") or "") for n in norms]
+    return sorted(kept, key=order.index), dropped
+
+
+def pretesa_recall(norms: Sequence[Dict[str, Any]], pretesa: str,
+                   call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
+                   budget_s: Optional[float] = None) -> Dict[str, Any]:
+    """The one call on the fitted norms: {"status": ok | failed | malformed | timeout | skipped, "seconds", "ids_given",
+    "articles": the labels the verified answer names, "dropped": the ids refused, "error"}. No norm or no pretesa:
+    skipped, nothing called. The call runs on its own thread within budget_s (default the data's recall deadline)."""
+    started = time.time()
+    out = {"status": "skipped", "seconds": 0.0, "ids_given": [f"A{article_token(n.get('article'))}" for n in norms],
+           "articles": [], "dropped": [], "error": "", "prompt_hash": recall_prompt_hash()}
+    if not norms or not str(pretesa or "").strip():
+        return out
+    kwargs = dict(request_kwargs(), max_tokens=int(recall_config().get("max_tokens") or 300))
+    deadline = float(recall_config().get("deadline_s") or 10) if budget_s is None else max(0.0, float(budget_s))
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="applicability_recall")
+    try:
+        fut = pool.submit(contextvars.copy_context().run, (call or _default_call), recall_messages(pretesa, norms),
+                          kwargs)
+        done, _ = _wait([fut], timeout=deadline)
+        if fut not in done:
+            out.update(status="timeout", error=f"oltre {deadline} s")
+        else:
+            try:
+                reply = fut.result()
+            except Exception as exc:    # noqa: BLE001 -- nothing recalled; the first pass stands
+                out.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            else:
+                try:
+                    out["articles"], out["dropped"] = recall_verify(reply, norms)
+                    out["status"] = "ok"
+                except Exception as exc:    # noqa: BLE001
+                    out.update(status="malformed", error=str(exc)[:300])
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    out["seconds"] = round(time.time() - started, 3)
+    return out
+
+
 # --- the step ---------------------------------------------------------------------------------------------------------
 
 def empty_counters() -> Dict[str, int]:
@@ -885,11 +982,30 @@ def judge(norms: Sequence[Dict[str, Any]], facts: Sequence[Dict[str, Any]], role
             logger.info("applicability: %s unverified: %s", rec["article"], rec["reason"])
             _log("applicability_fit_discard", {"article": rec["article"], "reason": rec["reason"],
                                                "fit": rec["fit"], "perche": rec["perche"][:300]})
+    recall: Dict[str, Any] = {"status": "not_needed", "articles": [], "dropped": [], "ids_given": [], "seconds": 0.0,
+                              "error": ""}
+    if str(pretesa or "").strip() and counters["fit_governs_pretesa"] == 0:       # v79.17.1 (item 9): the binding
+        fitted = [(i, r) for i, r in enumerate(records)                           # always has a set
+                  if i in sent and r and r["verified"] and r["fit"] in (SI, DIPENDE)]
+        recall = pretesa_recall([norms[i] for i, _ in fitted], pretesa, call)
+        if recall["status"] != "skipped":
+            counters["fit_pretesa_recall"] = 1
+            counters["fit_pretesa_recall_empty"] = int(recall["status"] == "ok" and not recall["articles"])
+            for i, rec in fitted:
+                if rec["article"] in recall["articles"]:
+                    gov = list(rec["governs"]) if isinstance(rec.get("governs"), list) else []
+                    rec["governs"] = gov + ([GOVERNS_PRETESA] if GOVERNS_PRETESA not in gov else [])
+                    rec["governs_recalled"] = True
+        if recall["status"] not in ("ok", "skipped"):
+            logger.warning("applicability: pretesa recall %s: %s", recall["status"], recall["error"])
+        _log("applicability_pretesa_recall", {k: recall.get(k) for k in ("status", "ids_given", "articles", "dropped",
+                                                                          "seconds", "error", "prompt_hash")})
     total = time.time() - t0
     result = {"prompt_hash": prompt_hash(), "judgments": records,
               "by_article": {str(r["article"]): r for r in records if r is not None},
               "counters": counters, "timing": {"total_s": round(total, 3), "calls": calls}, "log": log,
-              "governs_asked": governs_asked, "quesiti_n": len(quesiti)}        # v79.17.0 (item 3)
+              "governs_asked": governs_asked, "quesiti_n": len(quesiti),        # v79.17.0 (item 3)
+              "pretesa_recall": recall}                                         # v79.17.1 (item 9)
     _log("applicability_fit", {"prompt_hash": result["prompt_hash"], "counters": counters,
                                "total_s": result["timing"]["total_s"], "calls": calls})
     return result
@@ -922,7 +1038,8 @@ FIT_PROSE_TITLE = "Norme di cui si contesta l'applicabilità ai fatti"     # v79
 FIT_OPEN_ROW = "dipende dalla risposta a: {question}"
 FIT_OPEN_WHY = "resta da provare: dipende dalla risposta a «{question}»"
 FIT_REMOVED_TRACE = "giudicato non applicabile ai fatti (giudizio di applicabilità)"   # the nightly's ranked trace
-FLOW_COUNTERS = ("fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",      # v79.17.0 (item 3)
+FLOW_COUNTERS = ("fit_pretesa_recall", "fit_pretesa_recall_empty",                      # v79.17.1 (item 9)
+                 "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",      # v79.17.0 (item 3)
                  "fit_si_verified", "fit_dipende_verified",                   # v79.16.1 (item 2)
                  "fit_judged", "fit_si", "fit_no", "fit_dipende", "fit_unverified", "fit_added_content",
                  "fit_skipped", "fit_calls", "fit_failed_calls", "fit_timeouts", "norms_removed_by_fit",
@@ -1022,7 +1139,7 @@ def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[
             continue
         entry = {k: rec.get(k) for k in ("article", "fit", "perche", "passage", "comma", "facts", "condizione",
                                          "ambito", "touches", "added_content", "fact_quotes", "cita_fatti",
-                                         "cita_norma", "governs")}
+                                         "cita_norma", "governs", "governs_recalled")}
         label = str(rec.get("article") or "")
         if rec["fit"] == NO:
             named = es.norm_label(label) in guard or " ".join(label.lower().split()) in guard

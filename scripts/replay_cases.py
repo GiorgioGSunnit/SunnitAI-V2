@@ -12,14 +12,15 @@ the model --base-url / --model name (LLM_BASE_URL, LLM_MODEL: the GPU host), the
   frame        the verified fields of the case frame (case_frame.held: cliente, ruolo, rito, stadio, addebito_o_domanda,
                istituto, parti, quesiti -- each as a short text) and the fields the rules filled
   fit          the applicability counters (fit_si, fit_si_verified, fit_dipende, fit_no, fit_unverified_ids, fit_removed,
-               fit_kept_named, fit_kept_from_quesiti, norms_removed_by_fit)
+               fit_kept_named, fit_kept_from_quesiti, norms_removed_by_fit, the governs and the recall counters)
+  recall       v79.17.1 (item 9): the binding's set (principale) and the pretesa's recall (status, articles, recalled)
   analysis     the step's status, its leading / subordinate line (articolo, E-id, stato), the line tier the step's log
                line carries, the esiti per element of the lines' articles, the rejected lines, the fallback reason, the
                analysis_* and line_from_* counters
   retrieval    the «retrieval_quesiti» gate line (queries, source, reason, the labels added)
   qa           the Q&A counters (qa_questions_detected, qa_answer_reasked, qa_answer_insufficient, the qa_sentences_*)
   seconds      the wall time of the case
-  stages       v79.18.0 (item 8): the seconds per stage as the flow measured them -- frame (the frame step, inside the
+  stages       v79.17.1 (item 8): the seconds per stage as the flow measured them -- frame (the frame step, inside the
                intake: frame_seconds), record (the fact record: records_s), extraction (round 1's analysis: analysis_s),
                retrieval (round 1's rest: retrieval_s), fit (applicability_s), analysis (the analysis step's), write (the
                answer's time less the fit's and the step's), total (the flow's single_shot_s). A measurement, no
@@ -55,7 +56,8 @@ CASES_DIR = ROOT / "data" / "replay_cases"
 FLAGS = ("CASE_FRAME", "APPLICABILITY_FIT", "ANALYSIS_STEP", "FACT_RECORD", "QUESTION_RETRIEVAL", "ELEMENT_SCHEMAS")
 FIT_COUNTERS = ("fit_si", "fit_si_verified", "fit_dipende", "fit_dipende_verified", "fit_no", "fit_no_verified",
                 "fit_unverified_ids", "fit_removed", "fit_kept_named", "fit_kept_from_quesiti", "norms_removed_by_fit",
-                "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only")          # v79.17.0 (item 3)
+                "fit_governs_pretesa", "fit_governs_quesiti", "fit_context_only",          # v79.17.0 (item 3)
+                "fit_pretesa_recall", "fit_pretesa_recall_empty")                          # v79.17.1 (item 9)
 FRAME_COUNTERS = ("frame_pretesa_verified", "frame_pretesa_derived", "frame_asked_side",      # v79.17.0 (item 1)
                   "binding_pretesa_applied", "binding_pretesa_excluded")                     # v79.17.0 (item 2)
 ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
@@ -64,7 +66,8 @@ ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "a
                      "analysis_provato_no_pertinence", "analysis_provenance_from_record", "analysis_provenance_fallback",
                      "analysis_fallback_skipped_reason", "line_from_fit_si", "line_from_fit_dipende",
                      "line_from_unverified", "line_table_weaker",
-                     "analysis_line_context_rejected", "analysis_line_quesito_only")        # v79.17.0 (item 2)
+                     "analysis_line_context_rejected", "analysis_line_quesito_only",       # v79.17.0 (item 2)
+                     "analysis_line_outside_rito_rejected")                                  # v79.17.1 (item 9)
 RETRIEVAL_COUNTERS = ("retrieval_quesiti_queries", "retrieval_quesiti_added")
 QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insufficient", "qa_answer_fragment",
                "qa_sentences_replaced", "qa_sentences_dropped", "qa_sentences_dropped_dependent",
@@ -72,9 +75,9 @@ QA_COUNTERS = ("qa_questions_detected", "qa_answer_reasked", "qa_answer_insuffic
                "sections_dedup_dropped", "rulings_off_line_dropped", "sections_rito_blocks_dropped")
 FIELD_KEYS = ("tipo", "contenuto", "contro", "valore", "intake", "articolo", "descrizione", "testo", "nome",
               "ruolo_nel_fatto", "lato")       # v79.17.0: the pretesa's fields first
-RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("retrieval_quesiti_gated", "family_rito_dropped")      # v79.18.0 (item 6)
-ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("candidates_no_elements_excluded",)                      # v79.18.0 (item 7)
-STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "write", "total")       # v79.18.0 (item 8)
+RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("retrieval_quesiti_gated", "family_rito_dropped")      # v79.17.1 (item 6)
+ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("candidates_no_elements_excluded",)                      # v79.17.1 (item 7)
+STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "write", "total")       # v79.17.1 (item 8)
 
 
 # --- the measurement --------------------------------------------------------------------------------------------------
@@ -140,16 +143,29 @@ def analysis_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict
                               for x in line.get("no_pertinence") or []]}
 
 
+def recall_fields(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.17.1 (item 9): the pretesa's recall as the fit left it (state["applicability"]["pretesa_recall"]) and the
+    binding's sets -- {status, articles, dropped, principale, recalled}; {} when the fit did not run."""
+    fit = state.get("applicability") or {}
+    if not fit:
+        return {}
+    rec = fit.get("pretesa_recall") or {}
+    binding = state.get("binding_pretesa") or {}
+    return {"status": rec.get("status") or "", "articles": list(rec.get("articles") or []),
+            "dropped": list(rec.get("dropped") or []), "principale": list(binding.get("principale") or []),
+            "recalled": list(binding.get("recalled") or [])}
+
+
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
     gate = _event(events, "retrieval_quesiti") or state.get("quesiti_retrieval") or {}
     out = {k: gate.get(k) for k in ("queries", "source", "reason", "added") if k in gate}
-    if gate.get("gated"):           # v79.18.0 (item 6): the questions' rows the family gate refused
+    if gate.get("gated"):           # v79.17.1 (item 6): the questions' rows the family gate refused
         out["gated"] = [f"{x.get('article')} ({x.get('why') or x.get('family')})" for x in gate["gated"]]
     return out
 
 
 def stage_seconds(state: Dict[str, Any]) -> Dict[str, float]:
-    """v79.18.0 (item 8): {stage: seconds} from what the flow measured (STAGES; a stage the flow did not time is left
+    """v79.17.1 (item 8): {stage: seconds} from what the flow measured (STAGES; a stage the flow did not time is left
     out): frame -- the frame step's frame_seconds (state["case_frame"]["counters"]); record -- timings records_s;
     extraction / retrieval -- round 1's analysis_s / retrieval_s; fit -- applicability_s (else fit_seconds); analysis --
     the step's seconds (else analysis_seconds); write -- single_shot_timings answer_s less the fit's and the step's;
@@ -193,11 +209,12 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
             "asked": bool((state or {}).get("asked_side")),                     # v79.17.0 (item 1): the flow asked
             "frame": frame_fields(state), "frame_counters": _counters(state, FRAME_COUNTERS),
             "fit": _counters(state, FIT_COUNTERS),
+            "recall": recall_fields(state),                                     # v79.17.1 (item 9)
             "analysis": analysis_fields(state, events),
             "analysis_counters": _counters(state, ANALYSIS_COUNTERS),
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
             "qa": _counters(state, QA_COUNTERS),
-            "stages": stage_seconds(state)}                                     # v79.18.0 (item 8)
+            "stages": stage_seconds(state)}                                     # v79.17.1 (item 8)
 
 
 class _Capture:
@@ -266,7 +283,7 @@ def _row_values(row: Dict[str, Any]) -> Dict[str, Any]:
     flat["frame.verified"] = ",".join((row.get("frame") or {}).get("verified") or [])
     flat["frame.pretesa"] = (row.get("frame") or {}).get("pretesa") or ""
     flat["asked"] = bool(row.get("asked"))
-    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval", "frame_counters"):
+    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval", "frame_counters", "recall"):
         _flat(key, row.get(key) or {}, flat)
     flat["analysis.status"] = a.get("status")
     flat["analysis.line_tier"] = a.get("line_tier")
@@ -299,7 +316,7 @@ def diff_rows(now: Sequence[Dict[str, Any]], before: Sequence[Dict[str, Any]]) -
         changes = [{"key": k, "before": a.get(k), "now": b.get(k)} for k in sorted(set(a) | set(b))
                    if a.get(k) != b.get(k)]
         changes.append({"key": "seconds", "before": prev.get("seconds"), "now": row.get("seconds")})
-        for k in STAGES:            # v79.18.0 (item 8): each stage's seconds beside the wall time, always shown
+        for k in STAGES:            # v79.17.1 (item 8): each stage's seconds beside the wall time, always shown
             a_s, b_s = (prev.get("stages") or {}).get(k), (row.get("stages") or {}).get(k)
             if a_s is not None or b_s is not None:
                 changes.append({"key": f"seconds.{k}", "before": a_s, "now": b_s})
@@ -329,6 +346,11 @@ def case_table(row: Dict[str, Any]) -> str:
     lines.append(f"| frame fallback | {_show(fr.get('fallback'))} |")
     lines.append("| frame counters | " + ", ".join(f"{k} {v}" for k, v in (row.get("frame_counters") or {}).items()) + " |")
     lines.append("| fit | " + ", ".join(f"{k} {v}" for k, v in (row.get("fit") or {}).items()) + " |")
+    rc = row.get("recall") or {}         # v79.17.1 (item 9): the binding's set, the recall when the first pass named none
+    if rc:
+        lines.append(f"| binding / recall | principale {_show(rc.get('principale'))}; recall {_show(rc.get('status'))}"
+                     f", articles {_show(rc.get('articles'))}, recalled {_show(rc.get('recalled'))}"
+                     + (f", dropped {_show(rc.get('dropped'))}" if rc.get("dropped") else "") + " |")
     lines.append(f"| analysis status / tier / fallback | {_show(a.get('status'))} / {_show(a.get('line_tier'))} / "
                  f"{_show(a.get('fallback_skipped_reason'))} |")
     for x in a.get("lines") or []:
@@ -351,7 +373,7 @@ def case_table(row: Dict[str, Any]) -> str:
                  + " |")
     lines.append("| qa | " + ", ".join(f"{k} {v}" for k, v in (row.get("qa") or {}).items()) + " |")
     lines.append(f"| seconds | {row.get('seconds')} |")
-    stages = row.get("stages") or {}      # v79.18.0 (item 8): where the time goes, stage by stage
+    stages = row.get("stages") or {}      # v79.17.1 (item 8): where the time goes, stage by stage
     lines.append("| stages (s) | " + (", ".join(f"{k} {stages[k]}" for k in STAGES if k in stages) or "—") + " |")
     return "\n".join(lines)
 

@@ -585,8 +585,8 @@ by a non-client party (`lawyer_method.record_allegations`). `data/institution_la
 and `tags`; the lavoro, amministrativo, tributario, famiglia and fallimentare sets added (data only). `scripts/replay_cases.py`
 reports the pretesa, `asked`, the frame and binding counters; `data/replay_cases/batch_2/` holds six more synthetic cases.
 
-## 5m. v79.18.0 (24 Nov 2026), items 6-8: the questions through the family gate with the frame's rito; no-element
-## articles context only; the replay's seconds per stage
+## 5m. v79.17.1 (24 Nov 2026), items 6-9: the questions through the family gate with the frame's rito; no-element
+## articles context only; the replay's seconds per stage; the pretesa's binding always has a set; a code outside the rito
 
 No new flag. (6) `QUESTION_RETRIEVAL` + `CASE_FRAME` -- the questions' rows pass the same family gate as the facts' rows
 before they join the candidates (`interactive_flow.gate_quesito_rows`, source «quesiti»): an article outside the case's
@@ -603,7 +603,22 @@ solo contesto»), counted once from the input (`candidates_no_elements_excluded`
 system prompts are unchanged (analysis_step 472423ea32d3, applicability c60a2f78634c, case_frame 44d4b100df83). (8)
 `scripts/replay_cases.py` reports `stages` per case -- frame, record, extraction, retrieval, fit, analysis, write, total
 seconds as the flow measured them (`stage_seconds`), in the table («stages (s)») and the diff («seconds.<stage>»); no
-optimisation.
+optimisation. (9) `APPLICABILITY_FIT` + `CASE_FRAME` -- the binding on the pretesa always has a set: after the fit, when no
+verified verdict governs the pretesa (`fit_governs_pretesa` 0), one more call (`applicability.pretesa_recall`: the pretesa
+alone and the fitted articles -- the verified «si» / «dipende» -- by their ids; its own prompt `pretesa_recall.prompt_system`
+in `data/applicability.json`, hashed apart, `recall_prompt_hash` 1a584033916f; its own budget `deadline_s` 12 after the
+fit's 20) answers the ids that govern it, possibly none; the code keeps the ids it gave and drops the rest (`recall_verify`),
+and the kept articles get «pretesa» in their verdict's governs (`governs_recalled`), so `binding_pretesa` («recalled»), the
+analysis step and the writer read one set. Counters `fit_pretesa_recall` (the call made), `fit_pretesa_recall_empty` (the
+verified answer empty: the binding stays unapplied, as before); log `applicability_pretesa_recall`; the replay's row
+«binding / recall». `fit_governs_pretesa` stays the first pass's count. Also `ANALYSIS_STEP` -- an article whose code is
+outside the frame's rito (`data/analysis_step.json` «rito_codes»: cp, cpp for the penal riti; cc, cpc for the civil ones;
+`analysis_step.outside_rito`, the frame's rito valore else intake, as `penal_frame`) is never the leading line and is a
+subordinate line only when the fit tagged it as governing the pretesa or a quesito (`governs_tagged`); otherwise context (the
+1439 c.c. case of the persona offesa). Listed in the prompt's block (the step reads it), out of the leading line's list,
+in the subordinate's only when tagged (`line_tier`, the re-ask's «[solo linea subordinata]»), refused as a line otherwise
+(`_verify_line`, counter `analysis_line_outside_rito_rejected`; log `outside_rito`, `rito`). A rito not in the table, no
+rito, a special law or the Costituzione: nothing restricted. The system prompts of the fit and the step are unchanged.
 
 ## 6. Which copy sets what
 

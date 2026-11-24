@@ -17,7 +17,7 @@ only by its family:
   gate(rows, ctx, named)     (the rows admitted, the rows dropped -- each {article, doc, family}, the admitted documents
                              outside the codes -- each {doc, family, by})
 
-No case-specific logic: the tables hold the laws, their families and signals. v79.18.0 (item 6): the frame's verified
+No case-specific logic: the tables hold the laws, their families and signals. v79.17.1 (item 6): the frame's verified
 rito (context(rito=…)) admits only the families the table lists for it (special_laws.rito_families: ctx["rito_families"];
 decide refuses the others -- RITO_WHY -- after the user's naming and before the rules and the doors); the same gate
 runs on the questions' rows before they join the candidates (interactive_flow._retrieve).
@@ -282,7 +282,7 @@ def context(case: str, words: str = "", institutions: Sequence[Any] = (), rito: 
     first read's institutions as words («institutions»: the «istituto» override door; a read_institutions dict is read
     by its name, rubricated name and claim -- v79.9 joined the dicts themselves). v79.12.1: the modules from
     lawyer_method.module_input -- the institutions as given (a dict's claim never switches a module on), the same input
-    as the answer stage's; «modules_active» each with the signal that switched it on. v79.18.0 (item 6): rito -- the
+    as the answer stage's; «modules_active» each with the signal that switched it on. v79.17.1 (item 6): rito -- the
     frame's verified rito (case_frame.verified_rito; "" none): «rito» and «rito_families», the special-law families it
     admits beside the codes (special_laws.rito_families; None when the table has no entry for it: nothing restricted)."""
     from . import lawyer_method, special_laws
@@ -299,23 +299,23 @@ def context(case: str, words: str = "", institutions: Sequence[Any] = (), rito: 
             # v79.14.1 (item 3): the administrative act against the client (its words), the modules it refused
             "admin_act": bool(mctx.get("admin_act_words")), "admin_act_words": list(mctx.get("admin_act_words") or []),
             "modules_refused_no_act": list(mctx.get("modules_refused_no_act") or []),
-            # v79.18.0 (item 6): the frame's rito and the families it admits (None: no entry, nothing restricted)
+            # v79.17.1 (item 6): the frame's rito and the families it admits (None: no entry, nothing restricted)
             "rito": str(rito or ""), "rito_families": rito_allowed(str(rito or ""))}
 
 
 def rito_allowed(rito: str) -> Optional[List[str]]:
-    """v79.18.0 (item 6): the families the table admits for the rito (special_laws.rito_families), None when the table
+    """v79.17.1 (item 6): the families the table admits for the rito (special_laws.rito_families), None when the table
     has no entry for it (the unknown rito, a blank one)."""
     from . import special_laws
     table = special_laws.rito_families()
     return list(table[rito]) if rito and rito in table else None
 
 
-RITO_WHY = "fuori dal rito"         # v79.18.0 (item 6): a dropped row's «why» -- «fuori dal rito civile (tributario)»
+RITO_WHY = "fuori dal rito"         # v79.17.1 (item 6): a dropped row's «why» -- «fuori dal rito civile (tributario)»
 
 
 def rito_refused(family: str, ctx: Dict[str, Any]) -> str:
-    """v79.18.0 (item 6): the «why» when the context's rito admits no law of this family -- a table family outside
+    """v79.17.1 (item 6): the «why» when the context's rito admits no law of this family -- a table family outside
     ctx["rito_families"]; "" for the codes, an unknown family (OTHER: nothing known, nothing gated), a context with no
     rito entry."""
     allowed = ctx.get("rito_families")
@@ -325,7 +325,7 @@ def rito_refused(family: str, ctx: Dict[str, Any]) -> str:
 
 
 def rito_dropped(dropped: Sequence[Dict[str, Any]]) -> List[str]:
-    """v79.18.0 (item 6): the articles of the gate's dropped rows the rito refused (their «why»)."""
+    """v79.17.1 (item 6): the articles of the gate's dropped rows the rito refused (their «why»)."""
     return [str(x.get("article")) for x in dropped or [] if str(x.get("why") or "").startswith(RITO_WHY)]
 
 
@@ -444,7 +444,7 @@ def decide(code: Any, doc: Any, ctx: Dict[str, Any], row: Optional[Dict[str, Any
     said = naming(ctx.get("case") or "", law_id, exp_law, text)
     if said:
         return {**out, "by": "nominata dall'utente", "door": "" if rule else DOOR_USER, "signal": "" if rule else said}
-    why_rito = rito_refused(family, ctx)       # v79.18.0 (item 6): the frame's verified rito admits no law of this
+    why_rito = rito_refused(family, ctx)       # v79.17.1 (item 6): the frame's verified rito admits no law of this
     if why_rito:                               # family -- before the rules and the doors; the user naming it wins above
         return {**out, "ok": False, "by": "", "why": why_rito}
     if rule:
