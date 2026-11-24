@@ -1,0 +1,93 @@
+{
+  "_doc": "v79.18.0 (B): the strategy as a verified step (src/rag/strategy_step.py, flag ANALYSIS_STEP, after the analysis step, in place of the retired objections call). One model call (thinking off, temperature 0, a JSON reply, as the fit and the analysis step), one re-ask, within deadline_s; max_tokens the reply's budget per call. Input, ids only and verbatim texts: the pretesa and the client's side, the governs-pretesa set with its tiers (si verificato > dipende verificato > non verificato; the verified lines' articles too), each article's schema elements with their verified esito and cited S-ids, the facts (S-ids, the record's stato and speaker), the counterparty's allegations (one contro_difesa entry each), the registry's rulings on those articles (G-ids as the registry numbers them, their verified passage), the quesiti. Output: linee (2-3: articolo, eid, tipo fondare | contestare | riqualificare | eccepire, rapporto principale | subordinata | alternativa | cumulativa, perche_prima, cita_fatti, cita_pronunce, obiezione {testo, risposta_cita_fatti | nessuna risposta nei fatti, cita_pronunce}), passi (the principale's da_provare / contestato elements, what would prove each), passi_immediati (prova e termini: the decadenza / prescrizione elements and their S-ids), contro_difesa (one per allegation: the line or fact that answers it, or «senza risposta»), verifiche_documentali (contract items the case leaves open). Verification by code: every id exists, a linea's articolo is in the set and its eid belongs to it; «contestare» only on a contestato / da_provare element, «fondare» only on a provato one (else rejected, re-asked once); forza computed from the tables by side (defence: contestato + da_provare on the line's article, more = stronger; claimant: the eid's esito first, then fewer further conditions in the same comma, then the provato count -- item 10: a remedy whose own element is da_provare never ranks above one whose element is provato); the ranking rule (a linea ranks above one with strictly greater forza only citing a G-id, else the code reorders by forza: strategy_rank_reordered, both orders logged; ties keep the model's order); an obiezione with no risposta_cita_fatti prints rendering.senza_risposta, never an invented answer. risk: §9's word from the principale's forza, by side -- misura «provato» (the share of provato elements) or «aperti» (contestato + da_provare), favorevole at favorevole_min or more, sfavorevole at sfavorevole_max or less, else incerto; an escluso element: sfavorevole for the pretesa's holder, favorevole for the defence. rendering: the code's labels (user-visible, docs/copy_review.md): §6 in the order passi immediati -> linee per forza (the table) -> risposta ai quesiti -> contro-difesa -> verifiche documentali; §7 the obiezioni with their verified answers (the cited facts as written, the rulings by reference); §10 the passi. prompt_system is joined with newlines, hashed (prompt_hash) and logged with every run.",
+  "deadline_s": 40,
+  "max_tokens": 2500,
+  "tipi": ["fondare", "contestare", "riqualificare", "eccepire"],
+  "rapporti": ["principale", "subordinata", "alternativa", "cumulativa"],
+  "lines_min": 2,
+  "lines_max": 3,
+  "no_answer_words": ["nessuna risposta nei fatti", "senza risposta"],
+  "risk": {
+    "attore": {"misura": "provato", "favorevole_min": 1.0, "sfavorevole_max": 0.0},
+    "neutro": {"misura": "provato", "favorevole_min": 1.0, "sfavorevole_max": 0.0},
+    "difesa": {"misura": "aperti", "favorevole_min": 1.0, "sfavorevole_max": 0.0}
+  },
+  "labels": {
+    "pretesa": "PRETESA",
+    "client": "Parte assistita",
+    "set": "INSIEME CHE GOVERNA LA PRETESA (gli articoli ammessi per le linee, con il livello del fit)",
+    "elements": "elementi (id: testo — esito verificato — fatti citati)",
+    "unassessed": "esiti non valutati dall'analisi: ogni elemento da_provare",
+    "facts": "FATTI (id [stato; chi lo afferma] testo)",
+    "allegations": "ALLEGAZIONI DELLA CONTROPARTE (una voce di contro_difesa per ciascuna)",
+    "rulings": "PRONUNCE SELEZIONATE (id: estremi — articolo — passaggio verificato)",
+    "no_passage": "nessun passaggio verificato: citabile solo con gli estremi",
+    "questions": "QUESITI DELL'UTENTE",
+    "lines": "LINEE DELL'ANALISI VERIFICATA",
+    "none": "(nessuno)"
+  },
+  "reask": [
+    "La risposta precedente è stata respinta per questi motivi:",
+    "{reasons}",
+    "Articoli ammessi (A<articolo>) con gli id dei loro elementi e l'esito verificato:",
+    "{allowed}",
+    "Correggi e rispondi di nuovo SOLO con l'oggetto JSON completo."
+  ],
+  "rendering": {
+    "forza": "provato {provato} / contestato {contestato} / da provare {da_provare}",
+    "forza_escluso": " / escluso {escluso}",
+    "senza_risposta": "senza risposta nei fatti narrati",
+    "titoli": {
+      "passi_immediati": "**Passi immediati (prova e termini)**",
+      "linee": "**Linee per forza**",
+      "quesiti": "**Risposta ai quesiti**",
+      "contro_difesa": "**Contro-difesa**",
+      "verifiche": "**Verifiche documentali**"
+    },
+    "tabella": [
+      "| Linea | Articolo | Elemento in gioco | Tipo | Rapporto | Perché prima | Forza | Fatti citati | Pronunce |",
+      "|---|---|---|---|---|---|---|---|---|"
+    ],
+    "linea": "Linea {n}",
+    "riordinata": "Ordine ricalcolato dal codice per forza (l'ordine del modello era: {ordine}).",
+    "nessuno": "nessuno",
+    "nessun_fatto": "nessun fatto citato",
+    "non_valutati": "elementi non valutati dall'analisi: ogni esito da provare",
+    "quesito": "Q{n} «{quesito}»: {linee}",
+    "quesito_senza_linea": "nessuna linea verificata sul quesito",
+    "quesito_linea": "art. {art} (linea {n})",
+    "passo": "«{elemento}» (art. {art}): {cosa}",
+    "passo_codice": "«{elemento}» (art. {art}): da provare, nessun passo indicato dal modello",
+    "passo_punto": "Passo: «{elemento}» (art. {art}) — {cosa}",
+    "contro": "Allegazione {sid} «{frase}»: {risposta}",
+    "contro_senza": "senza risposta",
+    "contro_linea": " (linea: art. {art}, «{elemento}»)",
+    "immediato": "{testo}",
+    "verifica": "{testo}",
+    "nessun_passo_immediato": "Nessun passo immediato indicato.",
+    "nessuna_verifica": "Nessuna verifica documentale indicata.",
+    "nessuna_allegazione": "Nessuna allegazione della controparte nel racconto.",
+    "fatti_sep": "; ",
+    "fatto": "«{testo}»"
+  },
+  "prompt_system": [
+    "Sei un avvocato italiano. Ricevi la PRETESA e la parte assistita con il suo lato; l'INSIEME degli articoli che governano la pretesa, ciascuno con il livello del fit e con gli elementi del suo schema numerati (A<articolo>:E<n>), l'esito verificato di ogni elemento e i fatti che lo decidono; i FATTI numerati (S1, S2, …) con il loro stato e chi li afferma; le ALLEGAZIONI DELLA CONTROPARTE; le PRONUNCE già selezionate (G1, G2, …) con il passaggio verificato; i QUESITI dell'utente. Costruisci la strategia. Ogni affermazione cita gli id su cui si fonda: il codice verifica ogni id e scarta ciò che non è citato o non esiste. La forza di ogni linea la calcola il codice dagli esiti degli elementi: non scrivere conteggi.",
+    "",
+    "Rispondi con:",
+    "- \"linee\": da 2 a 3 voci, ciascuna {\"articolo\": l'id dell'articolo (A<articolo>), \"eid\": l'id di un elemento del suo schema (A<articolo>:E<n>), \"tipo\": \"fondare\" | \"contestare\" | \"riqualificare\" | \"eccepire\", \"rapporto\": \"principale\" | \"subordinata\" | \"alternativa\" | \"cumulativa\", \"perche_prima\": UNA sola frase sul perché viene prima, \"cita_fatti\": [id dei fatti], \"cita_pronunce\": [id delle pronunce], \"obiezione\": {\"testo\": UNA sola frase, l'obiezione che la controparte opporrà a questa linea, \"risposta_cita_fatti\": [id dei fatti che la rispondono] oppure \"nessuna risposta nei fatti\", \"cita_pronunce\": [id delle pronunce]}};",
+    "- \"passi\": per ogni elemento della linea principale con esito da_provare o contestato: {\"eid\": l'id dell'elemento, \"cosa\": UNA sola frase su che cosa lo proverebbe, \"cita_fatti\": [] oppure [un id di fatto]};",
+    "- \"passi_immediati\": la prova e i termini da mettere subito al sicuro: {\"testo\": UNA sola frase, \"cita_elementi\": [id degli elementi di decadenza o prescrizione], \"cita_fatti\": [id dei fatti]};",
+    "- \"contro_difesa\": UNA voce per ciascuna ALLEGAZIONE DELLA CONTROPARTE: {\"allegazione\": l'id del fatto, \"risposta\": UNA sola frase oppure \"senza risposta\", \"cita_linea\": l'id dell'elemento della linea che la risponde oppure null, \"cita_fatti\": [id dei fatti]};",
+    "- \"verifiche_documentali\": gli elementi del contratto o del rapporto che il caso lascia aperti: {\"testo\": UNA sola frase, \"cita_fatti\": [id dei fatti], \"cita_elementi\": [id degli elementi]}.",
+    "",
+    "Regole:",
+    "- L'articolo di una linea è uno dell'INSIEME; l'eid è un elemento di quell'articolo.",
+    "- \"fondare\" solo su un elemento con esito provato; \"contestare\" solo su un elemento con esito contestato o da_provare.",
+    "- Una linea può precedere una linea più forte solo se cita almeno una pronuncia (G); altrimenti il codice riordina le linee per forza.",
+    "- Non inventare fatti né risposte: un'obiezione che i fatti narrati non rispondono si dichiara tale (\"nessuna risposta nei fatti\"); un'allegazione che nessuna linea né fatto risponde si dichiara \"senza risposta\".",
+    "- Usa solo gli id dati. Non citare altre norme né altra giurisprudenza.",
+    "",
+    "Rispondi SOLO con un oggetto JSON, senza testo prima o dopo:",
+    "{\"linee\": [{\"articolo\": \"A1385cc\", \"eid\": \"A1385cc:E4\", \"tipo\": \"fondare\", \"rapporto\": \"principale\", \"perche_prima\": \"…\", \"cita_fatti\": [\"S2\"], \"cita_pronunce\": [\"G1\"], \"obiezione\": {\"testo\": \"…\", \"risposta_cita_fatti\": [\"S2\"], \"cita_pronunce\": []}}], \"passi\": [{\"eid\": \"A1385cc:E2\", \"cosa\": \"…\", \"cita_fatti\": []}], \"passi_immediati\": [{\"testo\": \"…\", \"cita_elementi\": [\"A1385cc:E5\"], \"cita_fatti\": [\"S1\"]}], \"contro_difesa\": [{\"allegazione\": \"S3\", \"risposta\": \"…\", \"cita_linea\": \"A1385cc:E4\", \"cita_fatti\": [\"S2\"]}], \"verifiche_documentali\": [{\"testo\": \"…\", \"cita_fatti\": [\"S1\"], \"cita_elementi\": []}]}"
+  ]
+}

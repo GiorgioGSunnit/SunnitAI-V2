@@ -106,7 +106,8 @@ def test_a_servitude_case_makes_mediation_a_condition_of_the_action():
     assert "Mediazione obbligatoria" in block
 
 
-@pytest.mark.parametrize("contract, subject", [("comodato d'uso", "comodato"), ("locazione abitativa", "locazione"), ("polizza vita", "contratti assicurativi, bancari e finanziari")])
+@pytest.mark.parametrize("contract, subject", [("comodato d'uso", "comodato"), ("locazione abitativa", "locazione"),
+                                               ("polizza vita", "contratti assicurativi")])    # v79.18.0: the data's names
 def test_the_subjects_of_the_article_by_the_contracts(contract, subject):
     assert fs.mediation(facts(contracts=[{"type": contract}]), [])["subject"] == subject
 

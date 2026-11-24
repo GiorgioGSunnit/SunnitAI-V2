@@ -41,23 +41,37 @@ def test_the_set_is_the_union_of_the_tags_the_recall_and_the_fits_verified_si(mo
                     _j("1386 c.c.", governs=[])])                              # verified si, context tag: in (fit_si)
     state["applicability"]["judgments"][4]["governs"] = ["pretesa"]
     b = flow.binding_pretesa(state)
-    assert b["principale"] == ["1385 c.c.", "1454 c.c.", "2932 c.c.", "1386 c.c."]
-    assert b["reasons"] == {"1385 c.c.": ["tag", "fit_si"], "1454 c.c.": ["fit_si"], "2932 c.c.": ["recall"], "1386 c.c.": ["fit_si"]}
+    # v79.18.0 (A1): the set has tiers -- the verified «si», then the verified «dipende» (1225 c.c. is in now), then
+    # the unverified «si» / «dipende» (2932 c.c., recalled); the order is the tiers'
+    assert b["principale"] == ["1385 c.c.", "1454 c.c.", "1386 c.c.", "1225 c.c.", "2932 c.c."]
+    assert b["reasons"] == {"1385 c.c.": ["tag", "fit_si"], "1454 c.c.": ["fit_si"], "1386 c.c.": ["fit_si"],
+                            "1225 c.c.": ["fit_dipende"], "2932 c.c.": ["recall", "fit_non_verificato"]}
+    assert b["tiers"] == {"1385 c.c.": "si_verificato", "1454 c.c.": "si_verificato", "1386 c.c.": "si_verificato",
+                          "1225 c.c.": "dipende_verificato", "2932 c.c.": "non_verificato"}
     assert b["fit_si"] == ["1385 c.c.", "1454 c.c.", "1386 c.c."] and b["fit_dipende"] == ["1225 c.c."]
+    assert b["fit_non_verificato"] == ["2932 c.c."]
     assert b["recalled"] == ["2932 c.c."] and b["context_only"] == ["1453 c.c."] and b["applied"] is True and b["enforced"] is True
     assert b["quesiti"] == {"Q1": ["1454 c.c."], "Q2": ["1225 c.c."]}
-    assert state["block_counters"]["binding_set_size"] == 4 and state["block_counters"]["binding_empty_honesty"] == 0
-    # no verified «si»: the verified «dipende» ones are the base
+    assert state["block_counters"]["binding_set_size"] == 5 and state["block_counters"]["binding_empty_honesty"] == 0
+    assert state["block_counters"]["binding_set_unverified"] == 1
+    # no verified «si»: the verified «dipende» ones lead the set, the unverified ones follow
     state = _state([_j("1225 c.c.", fit="dipende", governs=["Q2"]), _j("1453 c.c.", fit="dipende", governs=[], substantive=False),
                     _j("1386 c.c.", verified=False, governs=None)])
     b = flow.binding_pretesa(state)
-    assert b["principale"] == ["1225 c.c."] and b["reasons"] == {"1225 c.c.": ["fit_dipende"]}
-    # nothing verified «si» / «dipende» and substantive, no tag, no recall: the union is empty -- the honesty counter
-    state = _state([_j("1453 c.c.", governs=["pretesa"], substantive=False), _j("1386 c.c.", verified=False, governs=None),
+    assert b["principale"] == ["1225 c.c.", "1386 c.c."] and b["reasons"] == {"1225 c.c.": ["fit_dipende"],
+                                                                              "1386 c.c.": ["fit_non_verificato"]}
+    # no substantive article with any «si» / «dipende» verdict (an unverified «no» is none), no tag, no recall: the union
+    # is empty -- the honesty counter
+    state = _state([_j("1453 c.c.", governs=["pretesa"], substantive=False), _j("1386 c.c.", fit="no", verified=False, governs=None),
                     _j("2946 c.c.", fit="no", governs=[])])
     b = flow.binding_pretesa(state)
     assert b["principale"] == [] and b["nonsubstantive_tagged"] == ["1453 c.c."]
     assert state["block_counters"]["binding_empty_honesty"] == 1 and state["block_counters"]["binding_set_size"] == 0
+    # v79.18.0 (A1): an unverified «si» alone is a set -- untrusted, present: no honesty line
+    state = _state([_j("1453 c.c.", governs=["pretesa"], substantive=False), _j("1386 c.c.", verified=False, governs=None)])
+    b = flow.binding_pretesa(state)
+    assert b["principale"] == ["1386 c.c."] and b["tiers"] == {"1386 c.c.": "non_verificato"}
+    assert state["block_counters"]["binding_empty_honesty"] == 0
 
 
 def test_the_pretesas_own_article_enters_the_set_unless_a_verified_no_or_no_element(monkeypatch):
@@ -66,8 +80,8 @@ def test_the_pretesas_own_article_enters_the_set_unless_a_verified_no_or_no_elem
     state = _state([_j("1385 c.c.", verified=False, governs=None, substantive=True, has_elements=True),
                     _j("1454 c.c.", governs=["Q1"])], frame_article="1385 c.c.")
     b = flow.binding_pretesa(state)
-    assert b["pretesa_article"] == "1385 c.c." and b["reasons"]["1385 c.c."] == ["pretesa"]
-    assert b["principale"] == ["1385 c.c.", "1454 c.c."]
+    assert b["pretesa_article"] == "1385 c.c." and b["reasons"]["1385 c.c."] == ["pretesa", "fit_non_verificato"]
+    assert b["principale"] == ["1454 c.c.", "1385 c.c."]          # v79.18.0 (A1): the verified «si» before the unverified
     # a verified «no»: out
     state = _state([_j("640 c.p.", fit="no", governs=[], has_elements=True), _j("590 c.p.", governs=["pretesa"])],
                    frame_article="640 c.p.")

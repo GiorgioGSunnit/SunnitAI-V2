@@ -380,15 +380,18 @@ def _truffa_rejected(parsed, attempt):
 
 
 @pytest.mark.parametrize("descrizione,reason,fired", [("truffa", "", 1),
-                                                      ("truffa ai danni di Carla Tasso", A.SKIP_NO_RUBRICA_MATCH, 0),
-                                                      (None, A.SKIP_NO_NAMED_CHARGE, 0)])
+                                                      # v79.18.0 (A2): no rubrica match / no named charge, the set not
+                                                      # empty -- the set's best-tier article leads, never «da determinare»
+                                                      ("truffa ai danni di Carla Tasso", A.SKIP_SET_LINE, 0),
+                                                      (None, A.SKIP_SET_LINE, 0)])
 def test_with_no_verified_line_the_counter_says_why_the_fallback_did_not_run(descrizione, reason, fired, monkeypatch,
                                                                              tmp_path):
     run = H.run(monkeypatch, tmp_path, _clone(X.TRUFFA, analysis_reply=_truffa_rejected,
                                               FRAME_REPLY=_truffa_frame(descrizione), OLDER_FRAME={}))
     c, step = run["state"]["block_counters"], run["by"]["analysis_step"][0][0]
     assert [r["articolo"] for r in step["rejected"]] == ["640 c.p.", "640 c.p."]
-    assert c["analysis_line_fallback_rubrica"] == fired and c["analysis_line_undetermined"] == 1 - fired
+    assert c["analysis_line_fallback_rubrica"] == fired and c["analysis_line_undetermined"] == 0
+    assert c["analysis_line_fallback_set"] == 1 - fired
     assert c["analysis_fallback_skipped_reason"] == step["fallback_skipped_reason"] == reason
     assert run["state"]["analysis_step"]["counters"]["analysis_fallback_skipped_reason"] == reason
 

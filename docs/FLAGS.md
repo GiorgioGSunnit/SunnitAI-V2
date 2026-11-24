@@ -664,6 +664,48 @@ case. (4) Everything else of 79.17.2 stays: the set enforced on the leading line
 never a line (an article in the set with no admissible element gives «da determinare» without the honesty line). The
 system prompts are unchanged.
 
+## 5p. v79.18.0 (24 Nov 2026): strategy as a verified step; set tiers; set fallback
+
+No new flag: the strategy step runs under `ANALYSIS_STEP`, after the analysis step and the rulings record, in place of the
+objections call (`interactive_flow.method_objections`: with a strategy input the old `lawyer_method.objections_plan` is
+not called). (A1) `interactive_flow.binding_pretesa`: the governs-pretesa set has tiers -- «tiers» {label: si_verificato
+| dipende_verificato | non_verificato}: every substantive verified «si», then the verified «dipende», then the unverified
+«si» / «dipende» («fit_non_verificato»: present, untrusted), in that order; the honesty line only when no substantive
+article has any «si» / «dipende» verdict (counter `binding_set_unverified`). (A2) `analysis_step.set_fallback`: the
+model's line failed twice and the set is not empty -- the set's best-tier article leads (stato `insieme_governante`, every
+element «da_provare», tesi on its rubrica; counter `analysis_line_fallback_set`, fallback reason `set_line_used`); never
+«da determinare» with a non-empty set. (B) `src/rag/strategy_step.py`, `data/strategy_step.json` (deadline 40 s, one
+re-ask; prompt hash logged): the input is ids and verbatim texts only -- the pretesa and the side, the set with its tiers
+and each article's elements with their verified esiti and S-ids (`state_input`, from `state["analysis_norms"]`,
+`binding_pretesa`, the analysis view), the facts, the counterparty's allegations, the registry's rulings on those
+articles as G-ids (`rulings_for`), the quesiti; the reply's linee (2-3: articolo, eid, tipo fondare | contestare |
+riqualificare | eccepire, rapporto, perche_prima, cita_fatti, cita_pronunce, obiezione with risposta_cita_fatti or
+«nessuna risposta nei fatti»), passi, and (item 12) passi_immediati, contro_difesa (one per allegation, the code adds
+«senza risposta» for a missing one), verifiche_documentali (id-cited or dropped). Verified by code: ids exist, the
+article is in the set, the eid is its, «contestare» only on contestato / da_provare, «fondare» only on provato (else
+rejected, re-asked once). forza is the code's, by side: the defence's the contestato + da_provare count on the line's
+article; a claimant's (item 10) the eid's esito first, then fewer further conditions in the same comma, then the provato
+count. Ranking: a linea above one with strictly greater forza only citing a G-id, else reordered by forza
+(`strategy_rank_reordered`, both orders logged; ties keep the model's order); the first ranked is the principale.
+Rendering (`lawyer_method.compose`, the data's labels): §1 the ranked lines (`summary_text` with `lines`), §6 in the order
+passi immediati -> linee per forza (the table, forza «provato x / contestato y / da provare z») -> risposta ai quesiti
+(the fit's Q tags, else the quesito's own search) -> contro-difesa -> verifiche documentali, §7 the obiezioni with the
+cited facts as written or «senza risposta nei fatti narrati», §9 the risk word from the principale's forza by the
+data's thresholds (`risk`, by side) and §1's lines, §10 the passi (an element a passo names is not asked again). The
+step failing, timing out or verifying nothing: the analysis step's rendering as before. Counters (block_counters):
+strategy_calls, strategy_reasked, strategy_lines, strategy_rank_reordered, strategy_line_rejected,
+strategy_objections_unanswered, strategy_rulings_cited, strategy_seconds, strategy_failed, strategy_bad_id,
+strategy_passi_added, strategy_contro_difesa_added, strategy_entries_uncited; `state["strategy"]` and the replay's
+«strategy» row (ranked articles + forza + the reordered flag), the «strategy» stage in the seconds. (Item 11)
+`analysis_step.degree_grade`: an element with a degree word (data `degree_words`, by grade) is «provato» only when a
+cited fact holds the same or a stronger degree, else «da_provare» (`analysis_degree_downgraded`, logged
+«degree_downgraded»). (Item 13) `data/mediation_matters.json`: «appalto» among the art. 5, co. 1 matters beside the
+contratti d'opera (post-Cartabia, flagged `da_confermare` for the lawyer), out of the facoltativa list;
+`fact_signals.mediation` reads the matters from the data (`mediation_subjects`), the typed contract's listed matter
+decides first, never a clause word; with the article's text in the corpus only a matter the text names. A record fact
+the client stated is certo in §2, never «allegazione», and the client is never the party «che afferma» of a contestato.
+The analysis, fit, frame and recall prompts are unchanged.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

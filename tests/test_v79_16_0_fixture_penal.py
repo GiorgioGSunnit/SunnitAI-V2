@@ -210,7 +210,9 @@ def test_the_penal_fixture_end_to_end(monkeypatch, tmp_path):
     # A3: §2 and §10 from the record and the verified elements
     fatti = H.section(answer, "fatti")
     assert FACT_PAID in fatti.split("**Fatti ipotizzabili**")[0]
-    assert f"- {PRANDI} (allegazione di Luca Prandi)" in fatti and f"- {MARTA} (allegazione di Marta Serra)" in fatti
+    assert f"- {PRANDI} (allegazione di Luca Prandi)" in fatti
+    # v79.18.0 (item 13): the client's own stated fact is never an allegation -- certo
+    assert f"- {MARTA}\n" in fatti.split("**Fatti ipotizzabili**")[0] and "(allegazione di Marta Serra)" not in fatti
     assert "Nessun elemento resta da provare" not in fatti and "contestato —" in fatti
     assert "Da verificare se «" in H.section(answer, "verificare")
     # D2: the bridges; the step's log carries the F-ids

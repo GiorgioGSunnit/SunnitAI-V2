@@ -30,6 +30,7 @@ sys.path.insert(0, str(HERE))
 import test_v79_14_2_fixture as F  # noqa: E402
 from src.rag import analysis_step as A  # noqa: E402
 from src.rag import applicability as ap  # noqa: E402
+from src.rag import strategy_step as T  # noqa: E402
 from src.rag import case_frame as cf  # noqa: E402
 from src.rag import intake  # noqa: E402
 from src.rag import interactive_flow as flow  # noqa: E402
@@ -171,6 +172,9 @@ def run(monkeypatch, tmp_path, case) -> Dict[str, Any]:
     monkeypatch.setattr(cf, "_default_call", lambda m, k: json.dumps(case.FRAME_REPLY, ensure_ascii=False))
     monkeypatch.setattr(ap, "_default_call", with_recall(case.fit_reply))     # v79.17.2: the recall answered too
     monkeypatch.setattr(A, "_default_call", model)
+    # v79.18.0 (B): the strategy step's call -- the case's strategy_call(messages, kwargs) -> the reply text, else
+    # refused (the step fails, the analysis step's rendering stands as before)
+    monkeypatch.setattr(T, "_default_call", getattr(case, "strategy_call", None) or F._refused)
     objections = getattr(case, "objections", None)
     if objections is None:
         monkeypatch.setattr(ai_chat, "call_chat_n", F._thesis_replies)

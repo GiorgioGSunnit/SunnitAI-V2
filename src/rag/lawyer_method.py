@@ -7179,7 +7179,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # v79.15.0 (build B, ANALYSIS_STEP): the verified analysis (analysis_step.view) decides §1, §4's tables, §6, §9, the
     # counts and the answers' line -- the old engine below still runs, logged (ctx["legacy_plan"]), and renders none of them
     verified = ctx.get("verified_analysis") if isinstance(ctx.get("verified_analysis"), dict) else None
-    from . import analysis_step
+    from . import analysis_step, strategy_step
+    # v79.18.0 (B): the strategy step's verified result (interactive_flow.method_objections) decides §1's lines, §6,
+    # §7, §9's risk word and §10's passi; the step failed, timed out or unverified: the analysis step's rendering
+    strategy = ctx.get("strategy") if verified is not None and isinstance(ctx.get("strategy"), dict) \
+        and ctx["strategy"].get("status") == strategy_step.OK and (ctx["strategy"].get("analysis") or {}).get("linee") \
+        else None
+    log["strategy"] = strategy_step.replay_summary(ctx["strategy"]) if isinstance(ctx.get("strategy"), dict) else {}
     rulings = ctx.get("rulings") or []
     circ = ctx.get("circumstances") or {}
     by_title = {}
@@ -7401,8 +7407,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
             "obiezioni": objections_reviewed,
             "questione_giuridica": planned(plan.get("questione_giuridica") or "")}
-    if verified is not None:                # v79.15.0 (build B): §9 the verified analysis's
-        conclusions = [analysis_step.conclusions_text(verified)]
+    if verified is not None:                # v79.15.0 (build B): §9 the verified analysis's; v79.18.0 (B): the risk
+        conclusions = [analysis_step.conclusions_text(verified, risk=strategy_step.risk_word(strategy) if strategy
+                                                      else "", lines=strategy_step.summary_lines(strategy, verified)
+                                                      if strategy else None)]       # word from the principale's forza
     elif kind:                              # v79.12.5 (item 2): no line, no forecast, no steps
         conclusions = [NO_CLAIM_CONCLUSION]
     else:
@@ -7418,7 +7426,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)]
     # v79.15.1 (item 3): §7's objections from the verified analysis -- the allegations, a claimant's exceptions
     verified_objections = analysis_step.objection_items(verified) if verified is not None else []
+    strategy_objections: List[Dict[str, str]] = []
+    if strategy:            # v79.18.0 (B): §7 the strategy's obiezioni -- the objection's sentence reviewed as the
+        for o in strategy_step.objection_items(strategy, verified):     # model's prose, the answer the code's (the
+            said = reviewed(planned, o["obiezione"], analysis_step.SITE_OBJECTIONS, replace=False)   # cited facts as
+            if said:                                                                                 # written)
+                strategy_objections.append({"obiezione": said, "risposta": o["risposta"]})
+            else:
+                objections_dropped.append(_removed_note(o))
     log["objections_from"] = {"verified": len(verified_objections), "model": len(plan.get("obiezioni") or []),
+                              "strategy": len(strategy_objections),
                               "fallback": 0 if strong else max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
@@ -7427,8 +7444,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     general = "" if kind or missing_laws_line(ctx) else corpus_line(ctx)
     bound_line = binding_empty_line(ctx)                # v79.14.2 (B): the charge set the frame's binding emptied
     general = bound_line or general
-    summary = analysis_step.summary_text(verified) if verified is not None else \
-        no_claim_summary(ctx, kind) if kind else _with_line(
+    summary = (strategy_step.summary_text(verified, strategy) if strategy else analysis_step.summary_text(verified)) \
+        if verified is not None else no_claim_summary(ctx, kind) if kind else _with_line(
             summary_section({}, sols, main, a, client, (ctx.get("charge") or {}).get("article") or "", records, log),
             general)
     log["corpus_line"] = CORPUS_LINE.split(" su ")[0] in summary
@@ -7473,12 +7490,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("questione", question_text),
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
         ("orientamenti", orientations),
-        ("soluzioni", f"{analysis_step.SOLUTIONS_BRIDGE}\n\n{analysis_step.solutions_text(verified)}"
+        ("soluzioni", f"{analysis_step.SOLUTIONS_BRIDGE}\n\n" + (strategy_step.solutions_text(
+            strategy, verified, quesiti=(ctx.get("strategy_input") or {}).get("quesiti") or [],
+            quesiti_articles=strategy_step.quesiti_map(ctx.get("strategy_input"), ctx.get("quesiti_articles")))   # v79.18.0
+            if strategy else analysis_step.solutions_text(verified))
          if verified is not None else                                                   # v79.15.0 (build B); D2
          no_claim_solutions(ctx, kind) if kind else solutions_section(
             sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "", layout_log,
             post_fact_lines(ctx))),                                         # v79.12.7 (item 3)
-        ("obiezioni", NO_CLAIM_OBJECTIONS if kind else all_open_section(strong, all_open_pick,
+        ("obiezioni", NO_CLAIM_OBJECTIONS if kind else objections_section(      # v79.18.0 (B): the strategy's
+            {"obiezioni": strategy_objections}, [], verified=[], allegations=record_allegations(ctx)) if strategy
+         else all_open_section(strong, all_open_pick,
             _party_of(ctx)["side"]) if strong else objections_section(plan, fallback_objections, **(   # v79.14.1
                 {"verified": verified_objections, "allegations": record_allegations(ctx)}      # v79.17.0 (item 5)
                 if verified is not None else {}))),    # (item 6); v79.15.1 (item 3)
@@ -7537,6 +7559,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # items, code-written; §4's prose is not scanned for points (no prose restated from §4)
     skipped = {exempt} | ({title("norme")} if record_facts else set())
     head_points = analysis_step.verify_points(verified, ctx.get("record_uncertain") or []) if record_facts else []
+    if strategy:                        # v79.18.0 (B): §10 opens with the passi; an element a passo names is not asked again
+        named = strategy_step.passi_elements(strategy)
+        head_points = strategy_step.passi_points(strategy, verified) + [
+            p for p in head_points if not any(f"«{e}»" in p for e in named)]
     collected, points = collect_points([(title(k), x) for k, x in keyed if title(k) not in skipped],
                                        head_points + list(ctx.get("points") or []))
     for q in ctx.get("open_questions") or []:
@@ -7580,7 +7606,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     # v79 (B3): what the nightly's output check reads -- the sources, the scope, and the code-written texts (built from
     # the sources: never a rule statement to trace)
     code_texts = [x for k, x in keyed if k in ("sintesi", "fatti", "conclusioni")] + \
-        [f"{o.get('obiezione') or ''} {o.get('risposta') or ''}" for o in fallback_objections + verified_objections] + \
+        [f"{o.get('obiezione') or ''} {o.get('risposta') or ''}" for o in fallback_objections + verified_objections
+         + strategy_objections] + \
         [f"{t['tesi']} {t.get('pro') or ''} {t.get('contro') or ''}" for t in sols] + [ctx.get("subsumption") or ""] + \
         [ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""] + list(ctx.get("litisconsorzio") or []) + \
         list(ctx.get("riti") or []) + list(points) + strategy_lines + list(closed_list)     # v79.12.5 (item 10)

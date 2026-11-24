@@ -190,8 +190,8 @@ def _analysis(types, areas=(), requests=(), store_only=True):
 @pytest.mark.parametrize("types, areas, requests, matter", [
     (["compravendita dell'immobile dal padre al fratello"], ["successioni"],
      ["azione di riduzione per lesione della quota di legittima"], "successioni ereditarie"),
-    (["contratto di appalto per il rifacimento della facciata condominiale"], ["diritti_reali"],
-     ["impugnazione della delibera condominiale che ha approvato l'appalto"], "condominio"),
+    (["compravendita del box nel cortile condominiale"], ["diritti_reali"],      # v79.18.0 (item 13): an appalto is
+     ["impugnazione della delibera condominiale che ha approvato i lavori"], "condominio"),     # listed now (below)
     (["compravendita della quota ereditaria"], ["successioni"],
      ["divisione dell'immobile ereditato e scioglimento della comunione"], "divisione"),
     (["compravendita del fondo"], ["diritti_reali"],
@@ -213,12 +213,19 @@ def test_a_matter_the_request_names_stays_obbligatoria_beside_a_named_contract(t
 
 def test_the_legacy_reading_keeps_a_fired_matter_the_request_names():
     from src.rag import fact_signals
-    facts = {"contracts": [{"type": "contratto di appalto per il rifacimento della facciata"}],
+    facts = {"contracts": [{"type": "compravendita del box nel cortile"}],
              "requests": ["impugnazione della delibera condominiale"]}
     got = fact_signals.mediation(facts, [{"id": "x", "area": "condominio_parti_comuni"}])
     assert got["required"] and got["subject"] == "condominio"
     got = fact_signals.mediation({"contracts": facts["contracts"]}, [{"id": "x", "area": "condominio_parti_comuni"}])
     assert not got["required"] and got["optional"]                       # the fired rule's area alone: facoltativa
+    # v79.18.0 (item 13): an appalto is a listed matter now (post-Cartabia, «da_confermare» in the data): obbligatoria,
+    # from the data's list, not from a code table
+    facts = {"contracts": [{"type": "contratto di appalto per il rifacimento della facciata"}]}
+    got = fact_signals.mediation(facts, [])
+    assert got["required"] and got["subject"] == "appalto"
+    assert "appalto" in dict(fact_signals.mediation_subjects().__iter__() and
+                             {x[0]: x for x in fact_signals.mediation_subjects()})
 
 
 @pytest.mark.parametrize("contract", ["prestazione di servizi professionali di consulenza contabile",

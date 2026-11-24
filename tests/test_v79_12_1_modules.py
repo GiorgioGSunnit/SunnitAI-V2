@@ -306,8 +306,6 @@ PRELIMINARE = {"type": "contratto preliminare di compravendita immobiliare", "pa
 
 
 @pytest.mark.parametrize("contract, areas, matter", [
-    (APPALTO, ["contratti"], "appalto"),
-    (APPALTO, ["contratti", "diritti_reali"], "appalto"),
     (PRELIMINARE, ["contratti", "diritti_reali"], "preliminare di vendita"),
     ({"type": "compravendita di un'auto usata"}, ["contratti"], "compravendita"),
 ])
@@ -320,6 +318,21 @@ def test_appalto_and_preliminare_print_facoltativa(contract, areas, matter):
         assert got["text"].startswith("Mediazione facoltativa") and "obbligatoria" not in got["text"]
         blocks = dict(R.blocks(analysis))
         assert blocks["Mediazione"].startswith("Mediazione facoltativa")
+
+
+@pytest.mark.parametrize("areas", [["contratti"], ["contratti", "diritti_reali"]])
+def test_an_appalto_is_a_listed_matter_post_cartabia(areas):
+    """v79.18.0 (item 13): «appalto» is in data/mediation_matters.json's art. 5, co. 1 list (beside the contratti
+    d'opera, flagged «da_confermare» for the lawyer): obbligatoria, read from the data; never from a clause word."""
+    from src.rag import fact_signals, render_computed as R
+    analysis = _analysis([APPALTO], areas)
+    got = R.mediation_of(analysis)
+    assert got["required"] and not got.get("optional") and got["subject"] == "appalto"
+    assert dict(R.blocks(analysis))["Mediazione"].startswith("Mediazione obbligatoria")
+    got = fact_signals.mediation({"contracts": [APPALTO]}, [])          # the facts' reading: the data's list too
+    assert got["required"] and got["subject"] == "appalto"
+    entry = R.matters_list()["mediazione"]["matters"]["appalto"]
+    assert entry.get("da_confermare") and "appalto" not in R.matters_list()["mediazione"]["facoltativa"]["contracts"]
 
 
 def test_the_legacy_facts_reading_never_makes_a_preliminare_mandatory():
@@ -351,8 +364,8 @@ def test_an_article_5_matter_prints_obbligatoria(contracts, areas, matter, facts
 
 def test_a_clause_word_never_makes_a_typed_contract_mandatory():
     from src.rag import render_computed as R
-    seen = R.case_matter(_analysis([APPALTO], ["contratti"]))
-    assert seen["matter"] == "" and seen["optional"] == "appalto" and seen["by"].startswith("contratto «contratto di "
+    seen = R.case_matter(_analysis([APPALTO], ["contratti"]))      # v79.18.0 (item 13): the appalto is listed itself
+    assert seen["matter"] == "appalto" and seen["optional"] == "" and seen["by"].startswith("contratto «contratto di "
                                                                                              "appalto")
     untyped = R.case_matter(_analysis([{"what": "contratto", "clauses": ["mutuo bancario"]}], ["contratti"]))
     assert untyped["matter"] == "contratti bancari e finanziari"        # no type known: the old reading, unchanged

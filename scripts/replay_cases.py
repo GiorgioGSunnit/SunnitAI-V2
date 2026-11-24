@@ -20,6 +20,8 @@ the model --base-url / --model name (LLM_BASE_URL, LLM_MODEL: the GPU host), the
   retrieval    the «retrieval_quesiti» gate line (queries, source, reason, the labels added)
   qa           the Q&A counters (qa_questions_detected, qa_answer_reasked, qa_answer_insufficient, the qa_sentences_*)
   seconds      the wall time of the case
+  strategy     v79.18.0 (B): the strategy step's line -- the ranked articles with their forza, the reordered flag, the
+               risk word, the objections and contro-difesa answered -- and its counters (STRATEGY_COUNTERS)
   stages       v79.17.1 (item 8): the seconds per stage as the flow measured them -- frame (the frame step, inside the
                intake: frame_seconds), record (the fact record: records_s), extraction (round 1's analysis: analysis_s),
                retrieval (round 1's rest: retrieval_s), fit (applicability_s), analysis (the analysis step's), write (the
@@ -80,7 +82,14 @@ FIELD_KEYS = ("tipo", "contenuto", "contro", "valore", "intake", "articolo", "de
               "ruolo_nel_fatto", "lato")       # v79.17.0: the pretesa's fields first
 RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("retrieval_quesiti_gated", "family_rito_dropped")      # v79.17.1 (item 6)
 ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("candidates_no_elements_excluded",)                      # v79.17.1 (item 7)
-STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "write", "total")       # v79.17.1 (item 8)
+STAGES = ("frame", "record", "extraction", "retrieval", "fit", "analysis", "strategy", "write", "total")   # v79.17.1 (item 8); v79.18.0
+# v79.18.0 (B): the strategy step's counters, and its line per case (ranked articles + forza + the reordered flag)
+STRATEGY_COUNTERS = ("strategy_calls", "strategy_reasked", "strategy_lines", "strategy_rank_reordered",
+                     "strategy_line_rejected", "strategy_objections_unanswered", "strategy_rulings_cited",
+                     "strategy_seconds", "strategy_failed", "strategy_bad_id", "strategy_passi_added",
+                     "strategy_contro_difesa_added", "strategy_entries_uncited")
+FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_unverified",)                                       # v79.18.0 (A1)
+ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("analysis_line_fallback_set", "analysis_degree_downgraded")   # v79.18.0 (A2, 11)
 
 
 # --- the measurement --------------------------------------------------------------------------------------------------
@@ -162,6 +171,17 @@ def recall_fields(state: Dict[str, Any]) -> Dict[str, Any]:
             "pretesa_article": binding.get("pretesa_article") or ""}
 
 
+def strategy_fields(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.18.0 (B): the strategy step's line (state["strategy"]: strategy_step.replay_summary) -- {status, ranked
+    [{articolo, eid, tipo, rapporto, forza}], reordered, model_order, final_order, risk, objections, contro_difesa,
+    prompt_hash, error}; {} when the step did not run."""
+    got = state.get("strategy") or {}
+    if not isinstance(got, dict) or not got:
+        return {}
+    return {k: got.get(k) for k in ("status", "ranked", "reordered", "model_order", "final_order", "risk",
+                                    "objections", "contro_difesa", "prompt_hash", "error") if k in got}
+
+
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
     gate = _event(events, "retrieval_quesiti") or state.get("quesiti_retrieval") or {}
     out = {k: gate.get(k) for k in ("queries", "source", "reason", "added") if k in gate}
@@ -183,13 +203,14 @@ def stage_seconds(state: Dict[str, Any]) -> Dict[str, float]:
     sst = state.get("single_shot_timings") or {}
     fit = t.get("applicability_s", c.get("fit_seconds"))
     analysis = (state.get("analysis_step") or {}).get("seconds", c.get("analysis_seconds"))
+    strategy = t.get("strategy_s", c.get("strategy_seconds"))         # v79.18.0 (B): the strategy step's seconds
     answer = sst.get("answer_s")
     write = None
     if answer is not None:
-        write = max(0.0, float(answer) - float(fit or 0) - float(analysis or 0))
+        write = max(0.0, float(answer) - float(fit or 0) - float(analysis or 0) - float(strategy or 0))
     raw = {"frame": cf.get("frame_seconds", c.get("frame_seconds")), "record": t.get("records_s"),
            "extraction": t.get("analysis_s"), "retrieval": t.get("retrieval_s"), "fit": fit, "analysis": analysis,
-           "write": write, "total": sst.get("total_s", t.get("single_shot_s"))}
+           "strategy": strategy, "write": write, "total": sst.get("total_s", t.get("single_shot_s"))}
     out: Dict[str, float] = {}
     for k in STAGES:
         v = raw.get(k)
@@ -218,6 +239,7 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
             "recall": recall_fields(state),                                     # v79.17.1 (item 9)
             "analysis": analysis_fields(state, events),
             "analysis_counters": _counters(state, ANALYSIS_COUNTERS),
+            "strategy": strategy_fields(state), "strategy_counters": _counters(state, STRATEGY_COUNTERS),   # v79.18.0
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
             "qa": _counters(state, QA_COUNTERS),
             "stages": stage_seconds(state)}                                     # v79.17.1 (item 8)
@@ -289,8 +311,16 @@ def _row_values(row: Dict[str, Any]) -> Dict[str, Any]:
     flat["frame.verified"] = ",".join((row.get("frame") or {}).get("verified") or [])
     flat["frame.pretesa"] = (row.get("frame") or {}).get("pretesa") or ""
     flat["asked"] = bool(row.get("asked"))
-    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval", "frame_counters", "recall"):
+    for key in ("fit", "analysis_counters", "retrieval_counters", "qa", "retrieval", "frame_counters", "recall",
+                "strategy_counters"):
         _flat(key, row.get(key) or {}, flat)
+    st = row.get("strategy") or {}          # v79.18.0 (B): the strategy line, one comparable value
+    if st:
+        flat["strategy.status"] = st.get("status")
+        flat["strategy.ranked"] = "; ".join(f"{x.get('articolo')} {x.get('eid')} {x.get('tipo')} [{x.get('forza')}]"
+                                            for x in st.get("ranked") or [])
+        flat["strategy.reordered"] = bool(st.get("reordered"))
+        flat["strategy.risk"] = st.get("risk") or ""
     flat["analysis.status"] = a.get("status")
     flat["analysis.line_tier"] = a.get("line_tier")
     flat["analysis.fallback_skipped_reason"] = a.get("fallback_skipped_reason")
@@ -376,6 +406,21 @@ def case_table(row: Dict[str, Any]) -> str:
                                                               for x in a["no_pertinence"]) + " |")
     lines.append("| analysis counters | " + ", ".join(f"{k} {v}" for k, v in (row.get("analysis_counters") or {}).items())
                  + " |")
+    st = row.get("strategy") or {}          # v79.18.0 (B): the strategy line -- the ranked articles with their forza
+    if st:
+        ranked = "; ".join(f"{i}. art. {x.get('articolo')} {x.get('eid')} {x.get('tipo')}/{x.get('rapporto')} "
+                           f"[{x.get('forza')}]" + (f" cita {', '.join(x['pronunce'])}" if x.get("pronunce") else "")
+                           for i, x in enumerate(st.get("ranked") or [], 1))
+        lines.append(f"| strategy | {_show(st.get('status'))}: {ranked or '—'}; reordered {int(bool(st.get('reordered')))}"
+                     + (f" (model order {', '.join(st['model_order'])})" if st.get("reordered") else "")
+                     + f"; risk {_show(st.get('risk'))}"
+                     + (f"; objections answered {sum(1 for o in st['objections'] if o.get('answered'))}/{len(st['objections'])}"
+                        if st.get("objections") else "")
+                     + (f"; contro-difesa answered {sum(1 for o in st['contro_difesa'] if o.get('answered'))}/{len(st['contro_difesa'])}"
+                        if st.get("contro_difesa") else "")
+                     + (f"; error {st['error']}" if st.get("error") else "") + " |")
+        lines.append("| strategy counters | " + (", ".join(f"{k} {v}" for k, v in (row.get("strategy_counters") or {}).items())
+                                                  or "—") + " |")
     r = row.get("retrieval") or {}
     lines.append(f"| retrieval_quesiti | queries {_show(r.get('queries'))}, source {_show(r.get('source'))}, reason "
                  f"{_show(r.get('reason'))}, added {_show(r.get('added'))}"

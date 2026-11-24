@@ -263,7 +263,8 @@ def _penal_governs(governs, fits=None):
 def test_the_lines_candidate_sets_follow_the_governs():
     inp = _penal_governs({"640 c.p.": ["pretesa"], "641 c.p.": ["Q1"]})
     gs = A.governs_sets(inp)
-    assert gs == {"applied": True, "pretesa": ["640 c.p."], "quesiti": ["641 c.p."], "context": [], "enforced": False}
+    assert gs == {"applied": True, "pretesa": ["640 c.p."], "quesiti": ["641 c.p."], "context": [], "enforced": False,
+                  "tiers": {}}                                                       # v79.18.0 (A1): the set's tiers
     assert A.line_tier(inp) == (A.TIER_SI, ["640 c.p."])                               # the leading line's set
     assert A.line_tier(inp, "linea_subordinata") == (A.TIER_SI, ["640 c.p.", "641 c.p."])   # the subordinate's
     assert "- A641cp (art. 641 c.p.): A641cp:E1, A641cp:E2 [fit si verificato; governa: Q1] [solo linea subordinata]" in A.allowed_text(inp)

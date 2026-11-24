@@ -1687,9 +1687,11 @@ def untriggered(terms: List[Dict[str, Any]], case: str) -> Tuple[List[Dict[str, 
 
 # Art. 5, comma 1, d.lgs. 28/2010: the subjects where mediation is a condition of the action. (name, the word that
 # finds it in the article's text, the rule areas or ids that make it the case's subject, words in the contracts or
-# requests.) With the article's text in the corpus only the subjects it holds count.
+# requests.) With the article's text in the corpus only the subjects it holds count. v79.18.0 (item 13): the list is
+# the data's (data/mediation_matters.json «mediazione.matters»: mediation_subjects), never this table -- kept only as
+# the fallback when the data file cannot be read.
 MEDIATION_REF = "art. 5 d.lgs. 28/2010"
-_MEDIATION_SUBJECTS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
+_MEDIATION_SUBJECTS_FALLBACK: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
     ("diritti reali", "diritti reali", ("diritti_reali",), r"servit|usucapi|rivendic"),
     ("condominio", "condominio", ("condominio_parti_comuni",), r"condomin"),
     ("divisione", "divisione", (), r"scioglimento della comunione|domanda di divisione"),
@@ -1709,6 +1711,25 @@ _MEDIATION_SUBJECTS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
     ("società di persone", "società di persone", (), r"società di persone|\bs\.?n\.?c\b|\bs\.?a\.?s\b"),
     ("subfornitura", "subfornitura", (), r"subfornitura"),
 )
+
+
+def mediation_subjects() -> Tuple[Tuple[str, str, Tuple[str, ...], str, str], ...]:
+    """v79.18.0 (item 13): the art. 5, co. 1 matters as data/mediation_matters.json lists them -- (name, the word that
+    finds it in the article's text («word», default the name), the frame areas («case.areas»), the pattern on the
+    extraction's contracts and requests («case.contracts» | «case.request_words»), the words an area match also needs
+    («case.words», "" none -- as render_computed.case_matter reads them)); the code table only when the data cannot be
+    read."""
+    from . import render_computed
+    matters = (render_computed.matters_list().get("mediazione") or {}).get("matters") or {}
+    out = []
+    for name, entry in matters.items():
+        if not isinstance(entry, dict):
+            continue
+        case = entry.get("case") or {}
+        pattern = "|".join(f"(?:{p})" for p in (case.get("contracts"), case.get("request_words")) if p)
+        out.append((str(name), str(entry.get("word") or name).lower(), tuple(str(a) for a in case.get("areas") or ()),
+                    pattern or r"(?!x)x", str(case.get("words") or "")))
+    return tuple(out) or tuple(x + ("",) for x in _MEDIATION_SUBJECTS_FALLBACK)
 
 
 def mediation(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]], article: str = "") -> Optional[Dict[str, Any]]:
@@ -1731,13 +1752,20 @@ def mediation(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]], arti
                         "condizione di procedibilità della domanda."}
     marks = {str(r.get("area")) for r in fired} | {str(r.get("id")) for r in fired}
     text, low = _texts(facts, ("contracts", "requests")), _low(article)
-    for name, word, rules, pattern in _MEDIATION_SUBJECTS:
-        if (marks & set(rules) or re.search(pattern, text)) and (not low or word in low):
+    if reading["listed"]:           # v79.18.0 (item 13): the typed contract's listed matter decides first (as
+        word = next((w for name, w, _r, _p, _a in mediation_subjects() if name == reading["listed"]), reading["listed"])
+        if not low or word in low:  # render_computed.case_matter) -- never a clause word («polizza», «bonifico»)
+            return {"required": True, "subject": reading["listed"],
+                    "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {reading['listed']}, il suo "
+                            "esperimento è condizione di procedibilità della domanda."}
+    for name, word, rules, pattern, area_words in mediation_subjects():     # v79.18.0 (item 13): the data's list
+        by_area = bool(marks & set(rules)) and (not area_words or re.search(area_words, text, re.IGNORECASE))
+        if (by_area or re.search(pattern, text, re.IGNORECASE)) and (not low or word in low):
             return {"required": True, "subject": name,
                     "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {name}, il suo esperimento è condizione "
                             "di procedibilità della domanda."}
-    if reading["listed"]:                           # v79.12.1 (review): the listed contract type itself
-        return {"required": True, "subject": reading["listed"],
+    if reading["listed"] and not low:               # v79.12.1 (review): the listed contract type itself (v79.18.0: with
+        return {"required": True, "subject": reading["listed"],     # the article's text read, only when it names it: above)
                 "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {reading['listed']}, il suo esperimento "
                         "è condizione di procedibilità della domanda."}
     return {"required": False, "subject": "", "text": ""}

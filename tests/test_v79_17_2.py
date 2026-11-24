@@ -55,11 +55,15 @@ def test_the_binding_set_excludes_a_tag_on_a_non_substantive_article_and_include
         _judgment("1454 c.c.", governs=[], substantive=True)]}, "block_counters": {}}             # unverified: in
     state["applicability"]["judgments"][3]["governs"] = ["pretesa"]
     b = flow.binding_pretesa(state)        # v79.17.3 (item 1): 1454 c.c. (verified «si», substantive) joins as fit_si
-    assert b["principale"] == ["1385 c.c.", "1453 c.c.", "1454 c.c."] and b["recalled"] == ["1453 c.c."]
+    # v79.18.0 (A1): by tier -- the verified «si» first, the verified «dipende» (1225 c.c.) next, the unverified last
+    assert b["principale"] == ["1385 c.c.", "1454 c.c.", "1225 c.c.", "1453 c.c."] and b["recalled"] == ["1453 c.c."]
+    assert b["tiers"] == {"1385 c.c.": "si_verificato", "1454 c.c.": "si_verificato", "1225 c.c.": "dipende_verificato",
+                          "1453 c.c.": "non_verificato"}
     assert b["nonsubstantive_tagged"] == ["1218 c.c."] and b["quesiti"] == {"Q1": ["1218 c.c."], "Q2": ["1225 c.c."]}
     assert b["context_only"] == [] and b["enforced"] is True and b["applied"] is True
     c = state["block_counters"]
-    assert c["binding_set_size"] == 3 and c["binding_empty_honesty"] == 0 and c["binding_pretesa_applied"] == 1
+    assert c["binding_set_size"] == 4 and c["binding_empty_honesty"] == 0 and c["binding_pretesa_applied"] == 1
+    assert c["binding_set_unverified"] == 1
     # every tag on a non-substantive article, the recall empty: the set is empty, enforced, the honesty counter 1
     state = {"applicability": {"governs_asked": True, "pretesa": "domanda: «x»", "judgments": [
         _judgment("1218 c.c.", governs=["pretesa"], substantive=False)]}, "block_counters": {}}
@@ -133,9 +137,10 @@ ENFORCED_640 = {"enforced": True, "principale": ["640 c.p."]}
 
 def test_the_sets_come_from_the_flows_binding_and_an_unjudged_norm_no_longer_stands_in():
     inp = _penal({"640 c.p.": ["pretesa"], "641 c.p.": ["Q1"]}, ENFORCED_640)
-    assert inp["binding"] == {"enforced": True, "pretesa": ["640 c.p."]}
+    assert inp["binding"] == {"enforced": True, "pretesa": ["640 c.p."], "tiers": {}}
     gs = A.governs_sets(inp)
-    assert gs == {"applied": True, "pretesa": ["640 c.p."], "quesiti": ["641 c.p."], "context": [], "enforced": True}
+    assert gs == {"applied": True, "pretesa": ["640 c.p."], "quesiti": ["641 c.p."], "context": [], "enforced": True,
+                  "tiers": {}}
     assert A.line_tier(inp) == (A.TIER_SI, ["640 c.p."]) and A.line_tier(inp, "linea_subordinata")[1] == ["640 c.p.", "641 c.p."]
     # 641 c.p. never judged (no fit, no governs): with the binding enforced it is in no list; without, it stays (79.17.0)
     inp = _penal({"640 c.p.": ["pretesa"], "641 c.p.": None}, ENFORCED_640)
@@ -212,7 +217,10 @@ def test_the_fallbacks_pick_inside_the_set_only():
     res = A.analyse(inp, call=T._Model(RuntimeError("down")))
     a = res["analysis"]
     assert res["counters"]["analysis_frame_charge_missing"] == 0 and a["linea_principale"]["articolo"] != "640 c.p."
-    assert a["honesty"] == "" and a["fallback_skipped_reason"] in (A.SKIP_NO_RUBRICA_MATCH, A.SKIP_NO_NAMED_CHARGE, "")
+    # v79.18.0 (A2): no rubrica match -> the set's best-tier article leads, every element «da_provare»
+    assert a["honesty"] == "" and a["fallback_skipped_reason"] == A.SKIP_SET_LINE
+    assert a["linea_principale"]["articolo"] == "641 c.p." and a["linea_principale"]["stato"] == A.FALLBACK_SET
+    assert res["counters"]["analysis_line_fallback_set"] == 1 and res["counters"]["analysis_line_undetermined"] == 0
     assert A.rubrica_fallback(inp, ["641 c.p."]) is None or A.rubrica_fallback(inp, ["641 c.p."])["articolo"] == "641 c.p."
     assert (A.rubrica_fallback(inp) or {}).get("articolo") in (None, "640 c.p.")      # unconstrained: the frame's truffa
 

@@ -211,13 +211,18 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "analysis_line_outside_rito_rejected",
             # v79.17.2 (item 2): a leading line outside the governs-pretesa set (a subordinate outside the set and the
             # quesiti's) refused; the binding enforced with an empty set: the honesty line, no fallback pick
-            "analysis_line_outside_set_rejected", "analysis_binding_empty_honesty")
+            "analysis_line_outside_set_rejected", "analysis_binding_empty_honesty",
+            # v79.18.0 (A2): the model's line failed twice with a non-empty set -- the best-tier article of the set
+            # leads, every element «da_provare»; (item 11) a «provato» on an element with a degree word whose cited
+            # facts hold no degree as strong -- «da_provare»
+            "analysis_line_fallback_set", "analysis_degree_downgraded")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 LINE_KINDS = ("linea_principale", "linea_subordinata")
 VERIFIED, FRAME_LINE, UNDETERMINED = "verificata", "addebito_del_quadro", "da_determinare"     # a line's «stato»
 FALLBACK_LINE = "rubrica_del_quadro"        # v79.15.1 (item 2): the line found by the frame's named charge's rubrica
+FALLBACK_SET = "insieme_governante"         # v79.18.0 (A2): the best-tier article of the governs-pretesa set leads
 # my drafts (v79.15.0): the labels build B prints -- the leading line the step could not verify (§1), never a text
 LINE_UNDETERMINED = "da determinare"
 LINE_UNVERIFIED_LABEL = "linea non verificata"
@@ -234,6 +239,7 @@ SKIP_NO_RUBRICA_MATCH = "no_rubrica_match"      # a named charge / claim, but no
 SKIP_STEP_FAILED = "step_failed"                # the input unread (v79.16.2: a failed call runs the fallbacks instead)
 SKIP_NO_INPUT = "no_input"                      # no fitted norm or no sentence: nothing called
 SKIP_BINDING_EMPTY = "binding_empty"            # v79.17.2 (item 1): the set is empty -- the honesty line, no pick
+SKIP_SET_LINE = "set_line_used"                 # v79.18.0 (A2): the set's best-tier article leads (set_fallback)
 HONESTY_LINE = "Il corpus non copre la pretesa: nessun articolo applicabile la governa."    # v79.17.2 (item 1), my draft
 STRING_COUNTERS = (SKIPPED_REASON,)
 
@@ -685,6 +691,11 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
             for k in ("schema_kind", "special"):
                 if _flat(e.get(k)):
                     el[k] = _flat(e.get(k))
+            if e.get("comma") not in (None, ""):        # v79.18.0 (item 10): the element's comma (the record's)
+                try:
+                    el["comma"] = int(e["comma"])
+                except (TypeError, ValueError):
+                    pass
             el["eccezione"], el["eccezione_fonte"] = exception_of(el, periods)
             elements.append(el)
         out_norms.append({"article": label, "rubrica": _flat(n.get("rubrica")), "text": str(n.get("text") or ""),
@@ -709,7 +720,9 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
             "charge": charge, "contractual": contractual, "claimant": side == SIDE_CLAIMANT,
             "side": side, "side_why": side_why, "issues": named_issues(f, older_issues),
             "binding": {"enforced": bool((binding or {}).get("enforced")),
-                        "pretesa": [str(x) for x in (binding or {}).get("principale") or []]} if binding else None}
+                        "pretesa": [str(x) for x in (binding or {}).get("principale") or []],
+                        "tiers": {str(k): str(x) for k, x in ((binding or {}).get("tiers") or {}).items()}}   # v79.18.0
+            if binding else None}
 
 
 def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -736,9 +749,9 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
         n = ap.norm_input(label, have.get(key), rec, rows)
         kinds = {str(r.get("id")): r for r in rec.get("requisites") or [] if isinstance(r, dict) and r.get("id")}
-        n["elements"] = [dict(e, **{k: kinds[str(e.get("id"))][k] for k in ("schema_kind", "special")
-                                    if (kinds.get(str(e.get("id"))) or {}).get(k)})
-                         for e in n.get("elements") or []]          # v79.15.1: the schema's own element kind
+        n["elements"] = [dict(e, **{k: kinds[str(e.get("id"))][k] for k in ("schema_kind", "special", "comma")
+                                    if (kinds.get(str(e.get("id"))) or {}).get(k) not in (None, "")})
+                         for e in n.get("elements") or []]          # v79.15.1: the schema's own element kind; v79.18.0: comma
         j = fits.get(flow._key(flow._parse_label(label)))             # v79.16.1 (item 3): the fit's verdict
         if j is not None:
             n["fit"], n["fit_verified"], n["fit_perche"] = j.get("fit"), bool(j.get("verified")), j.get("perche") or ""
@@ -935,7 +948,8 @@ def governs_sets(inp: Dict[str, Any]) -> Dict[str, Any]:
     with_gov = [n for n in norms if isinstance(n.get("governs"), list)]
     binding = inp.get("binding") if isinstance(inp.get("binding"), dict) else None
     enforced = bool(binding and binding.get("enforced"))
-    out = {"applied": False, "pretesa": [], "quesiti": [], "context": [], "enforced": enforced}
+    out = {"applied": False, "pretesa": [], "quesiti": [], "context": [], "enforced": enforced,
+           "tiers": dict((binding or {}).get("tiers") or {})}       # v79.18.0 (A1): the set's tiers, the flow's
     if not with_gov and not enforced:
         return out
     for n in with_gov:
@@ -1346,6 +1360,38 @@ def record_provenance(ids: Sequence[str], m: Dict[str, Any], inp: Dict[str, Any]
     return next((w for w in alleged if w), ""), True
 
 
+# --- v79.18.0 (item 11): a qualified term needs its degree in the cited fact -----------------------------------------------
+# data «degree_words.grades»: [{grade, patterns}] -- the degree words of the schema texts («del tutto», «grave»,
+# «notevole», «in modo apprezzabile», «totale», «irreparabile», …), each grade a strength; an element holding one is
+# «provato» only when a cited fact holds a word of the same or a higher grade, else «da_provare» (logged).
+
+@lru_cache(maxsize=1)
+def _degree_table() -> Tuple[Tuple[int, "re.Pattern[str]"], ...]:
+    out = []
+    for g in (config().get("degree_words") or {}).get("grades") or []:
+        pats = [str(p) for p in (g or {}).get("patterns") or [] if str(p or "").strip()]
+        if pats:
+            out.append((int((g or {}).get("grade") or 1), re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)))
+    return tuple(out)
+
+
+def degree_grade(text: Any) -> int:
+    """The highest degree grade a text holds (0: no degree word)."""
+    low = fold(text)
+    return max([g for g, rx in _degree_table() if rx.search(low)] or [0])
+
+
+def degree_words_in(text: Any) -> List[str]:
+    low = fold(text)
+    return [m.group(0) for _g, rx in _degree_table() for m in rx.finditer(low)]
+
+
+def degree_log(analysis: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The elements the degree rule downgraded, for the step's log line."""
+    return [{"articolo": art, "eid": e.get("eid"), **(e.get("declassato_grado") or {})}
+            for art, els in ((analysis or {}).get("elementi") or {}).items() for e in els if e.get("declassato_grado")]
+
+
 # --- v79.16.1 (item 4): a «provato» / «escluso» needs a pertinent fact -----------------------------------------------------
 _LEMMA_RE = re.compile(r"[a-zà-ü]{4,}")
 STEM_CHARS = 5
@@ -1615,6 +1661,16 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
         out["non_pertinente"] = {"esito_modello": esito, "fatti": [_flat(m["sents"][i].get("text"))[:160] for i in ids]}
         out["esito"] = esito                                  # v79.16.2 (item 1): the esito stays as the model gave it
         return out
+    def proven() -> Dict[str, Any]:     # v79.18.0 (item 11): an element with a degree word («del tutto», «grave», …)
+        grade = degree_grade(element.get("testo"))        # is provato only when a cited fact holds the same or a
+        if grade and max([degree_grade(m["sents"][i].get("text")) for i in ids] or [0]) < grade:    # stronger degree
+            counters["analysis_degree_downgraded"] += 1
+            out["esito"] = DA_PROVARE
+            out["declassato_grado"] = {"grado": grade, "parole": degree_words_in(element.get("testo")),
+                                       "fatti": [_flat(m["sents"][i].get("text"))[:160] for i in ids]}
+            return out
+        out["esito"] = PROVATO
+        return out
     if esito == PROVATO:
         if not ids:
             counters["analysis_provato_unsupported"] += 1
@@ -1629,8 +1685,7 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
                 return out
             if not pertinent(element, [m["sents"][i] for i in ids], inp):
                 return not_pertinent()
-            out["esito"] = PROVATO
-            return out
+            return proven()
         counters["analysis_provenance_fallback"] += 1
         by = [reported_by(m["sents"][i], inp, parte) for i in ids]
         if all(by):
@@ -1640,8 +1695,7 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
             return out
         if not pertinent(element, [m["sents"][i] for i in ids], inp):
             return not_pertinent()
-        out["esito"] = PROVATO
-        return out
+        return proven()
     if esito in (ESCLUSO, CONTESTATO) and not ids:
         counters["analysis_escluso_unsupported" if esito == ESCLUSO else "analysis_contestato_unsupported"] += 1
         return out
@@ -1649,7 +1703,8 @@ def _verify_element(item: Dict[str, Any], element: Dict[str, str], inp: Dict[str
         return not_pertinent()
     if esito == CONTESTATO and not parte:
         who = [w for w in (str(m["sents"][i].get("said_by") or "") or reported_by(m["sents"][i], inp) for i in ids)
-               if w]                            # v79.16.0 (A2): the record's speaker first
+               if w and not _is_client(w, inp)]     # v79.16.0 (A2): the record's speaker first; v79.18.0 (item 13):
+        # the client's own statement is no allegation -- never the party «che afferma» of a contestato
         out["parte_che_afferma"] = who[0] if who else None
     out["esito"] = esito
     return out
@@ -1796,6 +1851,37 @@ def fallback_miss(inp: Dict[str, Any]) -> str:
     return SKIP_NO_RUBRICA_MATCH if any(rubrica_key(x) for x in inp.get("issues") or []) else SKIP_NO_NAMED_CHARGE
 
 
+def set_fallback(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """v79.18.0 (A2): the model's line failed twice and the governs-pretesa set is not empty -- the set's best-tier
+    article leads (line_tier's order: the verified «si», the verified «dipende», the unverified; within a tier the
+    input's order), stato FALLBACK_SET, no element in play, no id cited, every element «da_provare» (finish), tesi
+    FALLBACK_TESI on the norm's rubrica (its label without one); None when no set article has an admissible element."""
+    tier, allowed = line_tier(inp)
+    norms = {n["article"]: n for n in inp.get("norms") or []}
+    for label in allowed:
+        n = norms.get(label) or {}
+        if n.get("remedy") or not line_elements(n, inp):
+            continue
+        tesi = FALLBACK_TESI["penale" if penal_frame(inp.get("frame"), label) else "civile"]
+        return {"articolo": label, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
+                "tesi": tesi.format(rubrica=_stop(n.get("rubrica")) or f"art. {label}"), "cita_fatti": [],
+                "cita_norma": [], "stato": FALLBACK_SET, "tier": tier_tag(n)}
+    return None
+
+
+def norms_summary(inp: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.18.0 (B): the input's norms as the strategy step reads them from the state (interactive_flow.
+    analysis_step_run -> state["analysis_norms"]): [{article, rubrica, fit, fit_verified, governs, remedy, elements
+    [{eid, id, testo, comma, schema_kind, special, eccezione}]}]; [] with no input."""
+    if not isinstance(inp, dict):
+        return []
+    return [{"article": n["article"], "rubrica": n.get("rubrica") or "", "fit": n.get("fit"),
+             "fit_verified": bool(n.get("fit_verified")), "governs": n.get("governs"), "remedy": bool(n.get("remedy")),
+             "elements": [{k: e.get(k) for k in ("eid", "id", "testo", "comma", "schema_kind", "special", "eccezione")
+                           if e.get(k) is not None} for e in n.get("elements") or []]}
+            for n in inp.get("norms") or [] if n.get("article")]
+
+
 def objections_of(lines: Sequence[Optional[Dict[str, Any]]], elements: Dict[str, List[Dict[str, Any]]],
                   raised: Sequence[Dict[str, Any]], inp: Dict[str, Any], m: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.15.1 (item 3): the objections the verified analysis carries, in order --
@@ -1939,9 +2025,16 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             counters["analysis_line_fallback_rubrica"] = 1
             counters[SKIPPED_REASON] = ""
         else:
-            counters["analysis_line_undetermined"] = 1
-            counters[SKIPPED_REASON] = fallback_miss(inp)  # v79.15.2: no named charge / no exact rubrica
-            principale = undetermined_line()
+            # v79.18.0 (A2): the model's line failed twice and the set is not empty -- its best-tier article leads,
+            # every element «da_provare»; never «da determinare» with a non-empty set
+            principale = set_fallback(inp) if gs_f.get("enforced") and gs_f["pretesa"] else None
+            if principale is not None:
+                counters["analysis_line_fallback_set"] = 1
+                counters[SKIPPED_REASON] = SKIP_SET_LINE
+            else:
+                counters["analysis_line_undetermined"] = 1
+                counters[SKIPPED_REASON] = fallback_miss(inp)  # v79.15.2: no named charge / no exact rubrica
+                principale = undetermined_line()
     else:
         counters[SKIPPED_REASON] = SKIP_LINE_VERIFIED       # v79.15.2: a verified leading line, nothing to fall back on
     if subordinata is not None and principale.get("articolo") and same_article(subordinata["articolo"],
@@ -1950,7 +2043,7 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
         subordinata = None          # the same line twice: once
     items = checked["items"] if "items" in checked else _reply_elements(checked.get("reply") or {})
     elements: Dict[str, List[Dict[str, Any]]] = {}
-    open_kinds = {FRAME_LINE: "quadro", FALLBACK_LINE: "rubrica"}
+    open_kinds = {FRAME_LINE: "quadro", FALLBACK_LINE: "rubrica", FALLBACK_SET: "insieme"}      # v79.18.0 (A2)
     read = list(dict.fromkeys(x["articolo"] for x in (principale, subordinata) if x and x.get("articolo")
                               and x.get("stato") not in open_kinds))
     for x in (principale, subordinata):
@@ -2115,6 +2208,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                            "tesi_modello": tesi_log(result["analysis"]),                 # v79.15.3 (item 1)
                            "facts_cited": facts_cited_log(result["analysis"]),           # v79.16.0 (A4): the F-ids
                            "no_pertinence": no_pertinence_log(result["analysis"]),       # v79.16.1 (item 4)
+                           "degree_downgraded": degree_log(result["analysis"]),          # v79.18.0 (item 11)
                            "line_tier": line_tier(inp)[0] if inp.get("norms") else "",   # v79.16.1 (item 3)
                            "context_only_no_elements": no_element_articles(inp),        # v79.17.1 (item 7)
                            "outside_rito": outside_rito_articles(inp),                   # v79.17.1 (item 9)
@@ -2317,14 +2411,16 @@ def main_tesi(v: Dict[str, Any]) -> str:
     return line_text((v.get("analysis") or {}).get("linea_principale"))
 
 
-def summary_text(v: Dict[str, Any]) -> str:
+def summary_text(v: Dict[str, Any], lines: Optional[Sequence[Tuple[str, Any]]] = None) -> str:
     """§1: the leading line and the subordinate one, labels and the verified text only. v79.17.0 (item 5): the pretesa
-    first (v["pretesa_line"]: case_frame.pretesa_line -- a derived one with its banner), then the lines."""
+    first (v["pretesa_line"]: case_frame.pretesa_line -- a derived one with its banner), then the lines. v79.18.0 (B):
+    lines -- the strategy step's ranked lines, [(label, the printed text)], in place of the analysis's."""
     head = [str(v.get("pretesa_line") or "")] if v.get("pretesa_line") else []
     a = v.get("analysis") if isinstance(v.get("analysis"), dict) else {}
     if a.get("honesty"):                    # v79.17.2 (item 1): the set is empty -- said before the lines
         head.append(str(a["honesty"]))
-    return "\n\n".join(head + [f"{label}: {line_text(x)}." for label, x in _lines(v)])
+    rows = list(lines) if lines is not None else _lines(v)
+    return "\n\n".join(head + [f"{label}: {_stop(x) if isinstance(x, str) else line_text(x)}." for label, x in rows])
 
 
 def esito_text(e: Dict[str, Any]) -> str:
@@ -2398,7 +2494,7 @@ def solutions_text(v: Dict[str, Any]) -> str:
     other the analysis did not return."""
     rows = list(SOLUTIONS_HEAD)
     for label, x in _lines(v):
-        if x.get("stato") == FALLBACK_LINE:          # v79.15.1 (item 2): the rubrica fallback -- no element, no fact
+        if x.get("stato") in (FALLBACK_LINE, FALLBACK_SET):     # v79.15.1 (item 2): the rubrica fallback; v79.18.0 (A2): the set's line -- no element, no fact
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | — | {_cell(_stop(x.get('tesi')))} | — |")
         elif x.get("stato") == VERIFIED:
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | {_cell(x.get('elemento_in_gioco'))} | "
@@ -2408,17 +2504,20 @@ def solutions_text(v: Dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
-def conclusions_text(v: Dict[str, Any]) -> str:
+def conclusions_text(v: Dict[str, Any], risk: str = "", lines: Optional[Sequence[Tuple[str, Any]]] = None) -> str:
     """§9: the §4 counts first (v79.16.0, D2: the leading article's «Esiti dell'art. X» opens the section), the lines,
-    the leading article's open and contested elements -- verified, labels only."""
+    the leading article's open and contested elements -- verified, labels only. v79.18.0 (B): risk -- the strategy
+    step's word from the principale's forza (strategy_step.risk_word), in place of risk_word's; lines -- the strategy's
+    ranked lines [(label, text)], as §1 prints them."""
     out: List[str] = []
     for label in line_articles(v)[:1]:
         c = counts_text(v, label)
         if c:
             head, _, rest = c.partition(": ")
             out.append(f"**{head}**: {rest}")
-    out += [f"**{label}**: {line_text(x)}." for label, x in _lines(v)]
-    risk = risk_word(v)             # v79.17.0 (item 5): the esiti -> the risk in words, computed, never written
+    rows = list(lines) if lines is not None else _lines(v)
+    out += [f"**{label}**: {_stop(x) if isinstance(x, str) else line_text(x)}." for label, x in rows]
+    risk = risk or risk_word(v)     # v79.17.0 (item 5): the esiti -> the risk in words, computed, never written
     if risk:
         out.append(RISK_LINE.format(client=v.get("client") or "la parte assistita", parola=RISK_WORDS[risk]))
     for label in line_articles(v)[:1]:
@@ -2506,6 +2605,7 @@ def record_facts_split(facts: Sequence[Dict[str, Any]], v: Dict[str, Any], narra
     from . import issue_records
     certi: List[str] = []
     ipotesi: List[Dict[str, str]] = []
+    cliente = 0
     for f in facts or []:
         text = _flat(f.get("text"))
         if not text or (narrative is not None and not narrative(text)):
@@ -2515,6 +2615,10 @@ def record_facts_split(facts: Sequence[Dict[str, Any]], v: Dict[str, Any], narra
             certi.append(text)
         elif stato == ALLEGATO_:
             who = str(f.get("chi") or "")
+            if who and client_said(who, v):     # v79.18.0 (item 13): the client's own stated fact is never an
+                certi.append(text)              # allegation -- certo
+                cliente += 1
+                continue
             ipotesi.append({"text": text, "how": f"allegazione {issue_records.of_party(who)}" if who else "allegazione"})
         else:
             ipotesi.append({"text": text, "how": "ipotesi"})
@@ -2523,7 +2627,23 @@ def record_facts_split(facts: Sequence[Dict[str, Any]], v: Dict[str, Any], narra
                  "esito": ESITO_LABELS[e["esito"]] if e["esito"] in ESITO_LABELS else e["esito"],
                  "elemento": e.get("eid"), "article": e["article"]} for e in open_elements(v)]
     return {"certi": certi[:lim.get("certi") or len(certi)], "ipotizzabili": ipotesi[:lim.get("ipotizzabili") or len(ipotesi)],
-            "mancanti": mancanti}
+            "mancanti": mancanti, "cliente_certi": cliente}
+
+
+def client_said(who: Any, v: Dict[str, Any]) -> bool:
+    """v79.18.0 (item 13): the record's speaker is the client (v["client"]: case_frame.same_party -- «Anna Corsi»,
+    «Corsi», «la cliente»)."""
+    client = _flat(v.get("client"))
+    name = _flat(who)
+    if not client or not name:
+        return False
+    try:
+        if _cf().same_party(name, client):
+            return True
+    except Exception:           # noqa: BLE001
+        pass
+    from . import interactive_flow as flow
+    return any(w.startswith(stem) for w in re.findall(r"[^\W\d_]+", name.lower()) for stem in flow.CLIENT_SIDE_STEMS)
 
 
 def verify_points(v: Dict[str, Any], uncertain: Sequence[Dict[str, str]] = ()) -> List[str]:

@@ -6541,6 +6541,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
         verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
         _isolated("verified_object", lambda: verified_object(state, verified))       # v79.17.0 (items 4, 5)
+        from . import strategy_step         # v79.18.0 (B): the strategy step's input -- the set with its tiers, the
+        state["strategy_input"] = _isolated("strategy_input", lambda: strategy_step.state_input(state, verified), None)
         # v79.16.0 (D1): the one verified context block every writer call receives (the §4 job, each quesito's)
         state["verified_context"] = _isolated("verified_context", lambda: analysis_step.context_block(
             verified, client_of(state), quesiti_articles(state), fact_record_facts(state)), "") or ""
@@ -7050,6 +7052,7 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
     # v79.8 (A4): the clients' objections calls (each with its reply binding review) are independent -- concurrently
     out = [(name, ctx, mplan) for (name, ctx, _), mplan in zip(out, concurrently(
         [(lambda ctx=ctx, mplan=mplan: method_objections(ctx, mplan)) for _, ctx, mplan in out]))]
+    strategy_state(state, [ctx for _, ctx, _ in out])       # v79.18.0 (B): the clients' strategy steps' counters
     said = False                # v79.12.1: the missing-laws line once per answer -- the first client's §1 only
     for _, ctx, _ in out:
         if ctx.get("missing_laws"):
@@ -7493,9 +7496,33 @@ def concurrently(jobs: Sequence[Callable[[], Any]]) -> List[Any]:
 
 
 def method_objections(ctx: Dict[str, Any], mplan: Dict[str, Any]) -> Dict[str, Any]:
-    """v73: the objections written after the selection, given the selected line and the barred list."""
-    from . import lawyer_method
+    """v73: the objections written after the selection, given the selected line and the barred list. v79.18.0 (B):
+    with ANALYSIS_STEP on and a strategy input (strategy_step.state_input: the set with its tiers after the analysis
+    step), the strategy step runs here instead (strategy_step.run: ctx["strategy"], the registry's rulings on the set's
+    articles) and the objections call is retired -- §7's objections are the strategy's."""
+    from . import lawyer_method, strategy_step
+    if strategy_step.enabled() and isinstance(ctx.get("strategy_input"), dict):
+        _isolated("strategy_step", lambda: strategy_step.run(ctx), None)
+        if not isinstance(ctx.get("strategy"), dict):
+            ctx["strategy"] = strategy_step.failed_result(strategy_step.FAILED, "step raised")
+        return mplan
     return _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
+
+
+def strategy_state(state: Dict[str, Any], ctxs: Sequence[Optional[Dict[str, Any]]]) -> None:
+    """v79.18.0 (B): the strategy step's counters (strategy_step.COUNTERS, summed over the clients) into
+    block_counters, its seconds into timings («strategy_s»), the first client's summary (strategy_step.replay_summary)
+    into state["strategy"] -- the replay's row."""
+    from . import strategy_step
+    results = [c["strategy"] for c in ctxs if isinstance(c, dict) and isinstance(c.get("strategy"), dict)]
+    if not results:
+        return
+    counters = state.setdefault("block_counters", {})
+    for k in strategy_step.COUNTERS:
+        total = sum(float((r.get("counters") or {}).get(k) or 0) for r in results)
+        counters[k] = round(total, 3) if k == "strategy_seconds" else int(total)
+    state.setdefault("timings", {})["strategy_s"] = counters["strategy_seconds"]
+    state["strategy"] = _jsonable(strategy_step.replay_summary(results[0]))
 
 
 def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],
@@ -7558,8 +7585,10 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     if isinstance(ctx.get("schema_shadow"), dict):     # v79.11 (6): ELEMENT_SCHEMAS only -- the shadow admission whole
         state["schema_shadow"] = shadow_state(ctx["schema_shadow"])  # (the nightly's reasons; the counts keep numbers)
     state["candidate_articles"] = lawyer_method.candidate_articles(ctx)     # v79 (D3): the writer's check keeps them
+    ctx["strategy_input"] = state.get("strategy_input")     # v79.18.0 (B): the strategy step's input (the flow's)
     if with_objections:         # v79.8 (A4): the several clients' run concurrently (method_inputs_clients)
         mplan = method_objections(ctx, mplan)
+        strategy_state(state, [ctx])                        # v79.18.0 (B)
     for key in ("thesis_selection_s", "objections_s"):
         state.setdefault("timings", {})[key] = (ctx.get("timings") or {}).get(key)
     return ctx, mplan
@@ -7824,6 +7853,9 @@ def fit_pretesa_quesiti(state: Dict[str, Any]) -> Tuple[str, List[str]]:
     return case_frame.pretesa_text(held), quesiti
 
 
+TIER_SI, TIER_DIPENDE, TIER_UNVERIFIED = "si_verificato", "dipende_verificato", "non_verificato"   # v79.18.0 (A1)
+
+
 def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     """v79.17.0 (item 2): the binding of every rito on the pretesa, from the verified fit verdicts' «governs»:
     {"applied": a verified «si» / «dipende» names the pretesa, "principale": the articles governing the pretesa (the
@@ -7841,12 +7873,17 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     and every substantive article the fit verified «si» (the verified «dipende» ones when there is no «si»): the fit
     judged them, the recall only adds; "reasons" {label: [tag | recall | fit_si | fit_dipende | pretesa]}. (Item 3) the
     pretesa's own article (case_frame.charge_label) is in the set when its verdict is not a verified «no» and it has
-    elements ("pretesa_article" its label). The honesty line only when this union is empty."""
+    elements ("pretesa_article" its label). The honesty line only when this union is empty. v79.18.0 (A1): the set has
+    tiers -- "tiers" {label: si_verificato | dipende_verificato | non_verificato}: every substantive verified «si», the
+    verified «dipende» and the unverified «si» / «dipende» ("fit_non_verificato": present, untrusted) are in it, in that
+    order (the brief's A1); the honesty line only when no substantive article has any «si» / «dipende» verdict
+    (binding_set_unverified counts the lowest tier)."""
     fit = state.get("applicability") or {}
     enforced = bool(fit.get("governs_asked")) and bool(str(fit.get("pretesa") or "").strip())   # v79.17.2 (item 1)
     out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
                            "context_only": [], "recalled": [], "enforced": enforced, "nonsubstantive_tagged": [],
-                           "reasons": {}, "fit_si": [], "fit_dipende": [], "pretesa_article": ""}
+                           "reasons": {}, "fit_si": [], "fit_dipende": [], "fit_non_verificato": [],
+                           "tiers": {}, "pretesa_article": ""}                       # v79.18.0 (A1): the tiers
     if out["asked"]:
         from . import case_frame               # v79.17.3 (item 3): the pretesa's own article
         held = case_frame.held(state)
@@ -7868,6 +7905,8 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
                 out["fit_si"].append(label)                         # judged, when substantive
             if verified_fit == "dipende" and substantive:
                 out["fit_dipende"].append(label)
+            if not j.get("verified") and j.get("fit") in ("si", "dipende") and substantive:    # v79.18.0 (A1): the
+                out["fit_non_verificato"].append(label)      # unverified «si» / «dipende»: in the set, the lowest tier
             if own_key is not None and _key(_parse_label(label)) == own_key:    # v79.17.3 (item 3): the pretesa's
                 out["pretesa_article"] = label                                   # own article: fit not a verified
                 if verified_fit != "no" and j.get("has_elements", substantive):  # «no», and with elements
@@ -7887,10 +7926,23 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
                     out["quesiti"].setdefault(tok, []).append(label)
             if not gov:
                 out["context_only"].append(label)
-        base = out["fit_si"] or out["fit_dipende"]          # v79.17.3 (item 1): the «si» verdicts, else the «dipende»
-        for label in base:
-            add(label, "fit_si" if out["fit_si"] else "fit_dipende")
-        out["principale"] = [str(j.get("article") or "") for j in judgments if str(j.get("article") or "") in reasons]
+        # v79.18.0 (A1): the set's tiers -- every substantive verified «si», then the verified «dipende», then the
+        # unverified «si» / «dipende» (present, untrusted); the honesty line only when no substantive article has any
+        for label in out["fit_si"]:
+            add(label, "fit_si")
+        for label in out["fit_dipende"]:
+            add(label, "fit_dipende")
+        for label in out["fit_non_verificato"]:
+            add(label, "fit_non_verificato")
+        tier_of: Dict[str, str] = {}
+        for j in judgments:
+            label = str(j.get("article") or "")
+            fit_j = j.get("fit") if j.get("verified") else None
+            tier_of[label] = TIER_SI if fit_j == "si" else TIER_DIPENDE if fit_j == "dipende" else TIER_UNVERIFIED
+        order = {TIER_SI: 0, TIER_DIPENDE: 1, TIER_UNVERIFIED: 2}
+        labels = list(dict.fromkeys(str(j.get("article") or "") for j in judgments if str(j.get("article") or "") in reasons))
+        out["principale"] = sorted(labels, key=lambda x: order.get(tier_of.get(x, TIER_UNVERIFIED), 2))
+        out["tiers"] = {label: tier_of.get(label, TIER_UNVERIFIED) for label in out["principale"]}
         out["reasons"] = {label: reasons[label] for label in out["principale"]}
         out["context_only"] = [x for x in out["context_only"] if x not in out["principale"]]
         out["applied"] = bool(out["principale"])
@@ -7898,6 +7950,7 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     counters["binding_pretesa_applied"] = int(out["applied"])
     counters["binding_pretesa_excluded"] = list(out["context_only"]) if out["applied"] else []
     counters["binding_set_size"] = len(out["principale"])                      # v79.17.2 (item 1)
+    counters["binding_set_unverified"] = sum(1 for x in out["tiers"].values() if x == TIER_UNVERIFIED)   # v79.18.0 (A1)
     counters["binding_empty_honesty"] = int(enforced and not out["principale"])
     _log("binding_pretesa", out)
     return out
@@ -8104,6 +8157,7 @@ def analysis_step_run(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         inp = None
     result = analysis_step.run(state, inp=inp, started=t0)
     state["analysis_maps"] = analysis_step.id_maps(inp)       # v79.17.0 (item 4): the ids the writer's material cites
+    state["analysis_norms"] = _jsonable(analysis_step.norms_summary(inp))     # v79.18.0 (B): the strategy step's norms
     state["analysis_step"] = _jsonable({k: result.get(k) for k in ("status", "error", "analysis", "counters",
                                                                    "prompt_hash", "seconds", "calls", "reasons",
                                                                    "rejected")})

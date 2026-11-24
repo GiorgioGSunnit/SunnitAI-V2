@@ -316,6 +316,8 @@ DATA = (
     ("penal_lines.json", "Metodo, «Analisi per elementi» e «Soluzioni a confronto»: elementi di fonte "
                          "giurisprudenziale, riqualificazioni e attenuanti dai fatti (v79.12.7)"),
     # v79.15.3 (items 1, 3, ANALYSIS_STEP): the printed tesi of a verified line and §7's entries from the verified analysis
+    ("strategy_step.json", "Metodo, «Sintesi», «Soluzioni a confronto», «Obiezioni e risposte», «Punti da verificare»: i "
+                           "testi scritti dal codice dalla strategia verificata (v79.18.0, B e voce 12)"),
     ("analysis_step.json", "Metodo, «Sintesi», «Soluzioni a confronto», «Conclusioni» (tesi) e «Obiezioni e risposte» "
                            "(obiezioni): i testi scritti dal codice dall'analisi verificata (v79.15.3, voci 1 e 3)"),
 )
