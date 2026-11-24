@@ -185,7 +185,7 @@ def test_the_defence_set_on_the_client_partys_verified_role(role):
 @pytest.mark.parametrize("valore,intake,side", [
     ("attore", "attore", A.SIDE_CLAIMANT), ("ricorrente", "attore", A.SIDE_CLAIMANT),
     ("convenuto", "convenuto", A.SIDE_DEFENCE), ("resistente", "convenuto", A.SIDE_DEFENCE),
-    ("imputato/indagato", "imputato", A.SIDE_DEFENCE), ("persona_offesa", "persona_offesa", A.SIDE_NEUTRAL),
+    ("imputato/indagato", "imputato", A.SIDE_DEFENCE), ("persona_offesa", "persona_offesa", A.SIDE_CLAIMANT),   # v79.18.4
     ("sconosciuto", "sconosciuto", A.SIDE_NEUTRAL)])
 def test_the_verified_ruolo_decides_first(valore, intake, side):
     assert A.client_side({"ruolo": {"valore": valore, "intake": intake}})[0] == side
@@ -196,9 +196,9 @@ def test_the_procedural_role_beats_the_partys_role_and_the_party_reads_only_with
     assert A.client_side(dict(committente, ruolo={"valore": "convenuto", "intake": "convenuto"})) == \
         (A.SIDE_DEFENCE, "ruolo: convenuto")
     assert A.client_side(committente) == (A.SIDE_CLAIMANT, "ruolo_nel_fatto: committente")
-    # a role that is no side (persona offesa) leaves the party's word to decide
-    assert A.client_side(dict(committente, ruolo={"valore": "persona_offesa", "intake": "persona_offesa"}))[0] == \
-        A.SIDE_CLAIMANT
+    # v79.18.4: the persona offesa is a claimant by the ruolo itself (before 79.18.4 the party's word decided)
+    assert A.client_side(dict(committente, ruolo={"valore": "persona_offesa", "intake": "persona_offesa"})) == \
+        (A.SIDE_CLAIMANT, "ruolo: persona offesa")
 
 
 def test_unverified_or_ambiguous_is_neither():

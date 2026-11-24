@@ -778,6 +778,13 @@ only from unverified tiers (`analysis["set_non_verificato"]`: every non-alternat
 non_verificato tier -- a recall-empty set) or a one-element article (`cap.elementi_min`) caps a favorevole at incerto
 (`strategy_risk_capped`; the replay's strategy row carries `risk_why` and `risk_capped`). The strategy prompt is unchanged.
 
+## 5t. v79.18.4 (24 Nov 2026): the persona offesa is a claimant
+
+Data only (`data/analysis_step.json` «claimant.roles»: persona offesa, parte offesa, parte civile and their plurals). The
+frame's verified ruolo «persona_offesa» now decides the side in `analysis_step.client_side` (attore), so the strategy's
+side (`strategy_step.side_of`) is the frame's and 79.18.2's pretesa-tipo fallback (accusa -> difesa) no longer reaches
+the victim: her lines are judged by the claimant's rules (fondare on provato), her risk by the claimant's thresholds.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

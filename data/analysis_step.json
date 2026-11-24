@@ -128,7 +128,7 @@
   ],
   "reask_claimant": "Il cliente agisce come attore: l'elemento in gioco è uno degli elementi costitutivi elencati, mai un'eccezione o un limite.",
   "claimant": {
-    "_doc": "v79.15.3 (item 2): the client's side from the verified frame only (analysis_step.client_side). Each entry is a whole word or phrase, accent- and case-folded. First the verified ruolo (valore and intake, a «/» or «_» read as a space): a word of «roles» -> claimant, of «defendant_roles» -> defence. Else the verified ruolo_nel_fatto of the client's party (frame.parti, lato «cliente» or the client's name): only «roles» words -> claimant, only «defendant_roles» words -> defence, both or none -> neither. «worker»: its words count as a claimant's only when the verified rito is one of «riti» and the frame verifies an addebito_o_domanda (the claim is the worker's); otherwise they are no side word. No verified role -> neither (claimant False, as before). The brief's sets; the feminine and plural forms added (several clients: «committenti», «indagati»); locatore and conduttore both claimant (the brief lists both).",
+    "_doc": "v79.15.3 (item 2): the client's side from the verified frame only (analysis_step.client_side). Each entry is a whole word or phrase, accent- and case-folded. First the verified ruolo (valore and intake, a «/» or «_» read as a space): a word of «roles» -> claimant, of «defendant_roles» -> defence. Else the verified ruolo_nel_fatto of the client's party (frame.parti, lato «cliente» or the client's name): only «roles» words -> claimant, only «defendant_roles» words -> defence, both or none -> neither. «worker»: its words count as a claimant's only when the verified rito is one of «riti» and the frame verifies an addebito_o_domanda (the claim is the worker's); otherwise they are no side word. No verified role -> neither (claimant False, as before). The brief's sets; the feminine and plural forms added (several clients: «committenti», «indagati»); locatore and conduttore both claimant (the brief lists both). v79.18.4: the persona offesa (parte offesa, parte civile; the frame's ruolo «persona_offesa») is a claimant: the victim's side rules, never the defence's -- 79.18.2's pretesa-tipo fallback (accusa -> difesa) no longer reaches her.",
     "roles": [
       "attore",
       "attrice",
@@ -156,7 +156,13 @@
       "locatori",
       "locatrici",
       "conduttori",
-      "conduttrici"
+      "conduttrici",
+      "persona offesa",
+      "parte offesa",
+      "parte civile",
+      "persone offese",
+      "parti offese",
+      "parti civili"
     ],
     "defendant_roles": [
       "indagato",
