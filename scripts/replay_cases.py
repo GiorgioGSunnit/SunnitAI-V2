@@ -60,7 +60,8 @@ FIT_COUNTERS = ("fit_si", "fit_si_verified", "fit_dipende", "fit_dipende_verifie
                 "fit_pretesa_recall", "fit_pretesa_recall_empty")                          # v79.17.1 (item 9)
 FRAME_COUNTERS = ("frame_pretesa_verified", "frame_pretesa_derived", "frame_asked_side",      # v79.17.0 (item 1)
                   "binding_pretesa_applied", "binding_pretesa_excluded",                     # v79.17.0 (item 2)
-                  "binding_set_size", "binding_empty_honesty")                                # v79.17.2 (item 1)
+                  "binding_set_size", "binding_empty_honesty",                                # v79.17.2 (item 1)
+                  "frame_pretesa_article_dropped")                                             # v79.17.3 (item 3)
 ANALYSIS_COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_timeouts",
                      "analysis_line_rejected", "analysis_line_procedural_rejected", "analysis_line_undetermined",
                      "analysis_line_fallback_rubrica", "analysis_frame_charge_missing", "analysis_provato_downgraded",
@@ -156,7 +157,9 @@ def recall_fields(state: Dict[str, Any]) -> Dict[str, Any]:
     binding = state.get("binding_pretesa") or {}
     return {"status": rec.get("status") or "", "articles": list(rec.get("articles") or []),
             "dropped": list(rec.get("dropped") or []), "principale": list(binding.get("principale") or []),
-            "recalled": list(binding.get("recalled") or [])}
+            "recalled": list(binding.get("recalled") or []),
+            "reasons": {k: list(v) for k, v in (binding.get("reasons") or {}).items()},     # v79.17.3 (item 1)
+            "pretesa_article": binding.get("pretesa_article") or ""}
 
 
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
@@ -354,7 +357,9 @@ def case_table(row: Dict[str, Any]) -> str:
     if rc:
         lines.append(f"| binding / recall | principale {_show(rc.get('principale'))}; recall {_show(rc.get('status'))}"
                      f", articles {_show(rc.get('articles'))}, recalled {_show(rc.get('recalled'))}"
-                     + (f", dropped {_show(rc.get('dropped'))}" if rc.get("dropped") else "") + " |")
+                     + (f", dropped {_show(rc.get('dropped'))}" if rc.get("dropped") else "")
+                     + (", reasons " + "; ".join(f"{k}: {'+'.join(v)}" for k, v in rc["reasons"].items()) if rc.get("reasons") else "")
+                     + (f", pretesa article {rc['pretesa_article']}" if rc.get("pretesa_article") else "") + " |")
     lines.append(f"| analysis status / tier / fallback | {_show(a.get('status'))} / {_show(a.get('line_tier'))} / "
                  f"{_show(a.get('fallback_skipped_reason'))} |")
     if a.get("honesty"):

@@ -913,7 +913,10 @@ def apply_recall(result: Dict[str, Any], norms: Sequence[Dict[str, Any]], pretes
     by_label = {str(n.get("article") or ""): n for n in norms}
     records = [r for r in result.get("judgments") or [] if r]
     for rec in records:
-        rec["substantive"] = bool(judge_of(by_label.get(str(rec.get("article") or ""), {"article": rec.get("article")})))
+        norm = by_label.get(str(rec.get("article") or ""), {"article": rec.get("article")})
+        rec["substantive"] = bool(judge_of(norm))
+        rec["has_elements"] = bool([e for e in norm.get("elements") or []            # v79.17.3 (item 3): the
+                                    if isinstance(e, dict) and str(e.get("testo") or "").strip()])   # pretesa's own article
     recall = result.get("pretesa_recall") or {"status": "not_needed", "articles": [], "dropped": [], "ids_given": [],
                                               "seconds": 0.0, "error": ""}
     counters = result.setdefault("counters", empty_counters())

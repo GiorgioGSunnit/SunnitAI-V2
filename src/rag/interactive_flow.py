@@ -7837,28 +7837,49 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     substantive articles only (applicability.substantive: a verdict's «pretesa» tag on a remedy, a procedural or a
     no-element article goes to "nonsubstantive_tagged", never into the set); "enforced" -- the fit was given a pretesa:
     the analysis step's leading line must be in the set, and an empty set means the honesty line (binding_set_size,
-    binding_empty_honesty)."""
+    binding_empty_honesty). v79.17.3 (item 1): the set is the union of the verdicts' «pretesa» tags, the recall's answer
+    and every substantive article the fit verified «si» (the verified «dipende» ones when there is no «si»): the fit
+    judged them, the recall only adds; "reasons" {label: [tag | recall | fit_si | fit_dipende | pretesa]}. (Item 3) the
+    pretesa's own article (case_frame.charge_label) is in the set when its verdict is not a verified «no» and it has
+    elements ("pretesa_article" its label). The honesty line only when this union is empty."""
     fit = state.get("applicability") or {}
     enforced = bool(fit.get("governs_asked")) and bool(str(fit.get("pretesa") or "").strip())   # v79.17.2 (item 1)
     out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
-                           "context_only": [], "recalled": [], "enforced": enforced, "nonsubstantive_tagged": []}
+                           "context_only": [], "recalled": [], "enforced": enforced, "nonsubstantive_tagged": [],
+                           "reasons": {}, "fit_si": [], "fit_dipende": [], "pretesa_article": ""}
     if out["asked"]:
-        for j in fit.get("judgments") or []:
-            if not isinstance(j, dict):
-                continue
+        from . import case_frame               # v79.17.3 (item 3): the pretesa's own article
+        held = case_frame.held(state)
+        own = case_frame.charge_label(held) if held else ""
+        own_key = _key(_parse_label(own)) if own else None
+        judgments = [j for j in fit.get("judgments") or [] if isinstance(j, dict)]
+        reasons: Dict[str, List[str]] = {}
+
+        def add(label: str, why: str) -> None:
+            reasons.setdefault(label, []).append(why)
+        for j in judgments:
             label = str(j.get("article") or "")
-            recalled = bool(j.get("governs_recalled")) and j.get("substantive", True)   # v79.17.2 (item 1): the
-            if recalled:                                    # recall's answer -- a substantive norm the fit did not
-                out["principale"].append(label)             # remove, its verdict verified or not
+            verified_fit = j.get("fit") if j.get("verified") else None
+            substantive = j.get("substantive", True)
+            if j.get("governs_recalled") and substantive:          # v79.17.2 (item 1): the recall's answer -- a
+                add(label, "recall")                                # substantive norm the fit did not remove
                 out["recalled"].append(label)
-            if not j.get("verified") or j.get("fit") not in ("si", "dipende"):
+            if verified_fit == "si" and substantive:                # v79.17.3 (item 1): every verified «si» the fit
+                out["fit_si"].append(label)                         # judged, when substantive
+            if verified_fit == "dipende" and substantive:
+                out["fit_dipende"].append(label)
+            if own_key is not None and _key(_parse_label(label)) == own_key:    # v79.17.3 (item 3): the pretesa's
+                out["pretesa_article"] = label                                   # own article: fit not a verified
+                if verified_fit != "no" and j.get("has_elements", substantive):  # «no», and with elements
+                    add(label, "pretesa")
+            if verified_fit not in ("si", "dipende"):
                 continue
             if not isinstance(j.get("governs"), list):      # the verdict said nothing of it: neither set
                 continue
             gov = list(j["governs"])
-            if "pretesa" in gov and not recalled:
-                if j.get("substantive", True):              # v79.17.2 (item 1): substantive articles only in the set
-                    out["principale"].append(label)
+            if "pretesa" in gov and "recall" not in reasons.get(label, []):
+                if substantive:                             # v79.17.2 (item 1): substantive articles only in the set
+                    add(label, "tag")
                 else:
                     out["nonsubstantive_tagged"].append(label)
             for tok in gov:
@@ -7866,6 +7887,12 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
                     out["quesiti"].setdefault(tok, []).append(label)
             if not gov:
                 out["context_only"].append(label)
+        base = out["fit_si"] or out["fit_dipende"]          # v79.17.3 (item 1): the «si» verdicts, else the «dipende»
+        for label in base:
+            add(label, "fit_si" if out["fit_si"] else "fit_dipende")
+        out["principale"] = [str(j.get("article") or "") for j in judgments if str(j.get("article") or "") in reasons]
+        out["reasons"] = {label: reasons[label] for label in out["principale"]}
+        out["context_only"] = [x for x in out["context_only"] if x not in out["principale"]]
         out["applied"] = bool(out["principale"])
     counters = state.setdefault("block_counters", {})
     counters["binding_pretesa_applied"] = int(out["applied"])
@@ -8229,12 +8256,30 @@ def pretesa_recall_step(state: Dict[str, Any]) -> Dict[str, Any]:
     always runs over them (applicability.apply_recall: the verdicts' governs updated, fit_pretesa_recall counters) and
     the binding is computed again (binding_pretesa: the set, binding_set_size, binding_empty_honesty). Its seconds
     into fit_seconds / applicability_s (the replay's fit stage). Nothing without a fit or a pretesa."""
-    from . import applicability
+    from . import applicability, case_frame
     fit = state.get("applicability") or {}
     if not fit or not str(fit.get("pretesa") or "").strip():
         return {}
     started = time.time()
     records = state.get("records") or {}
+    counters = state.setdefault("block_counters", {})
+    counters["frame_pretesa_article_dropped"] = 0
+    held = case_frame.held(state)                 # v79.17.3 (item 3): a frame-named article the fit rejected (a
+    own = case_frame.charge_label(held) if held else ""      # verified «no») leaves the pretesa, logged
+    if own:
+        own_key = _key(_parse_label(own))
+        for j in fit.get("judgments") or []:
+            if isinstance(j, dict) and _key(_parse_label(str(j.get("article") or ""))) == own_key \
+                    and j.get("verified") and j.get("fit") == "no":
+                field = case_frame._frame(held).get(case_frame.PRETESA_FIELD)
+                if isinstance(field, dict):
+                    field["articolo_scartato"] = field.get("articolo")
+                    field["articolo"] = None
+                    fit["pretesa"] = case_frame.pretesa_text(held)
+                    counters["frame_pretesa_article_dropped"] = 1
+                    _log("pretesa_article_dropped", {"article": own, "fit": "no", "perche": str(j.get("perche") or "")[:300],
+                                                     "pretesa": fit["pretesa"]})
+                break
     rubriche = fit.get("rubriche") or {}
     norms = []
     for j in fit.get("judgments") or []:

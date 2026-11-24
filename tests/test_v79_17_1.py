@@ -259,10 +259,11 @@ def test_the_recall_runs_when_no_verdict_governs_the_pretesa_and_its_ids_bind():
     assert by["1218 c.c."]["governs"] is None
     # the binding reads the set from the verdicts, as the flow stores them
     state = {"applicability": {"governs_asked": True, "judgments": [
-        {k: r.get(k) for k in ("article", "fit", "verified", "governs", "governs_recalled")} for r in res["judgments"]]},
+        {k: r.get(k) for k in ("article", "fit", "verified", "governs", "governs_recalled", "substantive")} for r in res["judgments"]]},
         "block_counters": {}}
-    b = flow.binding_pretesa(state)
-    assert b["applied"] is True and b["principale"] == ["1382 c.c."] and b["recalled"] == ["1382 c.c."]
+    b = flow.binding_pretesa(state)        # v79.17.3: 1384 c.c. (verified «si», substantive) joins the set; 1218 (remedy) not
+    assert b["applied"] is True and b["principale"] == ["1382 c.c.", "1384 c.c."] and b["recalled"] == ["1382 c.c."]
+    assert b["reasons"] == {"1382 c.c.": ["recall", "fit_si"], "1384 c.c.": ["fit_si"]}
     assert b["quesiti"] == {"Q1": ["1384 c.c."]} and state["block_counters"]["binding_pretesa_applied"] == 1
     for name in ("fit_pretesa_recall", "fit_pretesa_recall_empty"):
         assert name in ap.COUNTERS and name in ap.FLOW_COUNTERS and name in R.FIT_COUNTERS
@@ -274,7 +275,8 @@ def test_an_empty_or_failed_recall_leaves_the_set_empty_and_is_counted():
     assert res["counters"]["fit_pretesa_recall"] == 1 and res["counters"]["fit_pretesa_recall_empty"] == 1
     assert res["pretesa_recall"]["articles"] == [] and all(r["governs"] == [] for r in res["judgments"])
     state = {"applicability": {"governs_asked": True, "judgments": res["judgments"]}, "block_counters": {}}
-    assert flow.binding_pretesa(state)["applied"] is False and flow.binding_pretesa(state)["recalled"] == []
+    b = flow.binding_pretesa(state)        # v79.17.3 (item 1): the recall empty, but the fit's verified «si» make the set
+    assert b["recalled"] == [] and b["principale"] == ["1382 c.c.", "1384 c.c."] and b["applied"] is True
     model = _Fit(_verdicts({"1382 c.c.": []}), RuntimeError("down"))
     res = ap.judge(NORMS_9, P.FACTS, "convenuto", call=model, pretesa=PRETESA_9)
     assert res["pretesa_recall"]["status"] == "failed" and res["counters"]["fit_pretesa_recall"] == 1
@@ -316,7 +318,7 @@ def test_the_replay_row_carries_the_binding_and_the_recall():
              "binding_pretesa": {"principale": ["1382 c.c."], "recalled": ["1382 c.c."]}}
     row = R.measure("c", state, "a", 1.0)
     assert row["recall"] == {"status": "ok", "articles": ["1382 c.c."], "dropped": ["A0cc"], "principale": ["1382 c.c."],
-                             "recalled": ["1382 c.c."]}
+                             "recalled": ["1382 c.c."], "reasons": {}, "pretesa_article": ""}
     assert "| binding / recall | principale [1382 c.c.]; recall ok, articles [1382 c.c.], recalled [1382 c.c.], dropped [A0cc] |" \
         in R.case_table(row)
     assert R._row_values(row)["recall.status"] == "ok" and R.measure("c", {}, "a", 1.0)["recall"] == {}

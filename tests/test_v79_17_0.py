@@ -211,7 +211,7 @@ def test_the_judge_counts_what_the_verified_norms_govern():
 
 def _fit_state(governs):
     judgments = [{"article": a, "fit": "si", "verified": True, "governs": g, "cita_norma": [f"A{ap.article_token(a)}.1"],
-                  "cita_fatti": ["S1"]} for a, g in governs.items()]
+                  "cita_fatti": ["S1"], "substantive": not A.is_remedy(a)} for a, g in governs.items()]   # v79.17.3
     return {"applicability": {"judgments": judgments, "governs_asked": True, "quesiti": ["Q uno?", "Q due?"]},
             "block_counters": {}}
 
@@ -219,14 +219,16 @@ def _fit_state(governs):
 def test_binding_pretesa_reads_the_sets_from_the_verdicts_and_counts():
     state = _fit_state({"640 c.p.": ["pretesa"], "641 c.p.": ["Q2"], "62-bis c.p.": [], "646 c.p.": None})
     b = flow.binding_pretesa(state)
-    assert b["applied"] is True and b["principale"] == ["640 c.p."] and b["quesiti"] == {"Q2": ["641 c.p."]}
+    # v79.17.3 (item 1): every substantive verified «si» is in the set, the tag first; 62-bis c.p. (remedy) stays out
+    assert b["applied"] is True and b["principale"] == ["640 c.p.", "641 c.p.", "646 c.p."] and b["quesiti"] == {"Q2": ["641 c.p."]}
+    assert b["reasons"] == {"640 c.p.": ["tag", "fit_si"], "641 c.p.": ["fit_si"], "646 c.p.": ["fit_si"]}
     assert b["context_only"] == ["62-bis c.p."] and b["asked"] is True
     assert state["block_counters"]["binding_pretesa_applied"] == 1
     assert state["block_counters"]["binding_pretesa_excluded"] == ["62-bis c.p."]
-    state = _fit_state({"640 c.p.": [], "641 c.p.": ["Q1"]})           # no norm governs the pretesa: not applied
+    state = _fit_state({"640 c.p.": [], "641 c.p.": ["Q1"]})           # no tag: the verified «si» still make the set
     b = flow.binding_pretesa(state)
-    assert b["applied"] is False and state["block_counters"]["binding_pretesa_applied"] == 0
-    assert state["block_counters"]["binding_pretesa_excluded"] == []
+    assert b["applied"] is True and b["principale"] == ["640 c.p.", "641 c.p."]
+    assert state["block_counters"]["binding_pretesa_applied"] == 1 and state["block_counters"]["binding_pretesa_excluded"] == []
     assert flow.binding_pretesa({"applicability": {"judgments": [], "governs_asked": False}})["asked"] is False
 
 

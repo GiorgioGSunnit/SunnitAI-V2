@@ -648,6 +648,22 @@ infiltrazioni it (1218 c.c.) was in the remedy set, so the step saw no binding a
 row carries «honesty line» and the counters. The system prompts are unchanged (analysis_step 472423ea32d3, applicability
 c60a2f78634c, the recall 1a584033916f).
 
+## 5o. v79.17.3 (24 Nov 2026): the set is the union of the tags, the recall and the fit's verified «si»; the pretesa's
+## own article; the honesty line only on an empty union
+
+No new flag. (1) `interactive_flow.binding_pretesa`: the governs-pretesa set is the union of the verdicts' «pretesa» tags,
+the recall's answer and every substantive article the fit verified «si» (the verified «dipende» ones when there is no
+«si») -- the fit already judged these, the recall only adds, never decides alone; «reasons» {label: tag | recall |
+fit_si | fit_dipende | pretesa} in the log and the replay's row. (2) The honesty line (79.17.2) only when that union is
+empty: no substantive article fits at all. (3) The pretesa's own article (`case_frame.charge_label`) enters the set when
+its verdict is not a verified «no» and it has elements (`has_elements`, set by `applicability.apply_recall`); a
+frame-named article the fit rejects with a verified «no» is dropped from the pretesa before the recall
+(`pretesa_recall_step`: `addebito_o_domanda.articolo` → None, `articolo_scartato` keeps it, the fit's pretesa text
+recomputed; log `pretesa_article_dropped`, counter `frame_pretesa_article_dropped`) -- the 640 c.p. for lesioni colpose
+case. (4) Everything else of 79.17.2 stays: the set enforced on the leading line, a procedural or no-element article
+never a line (an article in the set with no admissible element gives «da determinare» without the honesty line). The
+system prompts are unchanged.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

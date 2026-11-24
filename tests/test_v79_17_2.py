@@ -54,12 +54,12 @@ def test_the_binding_set_excludes_a_tag_on_a_non_substantive_article_and_include
         _judgment("1453 c.c.", verified=False, governs=None, substantive=True, governs_recalled=True),  # recalled,
         _judgment("1454 c.c.", governs=[], substantive=True)]}, "block_counters": {}}             # unverified: in
     state["applicability"]["judgments"][3]["governs"] = ["pretesa"]
-    b = flow.binding_pretesa(state)
-    assert b["principale"] == ["1385 c.c.", "1453 c.c."] and b["recalled"] == ["1453 c.c."]
+    b = flow.binding_pretesa(state)        # v79.17.3 (item 1): 1454 c.c. (verified «si», substantive) joins as fit_si
+    assert b["principale"] == ["1385 c.c.", "1453 c.c.", "1454 c.c."] and b["recalled"] == ["1453 c.c."]
     assert b["nonsubstantive_tagged"] == ["1218 c.c."] and b["quesiti"] == {"Q1": ["1218 c.c."], "Q2": ["1225 c.c."]}
-    assert b["context_only"] == ["1454 c.c."] and b["enforced"] is True and b["applied"] is True
+    assert b["context_only"] == [] and b["enforced"] is True and b["applied"] is True
     c = state["block_counters"]
-    assert c["binding_set_size"] == 2 and c["binding_empty_honesty"] == 0 and c["binding_pretesa_applied"] == 1
+    assert c["binding_set_size"] == 3 and c["binding_empty_honesty"] == 0 and c["binding_pretesa_applied"] == 1
     # every tag on a non-substantive article, the recall empty: the set is empty, enforced, the honesty counter 1
     state = {"applicability": {"governs_asked": True, "pretesa": "domanda: «x»", "judgments": [
         _judgment("1218 c.c.", governs=["pretesa"], substantive=False)]}, "block_counters": {}}
