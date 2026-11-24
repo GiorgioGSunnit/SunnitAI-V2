@@ -55,7 +55,8 @@ def _inp(side="attore", rulings=True):
 def _linea(art, eid, tipo, rapporto="alternativa", cf=(), cg=(), ob=None, perche="perché"):
     return {"articolo": art, "eid": eid, "tipo": tipo, "rapporto": rapporto, "perche_prima": perche, "cita_fatti": list(cf),
             "cita_pronunce": list(cg), "obiezione": ob if ob is not None else
-            {"testo": "La controparte obietterà.", "risposta_cita_fatti": ["S2"], "cita_pronunce": []}}
+            {"testo": "La controparte obietterà.", "accusa_forte": {"testo": "Farà leva sulla vendita a un terzo [S3].", "cita_fatti": ["S3"]},
+             "risposta_cita_fatti": ["S2"], "cita_pronunce": []}}        # v79.18.5 (item 5): grounded by its accusa_forte
 
 
 def _reply(linee, **more):
@@ -160,9 +161,9 @@ def test_the_result_objections_passi_contro_difesa_and_the_id_cited_entries():
     inp = _inp()
     reply = _reply([
         _linea("A1385cc", "A1385cc:E1", "fondare", "principale", ["S2"], ["G2"],
-               ob={"testo": "Anna non si è presentata dal notaio.", "risposta_cita_fatti": ["S2", "S9"], "cita_pronunce": ["G2", "G7"]}),
+               ob={"testo": "Anna non si è presentata dal notaio [S3].", "risposta_cita_fatti": ["S2", "S9"], "cita_pronunce": ["G2", "G7"]}),
         _linea("A1385cc", "A1385cc:E2", "contestare", "alternativa", ["S3"],
-               ob={"testo": "Bassi era legittimato a vendere.", "risposta_cita_fatti": "nessuna risposta nei fatti", "cita_pronunce": []}),
+               ob={"testo": "Bassi era legittimato a vendere [S3].", "risposta_cita_fatti": "nessuna risposta nei fatti", "cita_pronunce": []}),
         _linea("A2043cc", "A2043cc:E1", "riqualificare", "cumulativa", ["S1"], ob={"testo": "", "risposta_cita_fatti": []})],
         passi=[{"eid": "A1385cc:E2", "cosa": "Produrre la diffida", "cita_fatti": ["S1", "S2"]},
                {"eid": "A1385cc:E1", "cosa": "non è aperto", "cita_fatti": []},        # a provato element: dropped
@@ -179,8 +180,8 @@ def test_the_result_objections_passi_contro_difesa_and_the_id_cited_entries():
     c = checked["counters"]
     assert [x["eid"] for x in a["linee"]] == ["A1385cc:E1", "A1385cc:E2", "A2043cc:E1"] and a["reordered"] is False
     o1, o2 = a["linee"][0]["obiezione"], a["linee"][1]["obiezione"]
-    assert o1 == {"testo": "Anna non si è presentata dal notaio.", "risposta_cita_fatti": ["S2"], "cita_pronunce": ["G2"],
-                  "senza_risposta": False, "mismatch": False, "risposta_cita_elementi": []}
+    assert o1 == {"testo": "Anna non si è presentata dal notaio «Ettore Bassi sostiene di aver venduto a un terzo perché Anna Corsi non si è presentata dal notaio».", "risposta_cita_fatti": ["S2"], "cita_pronunce": ["G2"],
+                  "senza_risposta": False, "mismatch": False, "risposta_cita_elementi": [], "accusa_forte": None, "grounded": True}
     assert o2["senza_risposta"] is True and a["linee"][2]["obiezione"] is None
     assert c["strategy_objections_unanswered"] == 1 and c["strategy_rulings_cited"] == 1 and a["rulings_cited"] == ["G2"]
     # the passi: the principale's open elements -- the model's for E2 (one S-id kept), the code's label for E3
@@ -241,9 +242,9 @@ def test_the_rendering_sections_one_to_ten_from_the_verified_strategy(monkeypatc
     inp = _inp()
     reply = _reply([
         _linea("A1385cc", "A1385cc:E2", "contestare", "principale", ["S3"],
-               ob={"testo": "Bassi era legittimato a vendere.", "risposta_cita_fatti": [], "cita_pronunce": []}),
+               ob={"testo": "Bassi era legittimato a vendere [S3].", "risposta_cita_fatti": [], "cita_pronunce": []}),
         _linea("A1385cc", "A1385cc:E1", "fondare", "subordinata", ["S2"], ["G2"], perche="la caparra è provata",
-               ob={"testo": "Anna non si è presentata dal notaio.", "risposta_cita_fatti": ["S2"], "cita_pronunce": ["G2"]})],
+               ob={"testo": "Anna non si è presentata dal notaio [S3].", "risposta_cita_fatti": ["S2"], "cita_pronunce": ["G2"]})],
         passi=[{"eid": "A1385cc:E2", "cosa": "Produrre la diffida", "cita_fatti": ["S1"]}],
         passi_immediati=[{"testo": "Conservare la ricevuta della caparra", "cita_elementi": ["A1385cc:E1"], "cita_fatti": ["S2"]}],
         contro_difesa=[{"allegazione": "S3", "risposta": "La convocazione dal notaio non è provata", "cita_linea": "A1385cc:E2",
@@ -261,26 +262,32 @@ def test_the_rendering_sections_one_to_ten_from_the_verified_strategy(monkeypatc
     titles = ["**Passi immediati (prova e termini)**", "**Linee per forza**", "**Risposta ai quesiti**", "**Contro-difesa**",
               "**Verifiche documentali**"]
     assert [t for t in titles if t in sol] == titles and sorted(sol.index(t) for t in titles) == [sol.index(t) for t in titles]
-    assert "- Conservare la ricevuta della caparra: «Anna Corsi ha versato 15.000 euro a titolo di caparra» [A1385cc:E1]." in sol
-    assert ("| Linea 1 | art. 1385 c.c. | una parte dà all'altra, a titolo di caparra, una somma | fondare | principale | "
-            "la caparra è provata | provato 1 / contestato 1 / da provare 1 | «Anna Corsi ha versato 15.000 euro a titolo di caparra» | (G2) |") in sol
-    assert "| Linea 2 | art. 1385 c.c. | la parte che ha ricevuto la caparra è inadempiente | contestare | subordinata |" in sol
-    assert "Ordine ricalcolato dal codice per forza (l'ordine del modello era: 1385 c.c. A1385cc:E2, 1385 c.c. A1385cc:E1)." in sol
-    assert "- Q1 «Anna può esigere il doppio?»: art. 1385 c.c. (linea 1), art. 1385 c.c. (linea 2)" in sol
+    # v79.18.5 (item 3): the elements by their text, the lines by ordinal, the tipo / rapporto as words, the ruling by its estremi
+    assert ("- Conservare la ricevuta della caparra: «Anna Corsi ha versato 15.000 euro a titolo di caparra» («una parte dà all'altra, "
+            "a titolo di caparra, una somma»).") in sol
+    assert ("| Prima linea | art. 1385 c.c. | una parte dà all'altra, a titolo di caparra, una somma | fondare la pretesa sull'elemento | "
+            "in via principale | la caparra è provata | provato 1 / contestato 1 / da provare 1 | «Anna Corsi ha versato 15.000 euro a "
+            "titolo di caparra» | Cass. civ., Sez. 2, n. 100/2025 |") in sol
+    assert "| Seconda linea | art. 1385 c.c. | la parte che ha ricevuto la caparra è inadempiente | contestare l'elemento | in subordine |" in sol
+    assert ("Ordine ricalcolato dal codice per forza (l'ordine del modello era: art. 1385 c.c. «la parte che ha ricevuto la caparra è "
+            "inadempiente»; art. 1385 c.c. «una parte dà all'altra, a titolo di caparra, una somma»).") in sol
+    assert "- Q1 «Anna può esigere il doppio?»: art. 1385 c.c. (prima linea), art. 1385 c.c. (seconda linea)" in sol
+    assert not S._RESIDUE_RE.search(sol)
     assert "- Q2 «Può chiedere il risarcimento?»: nessuna linea verificata sul quesito" in sol
     assert S.quesiti_map(inp, {"Può chiedere il risarcimento?": ["2043 c.c."], "altro": ["1 c.c."]}) == {
         "Q1": ["1385 c.c."], "Q2": ["2043 c.c."]}                 # the fit's tags first, then the quesito's own search
     assert S.quesiti_map({"quesiti": ["x"], "quesiti_articles": {}}, {"x": ["9 c.c."]}) == {"Q1": ["9 c.c."]}
     assert S.passi_elements(res) == ["la parte che ha ricevuto la caparra è inadempiente", "l'altra recede dal contratto"]
-    assert ("- Allegazione S3 «Ettore Bassi sostiene di aver venduto a un terzo perché Anna Corsi non si è presentata dal notaio»: "
+    assert ("- Allegazione «Ettore Bassi sostiene di aver venduto a un terzo perché Anna Corsi non si è presentata dal notaio»: "
             "La convocazione dal notaio non è provata: «Anna Corsi ha versato 15.000 euro a titolo di caparra» (linea: art. 1385 c.c., "
             "«la parte che ha ricevuto la caparra è inadempiente»).") in sol
     assert "- Verificare il termine per il rogito: «Anna Corsi ha firmato un preliminare con Ettore Bassi»." in sol
     # §7: the obiezioni with their verified answers -- the cited facts as written, the ruling by its label, or the data's line
     assert S.objection_items(res, v) == [
-        {"obiezione": "Anna non si è presentata dal notaio", "risposta": "«Anna Corsi ha versato 15.000 euro a titolo di caparra» (G2).",
+        {"obiezione": "Anna non si è presentata dal notaio «Ettore Bassi sostiene di aver venduto a un terzo perché Anna Corsi non si è presentata dal notaio»",
+         "risposta": "«Anna Corsi ha versato 15.000 euro a titolo di caparra» (Cass. civ., Sez. 2, n. 100/2025).",
          "fonte": "strategia", "linea": "A1385cc:E1"},
-        {"obiezione": "Bassi era legittimato a vendere", "risposta": "Senza risposta nei fatti narrati.", "fonte": "strategia",
+        {"obiezione": "Bassi era legittimato a vendere «Ettore Bassi sostiene di aver venduto a un terzo perché Anna Corsi non si è presentata dal notaio»", "risposta": "Senza risposta nei fatti narrati.", "fonte": "strategia",
          "linea": "A1385cc:E2"}]
     # §9: the risk from the principale by the data's rules (v79.18.3: a claimant's provato element with a G-cite -> favorevole)
     assert S.risk_word(res) == "favorevole" and res["analysis"]["risk"]["capped"] is False

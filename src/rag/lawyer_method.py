@@ -6460,11 +6460,15 @@ def rulings_view(ctx: Dict[str, Any], allowed: Sequence[str], dropped: Optional[
                  for w in re.findall(r"[a-zà-ü]{6,}", analysis_step.fold(e.get("elemento")))}
         no_passage = [r for r in kept if not r.get("passage")]
         kept = [r for r in kept if r.get("passage")]
+        line_elements = [e for label in line_arts for e in ((verified.get("analysis") or {}).get("elementi") or {}).get(label) or []]
+        attached = [r for r in kept if not any(_same_label(r.get("article"), x) for x in line_arts)
+                    and analysis_step.general_part_attached(r.get("article"), line_elements)]   # v79.18.5 (item 6)
         general = [r for r in kept if not any(_same_label(r.get("article"), x) for x in line_arts)
-                   and not ruling_on_line(r, line_arts, words)]
+                   and r not in attached and not ruling_on_line(r, line_arts, words)]
         kept = [r for r in kept if r not in general]
         ctx["rulings_no_passage_dropped"] = len(no_passage)
         ctx["rulings_general_part_dropped"] = len(general)
+        ctx["rulings_general_part_kept_attached"] = len(attached)
         if dropped is not None:
             dropped += [f"{r.get('article')} (senza passaggio)" for r in no_passage]
             dropped += [f"{r.get('article')} (parte generale, passaggio non sulla linea)" for r in general]
@@ -7274,6 +7278,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         and ctx["strategy"].get("status") == strategy_step.OK and (ctx["strategy"].get("analysis") or {}).get("linee") \
         else None
     log["strategy"] = strategy_step.replay_summary(ctx["strategy"]) if isinstance(ctx.get("strategy"), dict) else {}
+    render_counters: Dict[str, int] = {"strategy_ids_rendered": 0, "residues_dropped": 0}   # v79.18.5 (item 3)
+    ctx["strategy_render_counters"] = render_counters
     rulings = ctx.get("rulings") or []
     circ = ctx.get("circumstances") or {}
     by_title = {}
@@ -7504,7 +7510,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
             "questione_giuridica": planned(plan.get("questione_giuridica") or "")}
     if verified is not None:                # v79.15.0 (build B): §9 the verified analysis's; v79.18.0 (B): the risk
         conclusions = [analysis_step.conclusions_text(verified, risk=strategy_step.risk_word(strategy) if strategy
-                                                      else "", lines=strategy_step.summary_lines(strategy, verified)
+                                                      else "", lines=strategy_step.summary_lines(strategy, verified, render_counters)
                                                       if strategy else None)]       # word from the principale's forza
     elif kind:                              # v79.12.5 (item 2): no line, no forecast, no steps
         conclusions = [NO_CLAIM_CONCLUSION]
@@ -7523,7 +7529,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     verified_objections = analysis_step.objection_items(verified) if verified is not None else []
     strategy_objections: List[Dict[str, str]] = []
     if strategy:            # v79.18.0 (B): §7 the strategy's obiezioni -- the objection's sentence reviewed as the
-        for o in strategy_step.objection_items(strategy, verified):     # model's prose, the answer the code's (the
+        for o in strategy_step.objection_items(strategy, verified, render_counters):     # the answer the code's (the
             said = reviewed(planned, o["obiezione"], analysis_step.SITE_OBJECTIONS, replace=False)   # cited facts as
             if said:                                                                                 # written)
                 strategy_objections.append({"obiezione": said, "risposta": o["risposta"]})
@@ -7587,7 +7593,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("orientamenti", orientations),
         ("soluzioni", f"{analysis_step.SOLUTIONS_BRIDGE}\n\n" + (strategy_step.solutions_text(
             strategy, verified, quesiti=(ctx.get("strategy_input") or {}).get("quesiti") or [],
-            quesiti_articles=strategy_step.quesiti_map(ctx.get("strategy_input"), ctx.get("quesiti_articles")))   # v79.18.0
+            quesiti_articles=strategy_step.quesiti_map(ctx.get("strategy_input"), ctx.get("quesiti_articles")),
+            counters=render_counters)   # v79.18.0; v79.18.5 (item 3)
             if strategy else analysis_step.solutions_text(verified))
          if verified is not None else                                                   # v79.15.0 (build B); D2
          no_claim_solutions(ctx, kind) if kind else solutions_section(
@@ -7664,7 +7671,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         log["frame_unverified"] = dict(verified.get("frame_unverified") or {})
     if strategy:                        # v79.18.0 (B): §10 opens with the passi; an element a passo names is not asked again
         named = strategy_step.passi_elements(strategy)
-        head_points = strategy_step.passi_points(strategy, verified) + [
+        head_points = strategy_step.passi_points(strategy, verified, render_counters) + [
             p for p in head_points if not any(f"«{e}»" in p for e in named)]
     collected, points = collect_points([(title(k), x) for k, x in keyed if title(k) not in skipped],
                                        head_points + list(ctx.get("points") or []),

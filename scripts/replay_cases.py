@@ -97,6 +97,13 @@ ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("analysis_line_fallback_set", "analysis
 # v79.18.2: item 2 the side re-ask, item 6 the alternativa tier (fit, binding, strategy), item 5 the matter gate's areas
 STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_side_reasked", "strategy_alternativa_demoted")
 STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_risk_capped",)                                   # v79.18.3 (item 1)
+# v79.18.5: verification parity for the strategy's text (items 1, 3, 5), the law verbatim (2), the attached general part (6),
+# the capo's alternatives (7)
+STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_sentences_dropped_no_fact", "strategy_sentences_dropped",
+                                         "strategy_ids_rendered", "residues_dropped", "strategy_objection_strongest",
+                                         "strategy_objection_dropped")
+QA_COUNTERS = QA_COUNTERS + ("law_quoted_verbatim", "rulings_general_part_kept_attached")
+FIT_COUNTERS = FIT_COUNTERS + ("alternatives_from_capo",)
 FIT_COUNTERS = FIT_COUNTERS + ("fit_no_kept_alternative",)
 FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_alternative",)
 RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("topic_filter_areas", "topic_filter_demoted")

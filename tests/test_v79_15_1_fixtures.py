@@ -503,12 +503,15 @@ def test_the_civil_prose_is_reviewed_by_the_one_rule_only(monkeypatch, tmp_path)
     assert A.LAW_STATEMENTS_TITLE not in answer                        # the log's only
     obiezioni = H.section(answer, "obiezioni")
     assert f"**Obiezione 1.** {CIVIL.BASSI}." in obiezioni             # the verified objection from the allegation
-    assert OBJ_RULE in obiezioni and "**Obiezione 2.**" in obiezioni    # the written one stays (cites a fitted article)
+    # v79.18.5 (item 2): the written objection states what art. 1385 c.c. provides -- printed as the verbatim passage
+    assert OBJ_RULE not in obiezioni and "**Obiezione 2.**" in obiezioni and "art. 1385 c.c. («" in obiezioni
+    assert c["law_quoted_verbatim"] >= 1
     assert c["qa_sentences_replaced"] == 0 and c["qa_sentences_dropped"] == 0 and c["qa_sentences_dropped_dependent"] == 0
     assert c["prose_excluded_article_dropped"] == 1 and c["prose_unfitted_article_dropped"] == 1
     assert c["norms_sentences_dropped"] == 0 and c["objections_sentences_dropped"] == 0
-    kinds = sorted((e["sede"], e["esito"]) for e in _events(run))
+    kinds = sorted((e["sede"], e["esito"]) for e in _events(run) if e["esito"] != "legge_verbatim")
     assert kinds == sorted([("risposte", A.ARTICLE_EXCLUDED), ("risposte", A.ARTICLE_UNFITTED)])
+    assert ("obiezioni", "legge_verbatim") in {(e["sede"], e["esito"]) for e in _events(run)}
 
 
 def test_the_truffa_case_both_replies_rejected_finds_its_line_by_the_older_frames_name(monkeypatch, tmp_path):

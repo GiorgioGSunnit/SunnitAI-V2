@@ -2276,7 +2276,8 @@ TABLE_HEAD = ("| Elemento | Fatti citati | Esito |", "|---|---|---|")
 SOLUTIONS_HEAD = ("| Linea | Articolo | Elemento in gioco | Tesi | Fatti citati |", "|---|---|---|---|---|")
 # v79.15.1 (item 4): the prose review's counters (ProseReview, prose_counters) -- the rendering's too
 PROSE_COUNTERS = ("qa_sentences_replaced", "qa_sentences_dropped_dependent", "prose_excluded_article_dropped",
-                  "prose_unfitted_article_dropped", "objections_sentences_dropped", "prose_rule_without_id_dropped")
+                  "prose_unfitted_article_dropped", "objections_sentences_dropped", "prose_rule_without_id_dropped",
+                  "law_quoted_verbatim")        # v79.18.5 (item 2): a rule sentence printed as the article's passage
 RENDER_COUNTERS = ("qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
                    "legacy_disagrees_esito") + PROSE_COUNTERS
 
@@ -2459,6 +2460,21 @@ def _cell(text: Any) -> str:
 def _facts_cell(ids: Sequence[str], v: Dict[str, Any]) -> str:
     texts = [v["sentences"][i] for i in ids or [] if i in v.get("sentences", {})]
     return " / ".join(texts) if texts else LABEL_NO_FACT
+
+
+def general_part_attached(label: Any, elements: Sequence[Dict[str, Any]]) -> bool:
+    """v79.18.5 (item 6): a general-part article is attached to an element of the line when one of its concept words
+    (data «general_part_links»: 40 c.p. causation, 43 c.p. the mental element, …) is in the element's text."""
+    links = config().get("general_part_links") or {}
+    words = next((v for k, v in links.items() if same_article(k, label)), None)
+    if not words:
+        return False
+    pats = [str(w) for w in words if str(w or "").strip()]
+    for e in elements or []:
+        text = fold(e.get("elemento") or e.get("testo"))
+        if any(re.search(p, text) for p in pats):
+            return True
+    return False
 
 
 def line_articles(v: Dict[str, Any]) -> List[str]:
@@ -3377,7 +3393,11 @@ def prose_counters(events: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     out = {k: 0 for k in list(_SITE_DROPPED.values()) + list(_KIND_COUNTER.values())}
     out["prose_unknown_id_dropped"] = 0         # v79.17.0 (item 4): a sentence citing an id that does not exist
     out["prose_rule_without_id_dropped"] = 0    # v79.18.1 (C9): a rule on article X with no A-id of X
+    out["law_quoted_verbatim"] = 0              # v79.18.5 (item 2): a rule sentence replaced by the verbatim passage
     for e in events or []:
+        if e.get("esito") == "legge_verbatim":
+            out["law_quoted_verbatim"] += 1
+            continue
         if e.get("esito") == DROPPED:
             key = _SITE_DROPPED.get(e.get("sede"))
             if e.get("motivo") == "id_inesistente":

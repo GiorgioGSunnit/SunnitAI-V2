@@ -785,6 +785,37 @@ frame's verified ruolo «persona_offesa» now decides the side in `analysis_step
 side (`strategy_step.side_of`) is the frame's and 79.18.2's pretesa-tipo fallback (accusa -> difesa) no longer reaches
 the victim: her lines are judged by the claimant's rules (fondare on provato), her risk by the claimant's thresholds.
 
+## 5u. v79.18.5 (24 Nov 2026): verification parity for the strategy's text
+
+No new flag, no prompt philosophy change: the strategy's free-text fields are claims and get the checks every printed
+sentence gets. Item 1 `strategy_step.review_free_text` / `review_fields`: perche_prima, obiezione.testo (and its
+accusa_forte), passi.cosa, contro_difesa.risposta, passi_immediati.testo and verifiche_documentali.testo go sentence by
+sentence through the Q&A's reviewer (`verified_material.review_sentence` on compose's verified material, else the input's
+facts: `material`); a sentence asserting a fact of the case (`factual`: a party named, a figure) with no S-id -- inline,
+or the field's own cita_fatti when the field is one sentence -- is dropped (`strategy_sentences_dropped_no_fact`); any
+other drop of the reviewer counts in `strategy_sentences_dropped`. The prompt asks the ids inline. Item 2
+`verified_material.law_verbatim` in `review_sentence` for §4, §7 and the strategy (`LAW_VERBATIM_SITES`; the Q&A keeps
+its wording): a rule sentence (a qa_statements verb) citing period ids prints as «art. X («<passage verbatim>»)», the
+model's wording dropped (`law_quoted_verbatim`, a prose counter). Item 3 the page carries words only: the tipo and
+rapporto by data `rendering.tipo_words` / `rapporto_words`, the lines by ordinal (`ordinali`, «prima linea», never «Linea
+2»), the elements by their text, the rulings by their estremi, the allegations without their S-id; every rendered block
+goes through `swept` (a raw id left is removed and counted: `residues_dropped`; the ids rendered: `strategy_ids_rendered`,
+summed with compose's `strategy_render_counters`). Item 4 `passo_issue`: a passo asking a legal conclusion (data
+`passi_conclusion_words`) is no passo, as a restatement or a passo with no means (`passi_words`): re-asked once, then the
+code's label (`strategy_passi_not_concrete`). Item 5 obiezione.accusa_forte {testo, cita_fatti}: the fact pattern the
+counterparty relies on, by S-ids (`strategy_objection_strongest`); an objection with no S-id at all (its text or its
+accusa_forte) is dropped (`strategy_objection_dropped`); §7 prints «La controparte farà leva su: …». Item 6
+`analysis_step.general_part_attached` (data `general_part_links`: 40, 41, 43 c.p. … with their concept words): a ruling on
+a general-part article is kept in §5 when a word of it is in an element of the line (`rulings_general_part_kept_attached`);
+the C8 filter applies to the unattached ones only. Item 7 `topic_groups.capo_articles` and `interactive_flow.
+capo_alternatives`: for a penal charge the other articles of its Titolo / Capo (`CODE_UNITS`, the nearest numbers first,
+at most `CAPO_ALTERNATIVES_MAX` 24) are read from the store in round 1 (`state["capo_alternatives"]`, `state["capo_rows"]`),
+join the fit's candidates through the decomposition (`DECOMPOSE_WHY["capo"]`), are judged like the rest and bind as the
+«alternativa» tier whatever the verdict (`binding_pretesa`; never the principale), the strategy's riqualificare line only
+(`alternatives_from_capo`). The strategy prompt changed (hash logged); the analysis, fit, frame and recall prompts are
+unchanged. Fixtures: tests/test_v79_18_0_fixture.py (civil) and tests/test_v79_18_5_fixture_penal.py (penal defence)
+with the strategy's model faked; `FIXTURE_79_18_5_OUT` writes the penal report.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

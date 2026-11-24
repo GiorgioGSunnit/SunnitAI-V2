@@ -39,7 +39,7 @@ from src.rag import verbose_logger  # noqa: E402
 
 FLAGS = ("ANALYSIS_STEP", "CASE_FRAME", "APPLICABILITY_FIT", "LAWYER_METHOD")
 EVENTS = ("analysis_step", "applicability_fit", "legacy_plan", "lawyer_method_prose_review")     # v79.15.1
-NEW_COUNTERS = tuple(A.COUNTERS) + tuple(A.RENDER_COUNTERS) + ("fit_unverified_ids", "fit_no_unverified_ids",
+NEW_COUNTERS = tuple(A.COUNTERS) + tuple(A.RENDER_COUNTERS) + ("strategy_sentences_dropped_no_fact", "strategy_sentences_dropped", "strategy_ids_rendered", "residues_dropped", "strategy_objection_strongest", "strategy_objection_dropped", "law_quoted_verbatim", "rulings_general_part_kept_attached", "alternatives_from_capo", "strategy_passi_not_concrete", "fit_unverified_ids", "fit_no_unverified_ids",
                                                                "fit_protected_kept")
 
 

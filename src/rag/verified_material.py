@@ -28,6 +28,8 @@ from .analysis_step import (ARTICLE_EXCLUDED, ARTICLE_UNFITTED, DROPPED, ESITO_L
 
 UNKNOWN_ID = "id_inesistente"
 RULE_WITHOUT_ID = "regola_senza_id"         # v79.18.1 (C9): a rule attributed to article X with no A-id of X
+LAW_VERBATIM = "legge_verbatim"             # v79.18.5 (item 2): a rule sentence printed as the article's passage
+LAW_VERBATIM_SITES = (SITE_NORMS, SITE_OBJECTIONS, "strategia")      # §4, §7 and the strategy's fields (not the Q&A)
 TITLE = "MATERIALE VERIFICATO (il solo materiale di questa sezione)"
 ID_RULE = (" Cita ogni norma con l'id del periodo su cui ti fondi tra parentesi quadre (es. [A1385cc.1]) e ogni fatto con "
            "il suo id (es. [S3]): il codice sostituisce gli id con il riferimento alla norma e con la citazione del fatto. "
@@ -250,6 +252,11 @@ def review_sentence(sentence: str, vm: Dict[str, Any], site: str, events: List[D
     if missing:
         events.append({"sede": site, "esito": DROPPED, "testo": text[:200], "articoli": missing, "motivo": RULE_WITHOUT_ID})
         return ""
+    quoted = law_verbatim(text, ids, vm) if site in LAW_VERBATIM_SITES else ""     # v79.18.5 (item 2)
+    if quoted:
+        events.append({"sede": site, "esito": LAW_VERBATIM, "testo": text[:200],
+                       "articoli": list(dict.fromkeys(_article_of_id(i, vm) for i in ids if i.startswith("A")))})
+        return quoted
     return render_ids(sentence, vm)
 
 
@@ -262,6 +269,26 @@ def rule_without_id(text: str, cited: Sequence[str], ids: Sequence[str], vm: Dic
         return []
     with_id = {_article_of_id(i, vm) for i in ids if i.startswith("A")}
     return [x for x in cited if x and not any(same_article(x, y) for y in with_id if y)]
+
+
+def law_verbatim(text: str, ids: Sequence[str], vm: Dict[str, Any]) -> str:
+    """v79.18.5 (item 2): a sentence stating what a norm provides (a qa_statements verb) that cites period ids is not
+    paraphrased: «art. X («<passage verbatim>»)» for each cited article, its cited periods' texts in order; "" when the
+    sentence states no rule or cites no A-id."""
+    from . import analysis_step
+    a_ids = [i for i in ids if i.startswith("A") and _known(i, vm)]
+    if not a_ids or not analysis_step._qa_verb_re().search(text or ""):
+        return ""
+    periods = (vm.get("maps") or {}).get("periods") or {}
+    by_article: Dict[str, List[str]] = {}
+    for pid in dict.fromkeys(a_ids):
+        label = _article_of_id(pid, vm)
+        passage = _flat((periods.get(pid) or {}).get("text"))
+        if label and passage:
+            by_article.setdefault(label, []).append(passage.rstrip("."))
+    if not by_article:
+        return ""
+    return " ".join(f"art. {label} (" + "; ".join(f"«{x}»" for x in texts) + ")." for label, texts in by_article.items())
 
 
 def review_text(text: str, vm: Dict[str, Any], site: str, events: List[Dict[str, Any]],

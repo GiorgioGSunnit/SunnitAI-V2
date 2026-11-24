@@ -853,6 +853,41 @@ def grading_breadth(rows: Sequence[Dict[str, Any]], limits: Dict[str, Any]) -> D
             "cutting": bool(n) and kept_2 > CUTTING_SHARE * n}
 
 
+def capo_alternatives(session, analysis: Dict[str, Any], article_rows: Sequence[Dict[str, Any]], store) -> Dict[str, Any]:
+    """v79.18.5 (item 7): for a penal charge (the frame's rito penal, its article a c.p. one with a Titolo / Capo in
+    topic_groups.CODE_UNITS) the other articles of the same capo (topic_groups.capo_articles) read from the store:
+    {"charge", "articles": [labels], "rows": [the store's rows, tagged _capo_alternative]}; {} otherwise. The rows join
+    the fit's candidates (decompose_records: wanted «capo»), never the pool's grading; the binding lists each as an
+    «alternativa» whatever its verdict (binding_pretesa)."""
+    from . import case_frame, defensive_generation as dg, topic_groups
+    charge = str(analysis.get("frame_charge") or "")
+    if not charge or str(analysis.get("frame_rito") or "") not in case_frame.PENAL_RITI:
+        return {}
+    ref = _parse_label(charge)
+    if not ref or _key(ref)[1] != "c.p.":
+        return {}
+    labels = topic_groups.capo_articles(ref)
+    if not labels:
+        return {}
+    have = {_key(r["_article"]) for r in article_rows or [] if r.get("_article")}
+    refs = [_parse_label(x) for x in labels]
+    rows = dg._fetch_articles(session, [(str(r[0]), r[1]) for r in refs], store)
+    out_rows = []
+    seen = set()
+    for r in rows:
+        if not r.get("_article"):
+            continue
+        k = _key(r["_article"])
+        if k in seen:
+            continue
+        seen.add(k)
+        r["_capo_alternative"] = charge
+        out_rows.append(r)
+    found = [_label(_key(r["_article"])) for r in out_rows]
+    return {"charge": charge, "articles": found, "already_in_pool": [x for x in found if _key(_parse_label(x)) in have],
+            "rows": out_rows}
+
+
 def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pending=None) -> Dict[str, Any]:
     """Retrieval as _case_analysis_pipeline runs it, up to its pool texts, then the topics and their articles' texts:
     {"article_rows", "regime_rows", "topics", "topic_rows"}."""
@@ -982,6 +1017,10 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                          "rito": fam_ctx.get("rito") or ""}                     # v79.17.1 (item 6)
                 out["quesiti_retrieval"] = q_log
                 quesiti_gate_log(q_log)
+        # v79.18.5 (item 7): a penal charge's capo -- its other articles fetched from the store as alternative
+        # candidates (deterministic, the code's structure), fit-judged with the rest, the strategy's riqualificare only
+        out["capo_alternatives"] = _isolated("capo_alternatives", lambda: capo_alternatives(
+            session, analysis, article_rows, store_), {}) or {}
         links = topic_step.GraphLinks(session, documents)
         anchor_keep: List[str] = []
         if case_first:          # v60n: the fired rules' and tables' anchors -- candidates, graded like any other
@@ -1759,6 +1798,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
         "quesiti_retrieval": _jsonable(found.get("quesiti_retrieval") or {}),     # v79.16.0 (B): per question
         "units": _jsonable(found.get("units") or {}),            # v60r (2): each article's Sezione / Capo
         "rows": [_compact_row(r) for r in found["topic_rows"]],
+        "capo_alternatives": list((found.get("capo_alternatives") or {}).get("articles") or []),   # v79.18.5 (item 7)
+        "capo_rows": [_compact_row(r) for r in (found.get("capo_alternatives") or {}).get("rows") or []],
         "ranked": list(found.get("ranked") or []),                         # v79 (D2)
         "retrieval_top": _jsonable(found.get("retrieval_top") or []),      # v79.7 (item 3)
         "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
@@ -7846,7 +7887,8 @@ DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativ
                  "defence": "difesa di parte generale", "ranked": "candidata dalla classifica del recupero",   # v79
                  "claim": "domanda (ipotesi principale della prima lettura)",
                  "hypothesis": "addebito (ipotesi di reato della prima lettura)",      # v79 (C4)
-                 "remedy": "rimedio civile della persona offesa"}                     # v79.12.4 (item 1)
+                 "remedy": "rimedio civile della persona offesa",                     # v79.12.4 (item 1)
+                 "capo": "alternativa dallo stesso capo del codice"}                   # v79.18.5 (item 7)
 
 
 def fit_removed_keys(state: Dict[str, Any]) -> set:
@@ -7918,6 +7960,9 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
             label = str(j.get("article") or "")
             verified_fit = j.get("fit") if j.get("verified") else None
             substantive = j.get("substantive", True)
+            if j.get("capo_alternative") and not (own_key is not None and _key(_parse_label(label)) == own_key):
+                out["alternative"].append(label)                     # v79.18.5 (item 7): the charge's capo -- the
+                continue                                             # riqualificare candidates only, whatever the verdict
             if j.get("governs_recalled") and substantive:          # v79.17.2 (item 1): the recall's answer -- a
                 add(label, "recall")                                # substantive norm the fit did not remove
                 out["recalled"].append(label)
@@ -8215,8 +8260,11 @@ def legacy_plan_logged(state: Dict[str, Any], contexts: Sequence[Optional[Dict[s
     for k in analysis_step.RENDER_COUNTERS:
         if k not in ("legacy_disagrees_line", "legacy_disagrees_esito"):
             counters[k] = sum(int(c.get(k) or 0) for c in ctxs)
-    for k in ("rulings_no_passage_dropped", "rulings_general_part_dropped", "timestamps_dropped"):   # v79.18.1 (C7, C8)
+    for k in ("rulings_no_passage_dropped", "rulings_general_part_dropped", "timestamps_dropped",   # v79.18.1 (C7, C8)
+              "rulings_general_part_kept_attached"):                                                 # v79.18.5 (item 6)
         counters[k] = sum(int(c.get(k) or 0) for c in ctxs)
+    for k in ("strategy_ids_rendered", "residues_dropped"):      # v79.18.5 (item 3): the rendering's, onto the step's
+        counters[k] = int(counters.get(k) or 0) + sum(int((c.get("strategy_render_counters") or {}).get(k) or 0) for c in ctxs)
     state["rites_block"] = next((list(c["rites_block"]) for c in ctxs if c.get("rites_block")), [])   # v79.18.1 (C6)
     state["legacy_plan"] = _jsonable(plans)
     for p in plans:
@@ -8258,6 +8306,10 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     held_frame = case_frame._frame(case_frame.held(state)) if case_frame.enabled() and case_frame.held(state) else {}
     result = applicability.judge(norms, facts, role, started=started, frame_context=context, pretesa=pretesa_txt,
                                  quesiti=quesiti_list, contractual=_as.is_contractual(held_frame), recall=False)
+    capo_keys = {_key(_parse_label(x)) for x in state.get("capo_alternatives") or []}     # v79.18.5 (item 7)
+    for rec in result.get("judgments") or []:
+        if rec and _key(_parse_label(str(rec.get("article") or ""))) in capo_keys:
+            rec["capo_alternative"] = True
     # v79.17.2 (item 1): the recall runs later, on the records as decomposed (pretesa_recall_step): here the named and
     # the charged articles have no requisites yet, so nothing could tell a substantive article from a bare one
     protected = fit_protected(state, posture)
@@ -8315,7 +8367,8 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
                                              "governs",                    # v79.17.0 (item 3): what the norm decides
                                              "governs_recalled",           # v79.17.1 (item 9): by the recall
                                              "substantive",                # v79.17.2 (item 1): may be in the set
-                                             "alternative")}               # v79.18.2 (item 6): the shared unit
+                                             "alternative",                # v79.18.2 (item 6): the shared unit
+                                             "capo_alternative")}          # v79.18.5 (item 7): the charge's capo
                       for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
                       if r],
         "governs_asked": bool(result.get("governs_asked")), "quesiti": list(quesiti_list),       # v79.17.0 (item 3)
@@ -8331,6 +8384,7 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     counters["fit_kept_named"] = len(done["kept_named"])
     counters["fit_protected_kept"] = len(done["kept_named"])     # v79.15.0 (item 3): a verified «no» on a protected norm
     counters["fit_no_kept_alternative"] = len(done.get("kept_alternative") or [])     # v79.18.2 (item 6)
+    counters["alternatives_from_capo"] = sum(1 for r in result.get("judgments") or [] if r and r.get("capo_alternative"))
     # a judgment rejected for unquoted content never has an effect (must be 0: verify never passes one)
     counters["fit_added_content_in_effects"] = sum(1 for part in done.values() for e in part if e.get("added_content"))
     counters["fit_seconds"] = round(time.time() - started, 3)     # the whole step: inputs, judgment, effects
@@ -8556,6 +8610,8 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     charged = any(why != DECOMPOSE_WHY["remedy"] for why in wanted.values())
     for x in posture_mod.alternative_labels(state, rows):
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
+    for x in state.get("capo_alternatives") or []:      # v79.18.5 (item 7): the charge's capo, from the store
+        wanted.setdefault(x, DECOMPOSE_WHY["capo"])
     for ref in user_named(state):
         wanted.setdefault(_label(ref), DECOMPOSE_WHY["named"])
     routes = defence_wanted(state, charged) if str(posture.get("family") or "") != "civile" else {}
@@ -8569,6 +8625,9 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         if x not in records or (records[x] or {}).get("dropped"):      # v79.7: a dropped one's stub is no record
             wanted.setdefault(x, DECOMPOSE_WHY["ranked"])
     have = {_key(r["_article"]): r for r in rows if r.get("_article")}
+    for r in _restored_rows(state.get("capo_rows")):    # v79.18.5 (item 7): the capo's rows, read with the pool's
+        if r.get("_article"):
+            have.setdefault(_key(r["_article"]), r)
     keys = {label: _key(_parse_label(label)) for label in wanted}
     missing = [k for k in dict.fromkeys(keys.values()) if k not in have and k not in dead]
     fetched: List[Dict[str, Any]] = []

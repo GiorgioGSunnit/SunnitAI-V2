@@ -511,6 +511,36 @@ def _ref_of_label(label: Any) -> Optional[Tuple[str, str]]:
     return (m.group(1), topic_step._code(m.group(2))) if m else None
 
 
+CAPO_ALTERNATIVES_MAX = 24      # v79.18.5 (item 7): the capo's articles offered as alternatives, the nearest numbers first
+
+
+def capo_articles(ref: Sequence[str], limit: int = CAPO_ALTERNATIVES_MAX) -> List[str]:
+    """v79.18.5 (item 7): the labels of the other articles of the charge's Titolo / Capo (CODE_UNITS: the c.p. and
+    the c.c. by unit; the contracts' Capo by capo_of), the nearest numbers first, at most limit; [] for a general-part
+    article, another code or a number outside the table. Deterministic: the code's structure, no model."""
+    if not ref or len(ref) != 2:
+        return []
+    code = topic_step._code(ref[1])
+    key = _number_key(ref[0])
+    if key is None:
+        return []
+    lo = hi = None
+    unit = code_unit((str(ref[0]), code))
+    if unit:
+        for a, a_s, b, b_s, name in CODE_UNITS.get(code, ()):
+            if f"{code} {name}" == unit:
+                lo, hi = a, b
+                break
+    else:
+        capo = capo_of((str(ref[0]), code))
+        if capo:
+            lo, hi = next(((a, b) for c, name, a, b, _ in CONTRACT_CAPI if (c, name) == capo), (None, None))
+    if lo is None or hi is None:
+        return []
+    numbers = sorted((n for n in range(lo, hi + 1) if n != key[0]), key=lambda n: (abs(n - key[0]), n))
+    return [f"{n} {code}" for n in numbers[:max(0, int(limit or 0))]]
+
+
 def same_code_unit(a: Sequence[str], b: Sequence[str]) -> str:
     """v79.18.2 (item 6): the Titolo / Capo of the code both articles belong to («c.p. Libro II, Titolo XII, Capo I – …»,
     or the contracts' Capo of Libro IV Titolo III c.c.: capo_of), "" when they share none -- a general-part article, another

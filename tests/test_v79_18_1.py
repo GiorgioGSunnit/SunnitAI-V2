@@ -51,7 +51,8 @@ def _penal_inp(rulings=True):
 def _l(art, eid, tipo, rapporto="alternativa", cf=(), cg=(), cond=None, ob=None):
     return {"articolo": art, "eid": eid, "condizione": cond, "tipo": tipo, "rapporto": rapporto, "perche_prima": "perché",
             "cita_fatti": list(cf), "cita_pronunce": list(cg), "obiezione": ob if ob is not None else
-            {"testo": "L'accusa obietterà.", "risposta_cita_fatti": ["S5"], "risposta_cita_elementi": ["A640cp:E1"], "cita_pronunce": []}}
+            {"testo": "L'accusa obietterà.", "accusa_forte": {"testo": "Farà leva sul falso annuncio [S3].", "cita_fatti": ["S3"]},
+             "risposta_cita_fatti": ["S5"], "risposta_cita_elementi": ["A640cp:E1"], "cita_pronunce": []}}    # v79.18.5: grounded
 
 
 def _reply(linee, **more):
@@ -94,7 +95,7 @@ def test_c2_a_ruling_attached_to_the_eid_is_the_lines_condition_verified_by_id_a
     first = next(x for x in a["linee"] if x["eid"] == "A640cp:E2")
     assert first["forza"]["key"][0] == 3                      # the condition counts as the ruling's (C1 b)
     sol = S.solutions_text({"status": S.OK, "analysis": a}, Z._view(inp))
-    assert "| inducendo taluno in errore [G1] | contestare |" in sol
+    assert "| inducendo taluno in errore [Cass. pen., Sez. 2, n. 10/2025] | contestare l'elemento |" in sol    # v79.18.5 (item 3)
 
 
 # --- C3 -----------------------------------------------------------------------------------------------------------------
@@ -119,7 +120,7 @@ def test_c3_the_penal_defence_needs_a_riqualificare_line_else_the_codes_line_aft
     with_riq = _reply(no_riq["linee"] + [_l("A646cp", "A646cp:E1", "riqualificare", "subordinata", ["S1"])])
     res = S.analyse(inp, call=T._Model(with_riq))
     assert res["counters"]["strategy_reasked"] == 0 and res["analysis"]["riqualificazione"]["articolo"] == "646 c.p."
-    assert "**Qualificazione alternativa**\n\nArt. 646 c.p. (linea 3)." in S.solutions_text(res, Z._view(inp))
+    assert "**Qualificazione alternativa**\n\nArt. 646 c.p. (terza linea)." in S.solutions_text(res, Z._view(inp))   # v79.18.5
     assert S.replay_summary(res)["riqualificazione"]["articolo"] == "646 c.p."
     # a claimant, or a set with no other article: nothing required, nothing printed
     civil = Z._inp()
@@ -145,9 +146,10 @@ def test_c3_the_standing_quesito_and_its_counter():
 
 def test_c4_the_answer_rests_on_elements_whose_esito_fits_the_side_else_reasked_then_unanswered():
     inp = _penal_inp()
-    ob_bad = {"testo": "L'accusa dirà che il profitto è provato.", "risposta_cita_fatti": ["S5"],
+    forte = {"testo": "Farà leva sul falso annuncio [S3].", "cita_fatti": ["S3"]}           # v79.18.5 (item 5): grounded
+    ob_bad = {"testo": "L'accusa dirà che il profitto è provato.", "accusa_forte": forte, "risposta_cita_fatti": ["S5"],
               "risposta_cita_elementi": ["A640cp:E3"], "cita_pronunce": []}                 # provato: no help to the defence
-    ob_ok = {"testo": "L'accusa dirà che gli artifizi sono provati.", "risposta_cita_fatti": ["S5"],
+    ob_ok = {"testo": "L'accusa dirà che gli artifizi sono provati.", "accusa_forte": forte, "risposta_cita_fatti": ["S5"],
              "risposta_cita_elementi": ["A640cp:E1", "G1"], "cita_pronunce": ["G1"]}
     linee = [_l("A640cp", "A640cp:E1", "contestare", "principale", ["S5"], ob=ob_bad),
              _l("A640cp", "A640cp:E2", "contestare", "subordinata", ob=ob_ok),

@@ -44,10 +44,11 @@ def strategy_call(messages, kwargs):
     reply = {"linee": [
         {"articolo": "A1385cc", "eid": contestato, "tipo": "contestare", "rapporto": "principale",
          "perche_prima": "l'inadempimento di Ettore Bassi è il punto conteso", "cita_fatti": [alleg[0]], "cita_pronunce": [],
-         "obiezione": {"testo": OBJ_CONTESTARE, "risposta_cita_fatti": [paid], "cita_pronunce": []}},
+         "obiezione": {"testo": f"{OBJ_CONTESTARE[:-1]} [{alleg[0]}].", "risposta_cita_fatti": [paid], "cita_pronunce": []}},
         {"articolo": "A1385cc", "eid": provato, "tipo": "fondare", "rapporto": "subordinata",
          "perche_prima": "la caparra versata è provata", "cita_fatti": [paid], "cita_pronunce": [],
-         "obiezione": {"testo": OBJ_FONDARE, "risposta_cita_fatti": "nessuna risposta nei fatti", "cita_pronunce": []}}],
+         "obiezione": {"testo": f"{OBJ_FONDARE[:-1]} [{alleg[0]}].", "risposta_cita_fatti": "nessuna risposta nei fatti",
+                       "cita_pronunce": []}}],                                  # v79.18.5 (items 1, 5): the facts by id
         "passi": [{"eid": contestato, "cosa": PASSO, "cita_fatti": [signed]}],
         "passi_immediati": [{"testo": IMMEDIATO, "cita_elementi": [provato], "cita_fatti": [paid]}],
         "contro_difesa": [{"allegazione": alleg[0], "risposta": CONTRO, "cita_linea": contestato, "cita_fatti": [paid]}],
@@ -97,22 +98,26 @@ def test_the_strategy_step_end_to_end_on_the_civil_fixture(monkeypatch, tmp_path
     titles = ["**Passi immediati (prova e termini)**", "**Linee per forza**", "**Risposta ai quesiti**", "**Contro-difesa**",
               "**Verifiche documentali**"]
     assert sorted(sol.index(t) for t in titles) == [sol.index(t) for t in titles]
-    assert f"- {IMMEDIATO}: «Anna Corsi ha versato a Ettore Bassi 15.000 euro a titolo di caparra confirmatoria» [" in sol
-    assert "| Linea 1 | art. 1385 c.c. |" in sol and "| fondare | principale | la caparra versata è provata | provato 1 / contestato 1 / da provare" in sol
-    assert "| Linea 2 | art. 1385 c.c. |" in sol and "| contestare | subordinata |" in sol
+    assert f"- {IMMEDIATO}: «Anna Corsi ha versato a Ettore Bassi 15.000 euro a titolo di caparra confirmatoria» («" in sol
+    assert "| Prima linea | art. 1385 c.c. |" in sol and \
+        "| fondare la pretesa sull'elemento | in via principale | la caparra versata è provata | provato 1 / contestato 1 / da provare" in sol
+    assert "| Seconda linea | art. 1385 c.c. |" in sol and "| contestare l'elemento | in subordine |" in sol
     assert "Ordine ricalcolato dal codice per forza" in sol
-    assert "- Q1 «Anna Corsi può esigere il doppio della caparra?»: art. 1385 c.c. (linea 1), art. 1385 c.c. (linea 2)" in sol
+    assert "- Q1 «Anna Corsi può esigere il doppio della caparra?»: art. 1385 c.c. (prima linea), art. 1385 c.c. (seconda linea)" in sol
     # the fit tagged no quesito here: each row from the quesito's own search (the third brought 2946 and 1385 c.c.)
-    assert "- Q3 «Entro quale termine si prescrive l'azione di Anna Corsi?»: art. 1385 c.c. (linea 1), art. 1385 c.c. (linea 2)" in sol
+    assert "- Q3 «Entro quale termine si prescrive l'azione di Anna Corsi?»: art. 1385 c.c. (prima linea), art. 1385 c.c. (seconda linea)" in sol
+    assert not S._RESIDUE_RE.search(sol) and c["residues_dropped"] == 0            # v79.18.5 (item 3): no id on the page
     assert S.quesiti_map(state["strategy_input"], {"Entro quale termine si prescrive l'azione di Anna Corsi?": ["2946 c.c.", "1385 c.c."]}
                          )["Q3"] == ["2946 c.c.", "1385 c.c."]
     assert f"»: {CONTRO}: «Anna Corsi ha versato a Ettore Bassi 15.000 euro a titolo di caparra confirmatoria» (linea: art. 1385 c.c., «" in sol
     assert f"- {VERIFICA}: «Anna Corsi ha firmato con Ettore Bassi un contratto preliminare di compravendita di un appartamento»." in sol
     # §7: the strategy's obiezioni, the verified answers -- a fact as written, or the data's «senza risposta» line
     obiezioni = H.section(answer, "obiezioni")
-    assert obiezioni.startswith(f"**Obiezione 1.** {OBJ_FONDARE}\n**Risposta.** Senza risposta nei fatti narrati.")
-    assert (f"**Obiezione 2.** {OBJ_CONTESTARE}\n**Risposta.** «Anna Corsi ha versato a Ettore Bassi 15.000 euro a titolo di caparra "
-            "confirmatoria».") in obiezioni
+    # v79.18.5 (item 1): the objection's fact id rendered as the fact's quote
+    assert obiezioni.startswith(f"**Obiezione 1.** {OBJ_FONDARE[:-1]} «") and "\n**Risposta.** Senza risposta nei fatti narrati." in obiezioni
+    assert f"**Obiezione 2.** {OBJ_CONTESTARE[:-1]} «" in obiezioni and \
+        "**Risposta.** «Anna Corsi ha versato a Ettore Bassi 15.000 euro a titolo di caparra confirmatoria»." in obiezioni
+    assert c["strategy_sentences_dropped_no_fact"] == 0 and c["strategy_objection_dropped"] == 0
     assert "Obiezione 3." not in obiezioni
     # §9: the risk word from the principale's forza; §10: the passi
     conclusioni = H.section(answer, "conclusioni")

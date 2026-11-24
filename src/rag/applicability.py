@@ -1097,7 +1097,8 @@ FLOW_COUNTERS = ("fit_pretesa_recall", "fit_pretesa_recall_empty",              
                  "fit_kept_named", "fit_added_content_in_effects", "fit_seconds",
                  "fit_no_verified", "fit_removed",                                 # v79.14.2 (A)
                  "fit_unverified_ids", "fit_no_unverified_ids", "fit_protected_kept",   # v79.15.0 (item 3)
-                 "fit_no_kept_alternative")                                          # v79.18.2 (item 6)
+                 "fit_no_kept_alternative",                                          # v79.18.2 (item 6)
+                 "alternatives_from_capo")                                           # v79.18.5 (item 7)
 
 
 def _quoted(parts: Iterable[Any]) -> str:

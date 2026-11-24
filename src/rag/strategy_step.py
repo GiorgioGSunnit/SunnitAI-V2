@@ -66,7 +66,13 @@ COUNTERS = ("strategy_calls", "strategy_reasked", "strategy_lines", "strategy_ra
             # v79.18.2 (item 2): every proposed line rejected for the side's rules -- the re-ask states the side; (item
             # 6) a riqualificazione line on an «alternativa» article moved below the first set line (never principale)
             "strategy_side_reasked", "strategy_alternativa_demoted",
-            "strategy_risk_capped")      # v79.18.3 (item 1): a favorevole word capped at incerto (unverified set / one element)
+            "strategy_risk_capped",      # v79.18.3 (item 1): a favorevole word capped at incerto (unverified set / one element)
+            # v79.18.5: item 1 a factual sentence of a free-text field with no S-id (dropped), any other sentence the
+            # Q&A's reviewer dropped (an unknown id, an unfitted article, a rule without its A-id); item 3 the ids rendered
+            # as text and the raw ids a final sweep still found; item 5 the objections with a verified accusa_forte and the
+            # objections dropped for want of any S-id
+            "strategy_sentences_dropped_no_fact", "strategy_sentences_dropped", "strategy_ids_rendered",
+            "residues_dropped", "strategy_objection_strongest", "strategy_objection_dropped")
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITO_RANK = {PROVATO: 3, CONTESTATO: 2, DA_PROVARE: 1, ESCLUSO: 0}
@@ -78,6 +84,10 @@ FAVOREVOLE, INCERTO, SFAVOREVOLE = "favorevole", "incerto", "sfavorevole"
 PRINCIPALE, SUBORDINATA = "principale", "subordinata"
 _S_RE = re.compile(r"^S\d+$")
 _G_RE = re.compile(r"^G\d+$")
+_FACT_ID_RE = re.compile(r"\[S\d+\]")                                   # v79.18.5 (item 1): an inline fact id
+_ANY_ID_RE = re.compile(r"\[(?:S\d+|G\d+|A[0-9a-z]+(?::E\d+|\.\d+)?)\]")     # every inline id the renderer turns to text
+_RESIDUE_RE = re.compile(r"\[?\b(?:S\d{1,3}|G\d{1,3}|A[0-9]+[a-z]+(?::E\d+|\.\d+)?)\b\]?")   # (item 3) a raw id left on the page
+SITE_STRATEGY = "strategia"              # v79.18.5 (item 1): the reviewer's site for the strategy's free text
 
 _DATA: Dict[str, Any] = {}
 
@@ -204,8 +214,10 @@ def state_input(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> Op
     mark_own(facts, frame, client)                      # v79.18.1 (C1): the client's own facts
     quesiti = flow.fit_pretesa_quesiti(state)[1] if held else [str(q) for q in flow.asked_questions(state)]
     side, side_source = side_of(a.get("side"), frame)           # v79.18.2 (item 2): the pretesa's tipo when unverified
+    parties = [client] + [_flat(x.get("nome")) for x in (frame.get("parti") or []) if isinstance(x, dict) and _flat(x.get("nome"))]
     return {"pretesa": _flat(verified.get("pretesa_line") or (case_frame.pretesa_text(held) if held else "")),
             "client": client, "side": side, "side_source": side_source,
+            "parties": list(dict.fromkeys(x for x in parties if x)),         # v79.18.5 (item 1): the factual test's names
             "charge": _flat(a.get("frame_charge") or binding.get("pretesa_article")),
             "articles": articles, "facts": facts,
             "allegations": allegations(facts, frame, client),
@@ -535,6 +547,12 @@ def _verify_objection(raw: Any, inp: Dict[str, Any], counters: Dict[str, Any], n
     answer = raw.get("risposta_cita_fatti")
     sids, _bad = _sids(answer, inp, counters) if not _no_answer(answer) else ([], [])
     gids = _gids(raw.get("cita_pronunce"), inp, counters)
+    # v79.18.5 (item 5): the accusa_forte -- the fact pattern the counterparty relies on, by S-ids (inline or listed)
+    forte = raw.get("accusa_forte") if isinstance(raw.get("accusa_forte"), dict) else {}
+    forte_text = _flat(forte.get("testo"))
+    forte_sids, _b2 = _sids(list(_ids(forte.get("cita_fatti"))) + [x.strip("[]") for x in _FACT_ID_RE.findall(forte_text)],
+                            inp, counters)
+    own_sids, _b3 = _sids([x.strip("[]") for x in _FACT_ID_RE.findall(_flat(raw.get("testo")))], inp, counters)
     rests = raw.get("risposta_cita_elementi")
     eids = _eids([x for x in _ids(rests) if not _G_RE.match(x)], inp, counters)
     rest_g = _gids([x for x in _ids(rests) if _G_RE.match(x)], inp, counters)
@@ -549,6 +567,8 @@ def _verify_objection(raw: Any, inp: Dict[str, Any], counters: Dict[str, Any], n
            f"{side}") if bad else ""
     return {"testo": _flat(raw.get("testo")), "risposta_cita_fatti": sids, "cita_pronunce": gids,
             "risposta_cita_elementi": [eid for _a, eid in eids] + rest_g, "mismatch": bool(bad),
+            "accusa_forte": {"testo": forte_text, "cita_fatti": forte_sids} if forte_text and forte_sids else None,
+            "grounded": bool(own_sids or forte_sids),         # v79.18.5 (item 5): an objection with no S-id is dropped
             "senza_risposta": not sids or bool(bad)}, why     # counted in finish, on the final linee only
 
 
@@ -663,8 +683,12 @@ def passo_issue(item: Dict[str, Any], inp: Dict[str, Any]) -> str:
     if share >= float(config().get("restatement_overlap") or 0.6):
         return f"passo {item.get('eid')}: riformula l'elemento invece di indicare la prova da acquisire"
     pats = [str(p) for p in config().get("passi_words") or [] if str(p or "").strip()]
-    if pats and not re.search("|".join(f"(?:{p})" for p in pats), _as().fold(cosa)):
+    has_means = bool(pats) and bool(re.search("|".join(f"(?:{p})" for p in pats), _as().fold(cosa)))
+    if pats and not has_means:
         return f"passo {item.get('eid')}: non nomina una prova concreta da acquisire (referto, perizia, testimoni, documenti…)"
+    concl = [str(p) for p in config().get("passi_conclusion_words") or [] if str(p or "").strip()]     # v79.18.5 (item 4)
+    if concl and re.search("|".join(f"(?:{p})" for p in concl), _as().fold(cosa)):
+        return f"passo {item.get('eid')}: chiede una conclusione giuridica, non un fatto da acquisire"
     return ""
 
 
@@ -875,11 +899,100 @@ def _contro_difesa(raw: Any, linee: Sequence[Dict[str, Any]], inp: Dict[str, Any
     return out
 
 
-def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
+def material(inp: Dict[str, Any], vm: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v79.18.5 (item 1): the reviewer's material for the strategy's free text -- compose's verified material when
+    given (its maps: the periods and the sentences; the fitted set), else built from the input (the facts as the
+    sentences, the input's articles as the fitted set, no periods)."""
+    if isinstance(vm, dict) and isinstance(vm.get("maps"), dict) and vm["maps"]:
+        return vm
+    return {"maps": {"periods": {}, "sentences": {f["id"]: {"text": f.get("text")} for f in inp.get("facts") or []},
+                     "norms": []},
+            "fitted": [a["article"] for a in inp.get("articles") or []], "named": []}
+
+
+_NAME_STOP = frozenset({"srl", "spa", "snc", "sas", "societa", "società", "ditta", "studio", "comune", "agenzia", "delle",
+                        "della", "dello", "degli", "entrate", "procura", "repubblica", "tribunale"})
+
+
+def factual(sentence: str, inp: Dict[str, Any]) -> bool:
+    """v79.18.5 (item 1): the sentence asserts a fact of the case -- it names a party (inp «parties»: the frame's parti
+    and the client, by a whole word of three letters or more that is no company form) or holds a figure (a date, an
+    amount, a count)."""
+    if re.search(r"\[A[0-9a-z]+\.\d+\]", sentence or ""):        # a law statement with its period id is no fact claim
+        return False
+    bare = re.sub(r"\[[^\]]*\]", " ", sentence or "")                 # the ids out, then the article mentions
+    bare = re.sub(r"\bartt?\.\s*\d+(?:-[a-z]+)?(?:\s+(?:c\.[a-z]\.[a-z]?\.?|d\.[a-z]+\.?|l\.|cost\.)\S*)?", " ", bare, flags=re.IGNORECASE)
+    if re.search(r"\d", bare):
+        return True
+    low = f" {_as().fold(sentence)} "
+    for name in inp.get("parties") or []:
+        for w in re.findall(r"[a-zà-ü]{3,}", _as().fold(name)):
+            if w not in _NAME_STOP and f" {w} " in low:
+                return True
+    return False
+
+
+def review_free_text(text: Any, inp: Dict[str, Any], vm: Optional[Dict[str, Any]], counters: Dict[str, Any],
+                     listed: Sequence[str] = (), events: Optional[List[Dict[str, Any]]] = None) -> str:
+    """v79.18.5 (item 1): a free-text field of the reply, sentence by sentence through the Q&A's reviewer
+    (verified_material.review_sentence: an unknown id, an article outside the fitted set, a rule attributed to an
+    article with no A-id of it -- dropped; item 2: a rule sentence with its A-id printed as the article's verbatim
+    passage); a sentence asserting a fact of the case (factual) with no S-id -- inline, or the field's own cita_fatti
+    (listed) when the field is one sentence -- is dropped (strategy_sentences_dropped_no_fact). The kept sentences, their
+    ids rendered as text (strategy_ids_rendered)."""
+    from . import verified_material as V
+    mat = material(inp, vm)
+    sentences = [x for x in V.sentences_of(" ".join(str(text or "").split())) if x.strip()]
+    kept: List[str] = []
+    for sentence in sentences:
+        grounded = bool(_FACT_ID_RE.search(sentence)) or (len(sentences) == 1 and bool(listed))
+        if factual(sentence, inp) and not grounded:
+            counters["strategy_sentences_dropped_no_fact"] += 1
+            if events is not None:
+                events.append({"sede": SITE_STRATEGY, "esito": _as().DROPPED, "testo": sentence[:200], "articoli": [],
+                               "motivo": "fatto_senza_id"})
+            continue
+        n_ids = len(_ANY_ID_RE.findall(sentence))
+        done = V.review_sentence(sentence, mat, SITE_STRATEGY, events if events is not None else [])
+        if done.strip():
+            counters["strategy_ids_rendered"] += n_ids
+            kept.append(done.strip())
+        else:
+            counters["strategy_sentences_dropped"] += 1
+    return " ".join(kept)
+
+
+def review_fields(linee: List[Dict[str, Any]], raw: Dict[str, Any], inp: Dict[str, Any], vm: Optional[Dict[str, Any]],
+                  counters: Dict[str, Any], events: Optional[List[Dict[str, Any]]] = None) -> None:
+    """v79.18.5 (items 1, 5): the linee's perche_prima and obiezione texts reviewed in place; an objection whose text
+    is dropped or that no S-id grounds (its own inline ids or a verified accusa_forte) is dropped
+    (strategy_objection_dropped); an objection with a verified accusa_forte counted (strategy_objection_strongest)."""
+    for x in linee:
+        x["perche_prima"] = review_free_text(x.get("perche_prima"), inp, vm, counters, x.get("cita_fatti") or [], events)
+        o = x.get("obiezione")
+        if not o:
+            continue
+        forte = o.get("accusa_forte") or {}
+        if forte.get("testo"):
+            forte["testo"] = review_free_text(forte["testo"], inp, vm, counters, forte.get("cita_fatti") or [], events)
+        o["testo"] = review_free_text(o.get("testo"), inp, vm, counters, (forte or {}).get("cita_fatti") or [], events)
+        if not o["testo"] or not o.get("grounded"):
+            counters["strategy_objection_dropped"] += 1
+            x["obiezione"] = None
+            continue
+        if forte.get("testo") and forte.get("cita_fatti"):
+            counters["strategy_objection_strongest"] += 1
+        else:
+            o["accusa_forte"] = None
+
+
+def finish(checked: Dict[str, Any], inp: Dict[str, Any], vm: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The verified strategy from a checked reply: the linee with their forza, ranked (rank; the first the principale,
     another «principale» made «subordinata»), the passi, item 12's entries, the ranking orders and the side."""
     counters = checked["counters"]
     linee = [dict(x, forza=forza(x["articolo"], x["eid"], inp, x)) for x in checked["linee"]]
+    review_events: List[Dict[str, Any]] = []
+    review_fields(linee, checked.get("raw") or {}, inp, vm, counters, review_events)     # v79.18.5 (items 1, 5)
     for x in linee:                     # v79.18.1 (C4): a mismatch left after the re-ask -- the answer prints as unanswered
         if x.get("obiezione") and x["obiezione"].get("mismatch"):
             counters["strategy_objection_mismatch"] += 1
@@ -917,18 +1030,38 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
     set_non_verificato = bool(set_arts) and all(str(x.get("tier") or "") in (TIER_UNVERIFIED_SET, "linea") for x in set_arts)
     risk = risk_of({"linee": ranked, "side": inp.get("side") or SIDE_NEUTRAL, "set_non_verificato": set_non_verificato})
     counters["strategy_risk_capped"] = int(bool(risk.get("capped")))
+    passi = _passi(raw.get("passi"), principale, inp, counters) if principale else []
+    for p in passi:                     # v79.18.5 (item 1): the passo's sentence reviewed; emptied -> the code's label
+        if p.get("cosa"):
+            p["cosa"] = review_free_text(p["cosa"], inp, vm, counters, p.get("cita_fatti") or [], review_events)
+            if not p["cosa"]:
+                p["codice"] = True
+    immediati = _cited_entries(raw.get("passi_immediati"), inp, counters)
+    verifiche = _cited_entries(raw.get("verifiche_documentali"), inp, counters)
+    for group in (immediati, verifiche):
+        for p in group:
+            p["testo"] = review_free_text(p["testo"], inp, vm, counters, p.get("cita_fatti") or [], review_events)
+    immediati = [p for p in immediati if p.get("testo")]
+    verifiche = [p for p in verifiche if p.get("testo")]
+    contro = _contro_difesa(raw.get("contro_difesa"), ranked, inp, counters)
+    for c in contro:
+        if c.get("risposta"):
+            c["risposta"] = review_free_text(c["risposta"], inp, vm, counters, c.get("cita_fatti") or [], review_events)
+            if not c["risposta"] and not c.get("cita_fatti") and not c.get("cita_linea"):
+                c["senza_risposta"] = True
     return {"linee": ranked, "principale": principale, "side": inp.get("side") or SIDE_NEUTRAL,
             "set_non_verificato": set_non_verificato, "risk": risk,                                  # v79.18.3 (item 1)
+            "review_events": review_events,                                                          # v79.18.5 (item 1)
+            "rulings_estremi": {r["id"]: r.get("estremi") or r["id"] for r in inp.get("rulings") or []},   # (item 3)
+            "elementi_testi": {e["eid"]: e.get("testo") or "" for art in inp.get("articles") or []
+                               for e in art.get("elements") or []},
             "side_source": inp.get("side_source") or "",                                            # v79.18.2 (item 2)
             "alternative": [a["article"] for a in inp.get("articles") or [] if a.get("alternative")],   # v79.18.2 (item 6)
             "riqualificazione": riq,
             "speakers": {f["id"]: f["said_by"] for f in inp.get("facts") or [] if f.get("said_by")},   # v79.18.1 (C7)
             "reordered": reordered, "model_order": model_order,
             "final_order": [f"{x['articolo']} {x['eid']}" for x in ranked],
-            "passi": _passi(raw.get("passi"), principale, inp, counters) if principale else [],
-            "passi_immediati": _cited_entries(raw.get("passi_immediati"), inp, counters),
-            "contro_difesa": _contro_difesa(raw.get("contro_difesa"), ranked, inp, counters),
-            "verifiche_documentali": _cited_entries(raw.get("verifiche_documentali"), inp, counters),
+            "passi": passi, "passi_immediati": immediati, "contro_difesa": contro, "verifiche_documentali": verifiche,
             "rejected": checked.get("rejected") or [], "rulings_cited": sorted(cited, key=lambda g: int(g[1:]))}
 
 
@@ -953,7 +1086,7 @@ def failed_result(status: str, error: str = "") -> Dict[str, Any]:
 
 
 def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, Any]], str]] = None,
-            started: Optional[float] = None) -> Dict[str, Any]:
+            started: Optional[float] = None, vm: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The step on a ready input: at most 2 calls within «deadline_s» from started; {"status", "error", "analysis"
     (None when nothing verified), "counters", "prompt_hash", "seconds", "calls", "reasons", "rejected"}; logged
     «strategy_step»."""
@@ -993,7 +1126,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                     logger.warning("strategy_step: re-ask %s: %s (the first reply's verification stands)",
                                    second["status"], second["error"])
             if checked["linee"]:
-                analysis = finish(checked, inp)
+                analysis = finish(checked, inp, vm)
             else:
                 status, error = FAILED, "nessuna linea verificata"
                 counters["strategy_failed"] = 1
@@ -1040,7 +1173,7 @@ def run(ctx: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, Any]]
         inp = dict(inp)
         try:
             inp["rulings"] = rulings_for(ctx.get("rulings_record"), [a["article"] for a in inp["articles"]])
-            result = analyse(inp, call=call)
+            result = analyse(inp, call=call, vm=ctx.get("verified_material") if isinstance(ctx.get("verified_material"), dict) else None)
         except Exception as exc:        # noqa: BLE001 -- the step never fails the answer
             logger.warning("strategy_step: failed: %s", exc)
             result = failed_result(FAILED, f"{type(exc).__name__}: {exc}"[:300])
@@ -1085,6 +1218,45 @@ def _quoted(ids: Sequence[str], texts: Dict[str, str]) -> str:
     return str(cfg.get("fatti_sep") or "; ").join(got)
 
 
+def _word(kind: str, value: Any) -> str:
+    """v79.18.5 (item 3): the page's word for a tipo / rapporto label (data rendering «tipo_words» / «rapporto_words»);
+    the label itself when the data has no word."""
+    words = rendering().get(kind) or {}
+    return str(words.get(str(value or "")) or value or "")
+
+
+def ordinal(n: int) -> str:
+    """v79.18.5 (item 3): «prima linea», «seconda linea» … (data rendering «ordinali»), never «Linea 2»."""
+    cfg = rendering()
+    words = [str(x) for x in cfg.get("ordinali") or []]
+    word = words[n - 1] if 0 < n <= len(words) else f"{n}ª"
+    return str(cfg.get("linea_ordinale") or "{ordinale} linea").format(ordinale=word)
+
+
+def _g_text(a: Dict[str, Any], g: str) -> str:
+    """A ruling's reference for the page: its estremi (analysis «rulings_estremi»), never the G-id."""
+    return str((a.get("rulings_estremi") or {}).get(g) or g)
+
+
+def _e_text(a: Dict[str, Any], eid: str) -> str:
+    """An element's schema text for the page (analysis «elementi_testi»), never the E-id."""
+    return _flat((a.get("elementi_testi") or {}).get(eid)) or str(eid)
+
+
+def swept(text: str, counters: Optional[Dict[str, Any]] = None) -> str:
+    """v79.18.5 (item 3): the final sweep on a rendered block -- a raw id (S3, G1, A640cp:E1, A640cp.2) the renderer
+    did not turn into text is removed and counted (residues_dropped)."""
+    found = _RESIDUE_RE.findall(text or "")
+    if not found:
+        return text or ""
+    if counters is not None:
+        counters["residues_dropped"] = counters.get("residues_dropped", 0) + len(found)
+    out = _RESIDUE_RE.sub("", text or "")
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"\s+([,.;:)])", r"\1", out)
+
+
 def line_sentence(linea: Dict[str, Any], side: str, v: Dict[str, Any]) -> str:
     """«art. X — <tesi>»: the tesi the analysis step's data gives for the side and the eid's esito
     (analysis_step rendering.tesi), {elemento} the schema text, {fatti} the linea's cited facts as written."""
@@ -1096,13 +1268,13 @@ def line_sentence(linea: Dict[str, Any], side: str, v: Dict[str, Any]) -> str:
                                                                  art=linea["articolo"], fatti=fatti))
 
 
-def summary_lines(result: Dict[str, Any], v: Dict[str, Any]) -> List[Tuple[str, str]]:
+def summary_lines(result: Dict[str, Any], v: Dict[str, Any], counters: Optional[Dict[str, Any]] = None
+                  ) -> List[Tuple[str, str]]:
     a = (result or {}).get("analysis") or {}
     out = []
     for i, x in enumerate(a.get("linee") or []):
-        label = _as().LABEL_MAIN if i == 0 else (_as().LABEL_SUB if i == 1 else
-                                                 str(rendering().get("linea") or "Linea {n}").format(n=i + 1))
-        out.append((label, line_sentence(x, a.get("side") or SIDE_NEUTRAL, v)))
+        label = _as().LABEL_MAIN if i == 0 else (_as().LABEL_SUB if i == 1 else ordinal(i + 1).capitalize())
+        out.append((label, swept(line_sentence(x, a.get("side") or SIDE_NEUTRAL, v), counters)))
     return out
 
 
@@ -1114,10 +1286,11 @@ def summary_text(v: Dict[str, Any], result: Dict[str, Any]) -> str:
     return _as().summary_text(v, lines=lines)
 
 
-def objection_items(result: Dict[str, Any], v: Dict[str, Any]) -> List[Dict[str, str]]:
-    """§7's entries: each ranked linea's obiezione (the model's sentence) with its verified answer -- the cited facts as
-    written, the rulings by their registry label «(G1)» (compose renders it as the reference); none cited: the data's
-    «senza_risposta»."""
+def objection_items(result: Dict[str, Any], v: Dict[str, Any], counters: Optional[Dict[str, Any]] = None
+                    ) -> List[Dict[str, str]]:
+    """§7's entries: each ranked linea's obiezione (the model's sentence, reviewed and rendered) with its accusa_forte
+    (v79.18.5, item 5: the facts the counterparty relies on, as written) and its verified answer -- the cited facts as
+    written, the rulings by their estremi (item 3: never a G-id); none cited: the data's «senza_risposta»."""
     a = (result or {}).get("analysis") or {}
     texts = _texts(v)
     cfg = rendering()
@@ -1132,9 +1305,14 @@ def objection_items(result: Dict[str, Any], v: Dict[str, Any]) -> List[Dict[str,
             answer = _quoted(o.get("risposta_cita_fatti") or [], texts) or \
                 str(cfg.get("senza_risposta") or "senza risposta nei fatti narrati")
         if o.get("cita_pronunce"):
-            answer += " " + " ".join(f"({g})" for g in o["cita_pronunce"])
+            answer += " " + " ".join(f"({_g_text(a, g)})" for g in o["cita_pronunce"])
         answer = answer.strip().rstrip(".")
-        out.append({"obiezione": _stop(o["testo"]), "risposta": (answer[:1].upper() + answer[1:]) + ".",
+        testo = _stop(o["testo"]).rstrip(".")
+        forte = o.get("accusa_forte") or {}
+        if forte.get("testo") or forte.get("cita_fatti"):         # v79.18.5 (item 5): the facts the counterparty relies on
+            fatti = _stop(forte["testo"]).rstrip(".") if forte.get("testo") else _quoted(forte.get("cita_fatti") or [], texts)
+            testo += ". " + str(cfg.get("accusa_forte") or "La controparte farà leva su: {fatti}").format(fatti=fatti).rstrip(".")
+        out.append({"obiezione": swept(testo, counters), "risposta": swept((answer[:1].upper() + answer[1:]) + ".", counters),
                     "fonte": "strategia", "linea": x["eid"]})
     return out
 
@@ -1163,7 +1341,7 @@ def _quesiti_text(a: Dict[str, Any], inp_quesiti: Sequence[str], quesiti_article
     out = []
     for i, q in enumerate(inp_quesiti or [], 1):
         labels = list(quesiti_articles.get(f"Q{i}") or [])
-        hits = [str(cfg.get("quesito_linea") or "art. {art} (linea {n})").format(art=x["articolo"], n=k + 1)
+        hits = [str(cfg.get("quesito_linea") or "art. {art} ({linea})").format(art=x["articolo"], n=k + 1, linea=ordinal(k + 1))
                 for k, x in enumerate(a.get("linee") or [])
                 if any(_as().same_article(x["articolo"], y) for y in labels)]
         out.append(str(cfg.get("quesito") or "Q{n} «{quesito}»: {linee}").format(
@@ -1172,18 +1350,22 @@ def _quesiti_text(a: Dict[str, Any], inp_quesiti: Sequence[str], quesiti_article
 
 
 def solutions_text(result: Dict[str, Any], v: Dict[str, Any], quesiti: Sequence[str] = (),
-                   quesiti_articles: Optional[Dict[str, Sequence[str]]] = None) -> str:
+                   quesiti_articles: Optional[Dict[str, Sequence[str]]] = None,
+                   counters: Optional[Dict[str, Any]] = None) -> str:
     """§6 (item 12's order): passi immediati -> the ranked linee with their forza (the table) -> risposta ai quesiti ->
-    contro-difesa -> verifiche documentali. Labels and the model's one-sentence texts only; the facts as written."""
+    contro-difesa -> verifiche documentali. Labels and the model's one-sentence texts only; the facts as written.
+    v79.18.5 (item 3): the tipo and rapporto as words, the lines by ordinal, the elements by their text, the rulings
+    by their estremi, no id on the page (swept)."""
     a = (result or {}).get("analysis") or {}
     cfg = rendering()
     titles = cfg.get("titoli") or {}
     texts = _texts(v)
     parts: List[str] = []
+    els = lambda ids: "; ".join(f"«{_e_text(a, e)}»" for e in ids)         # noqa: E731
     # passi immediati
     rows = [f"- {str(cfg.get('immediato') or '{testo}').format(testo=_stop(p['testo']))}"
             + (f": {_quoted(p['cita_fatti'], texts)}" if p.get("cita_fatti") else "")
-            + (f" [{', '.join(p['cita_elementi'])}]" if p.get("cita_elementi") else "") + "."
+            + (f" ({els(p['cita_elementi'])})" if p.get("cita_elementi") else "") + "."
             for p in a.get("passi_immediati") or []]
     parts.append(f"{titles.get('passi_immediati') or '**Passi immediati**'}\n\n"
                  + ("\n".join(rows) or str(cfg.get("nessun_passo_immediato") or "Nessun passo immediato indicato.")))
@@ -1194,21 +1376,25 @@ def solutions_text(result: Dict[str, Any], v: Dict[str, Any], quesiti: Sequence[
         forza_text = f.get("testo") or "—"
         if not f.get("valutato"):
             forza_text += f" ({cfg.get('non_valutati') or 'elementi non valutati'})"
-        elemento = _flat(x.get("elemento")) + (str(cfg.get("condizione") or " [{g}]").format(g=x["condizione"])
-                                                if x.get("condizione") else "")       # v79.18.1 (C2)
-        table.append(f"| {str(cfg.get('linea') or 'Linea {n}').format(n=i)} | art. {_cell(x['articolo'])} | "
-                     f"{_cell(elemento)} | {_cell(x.get('tipo'))} | {_cell(x.get('rapporto'))} | "
-                     f"{_cell(x.get('perche_prima'))} | {_cell(forza_text)} | "
+        elemento = _flat(x.get("elemento")) + (str(cfg.get("condizione") or " [{g}]").format(g=_g_text(a, x["condizione"]))
+                                                if x.get("condizione") else "")       # v79.18.1 (C2); (item 3) the estremi
+        table.append(f"| {ordinal(i).capitalize()} | art. {_cell(x['articolo'])} | "
+                     f"{_cell(elemento)} | {_cell(_word('tipo_words', x.get('tipo')))} | {_cell(_word('rapporto_words', x.get('rapporto')))} | "
+                     f"{_cell(x.get('perche_prima') or cfg.get('nessuno') or '—')} | {_cell(forza_text)} | "
                      f"{_cell(_quoted(x.get('cita_fatti') or [], texts) or cfg.get('nessun_fatto') or 'nessun fatto citato')} | "
-                     f"{_cell(' '.join(f'({g})' for g in x.get('cita_pronunce') or []) or cfg.get('nessuno') or 'nessuno')} |")
+                     f"{_cell('; '.join(_g_text(a, g) for g in x.get('cita_pronunce') or []) or cfg.get('nessuno') or 'nessuno')} |")
     block = "\n".join(table)
-    if a.get("reordered"):
+    if a.get("reordered"):          # (item 3): the model's order by article and element text, never by ids
+        order = []
+        for item in a.get("model_order") or []:
+            art, _, eid = str(item).rpartition(" ")
+            order.append(f"art. {art} «{_e_text(a, eid)}»" if art else str(item))
         block += "\n\n" + str(cfg.get("riordinata") or "Ordine ricalcolato dal codice per forza ({ordine}).").format(
-            ordine=", ".join(a.get("model_order") or []))
+            ordine="; ".join(order))
     parts.append(f"{titles.get('linee') or '**Linee per forza**'}\n\n{block}")
     riq = a.get("riqualificazione")     # v79.18.1 (C3): the penal defence's qualificazione alternativa, always said
     if riq:
-        text = str(cfg.get("riqualificazione_linea") or "art. {art} (linea {n})").format(art=riq["articolo"], n=riq["n"]) \
+        text = str(cfg.get("riqualificazione_linea") or "art. {art} ({linea})").format(art=riq["articolo"], n=riq["n"], linea=ordinal(riq["n"])) \
             if riq.get("linea") else str(cfg.get("riqualificazione_nessuna") or "nessuna qualificazione alternativa ({articoli})").format(
                 articoli=", ".join(f"art. {x}" for x in riq.get("alternative") or []) or str(cfg.get("nessuno") or "nessuno"))
         parts.append(f"{cfg.get('riqualificazione_titolo') or '**Qualificazione alternativa**'}\n\n{text[:1].upper() + text[1:]}.")
@@ -1231,18 +1417,18 @@ def solutions_text(result: Dict[str, Any], v: Dict[str, Any], quesiti: Sequence[
                     art=linea["articolo"], elemento=linea.get("elemento") or "")
         who = _flat((a.get("speakers") or {}).get(c["allegazione"]))
         form = cfg.get("contestazione_accusa") if _as().is_authority(who) else cfg.get("contro")   # v79.18.1 (C7)
-        rows.append("- " + str(form or "Allegazione {sid} «{frase}»: {risposta}").format(
-            sid=c["allegazione"], frase=_stop(texts.get(c["allegazione"], "")), risposta=risposta) + ".")
+        rows.append("- " + str(form or "Allegazione «{frase}»: {risposta}").format(
+            sid="", frase=_stop(texts.get(c["allegazione"], "")), risposta=risposta) + ".")
     parts.append(f"{titles.get('contro_difesa') or '**Contro-difesa**'}\n\n"
                  + ("\n".join(rows) or str(cfg.get("nessuna_allegazione") or "Nessuna allegazione della controparte.")))
     # verifiche documentali
     rows = [f"- {str(cfg.get('verifica') or '{testo}').format(testo=_stop(p['testo']))}"
             + (f": {_quoted(p['cita_fatti'], texts)}" if p.get("cita_fatti") else "")
-            + (f" [{', '.join(p['cita_elementi'])}]" if p.get("cita_elementi") else "") + "."
+            + (f" ({els(p['cita_elementi'])})" if p.get("cita_elementi") else "") + "."
             for p in a.get("verifiche_documentali") or []]
     parts.append(f"{titles.get('verifiche') or '**Verifiche documentali**'}\n\n"
                  + ("\n".join(rows) or str(cfg.get("nessuna_verifica") or "Nessuna verifica documentale indicata.")))
-    return "\n\n".join(parts)
+    return swept("\n\n".join(parts), counters)
 
 
 def passi_elements(result: Dict[str, Any]) -> List[str]:
@@ -1251,7 +1437,7 @@ def passi_elements(result: Dict[str, Any]) -> List[str]:
     return [_flat(p.get("elemento")) for p in ((result or {}).get("analysis") or {}).get("passi") or [] if p.get("elemento")]
 
 
-def passi_points(result: Dict[str, Any], v: Dict[str, Any]) -> List[str]:
+def passi_points(result: Dict[str, Any], v: Dict[str, Any], counters: Optional[Dict[str, Any]] = None) -> List[str]:
     """§10's passi: one line per open element of the principale -- the model's sentence (its cited fact as written)
     or the code's label."""
     a = (result or {}).get("analysis") or {}
@@ -1269,4 +1455,4 @@ def passi_points(result: Dict[str, Any], v: Dict[str, Any]) -> List[str]:
             cosa += f" ({_quoted(p['cita_fatti'], texts)})"
         out.append(str(cfg.get("passo_punto") or "Passo: «{elemento}» (art. {art}) — {cosa}").format(
             elemento=p.get("elemento") or "", art=art, cosa=cosa))
-    return [x.rstrip(".") + "." for x in out]
+    return [swept(x.rstrip(".") + ".", counters) for x in out]
