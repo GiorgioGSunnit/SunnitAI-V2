@@ -94,6 +94,12 @@ QA_COUNTERS = QA_COUNTERS + ("prose_rule_without_id_dropped", "rulings_no_passag
                              "rulings_general_part_dropped", "timestamps_dropped")
 FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_unverified",)                                       # v79.18.0 (A1)
 ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("analysis_line_fallback_set", "analysis_degree_downgraded")   # v79.18.0 (A2, 11)
+# v79.18.2: item 2 the side re-ask, item 6 the alternativa tier (fit, binding, strategy), item 5 the matter gate's areas
+STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_side_reasked", "strategy_alternativa_demoted")
+FIT_COUNTERS = FIT_COUNTERS + ("fit_no_kept_alternative",)
+FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_alternative",)
+RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("topic_filter_areas", "topic_filter_demoted")
+RETRIEVAL_STAGES_SHOWN = 6          # v79.18.2 (item 4): the retrieval's slowest sub-stages named in the row
 
 
 # --- the measurement --------------------------------------------------------------------------------------------------
@@ -172,7 +178,9 @@ def recall_fields(state: Dict[str, Any]) -> Dict[str, Any]:
             "dropped": list(rec.get("dropped") or []), "principale": list(binding.get("principale") or []),
             "recalled": list(binding.get("recalled") or []),
             "reasons": {k: list(v) for k, v in (binding.get("reasons") or {}).items()},     # v79.17.3 (item 1)
-            "pretesa_article": binding.get("pretesa_article") or ""}
+            "pretesa_article": binding.get("pretesa_article") or "",
+            "alternative": list(binding.get("alternative") or []),                          # v79.18.2 (item 6)
+            "tiers": dict(binding.get("tiers") or {})}
 
 
 def strategy_fields(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -183,7 +191,8 @@ def strategy_fields(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(got, dict) or not got:
         return {}
     return {k: got.get(k) for k in ("status", "ranked", "reordered", "model_order", "final_order", "risk",
-                                    "objections", "contro_difesa", "riqualificazione", "prompt_hash", "error") if k in got}
+                                    "objections", "contro_difesa", "riqualificazione", "prompt_hash", "error",
+                                    "side", "side_source", "alternative") if k in got}      # v79.18.2 (items 2, 6)
 
 
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:
@@ -227,6 +236,36 @@ def stage_seconds(state: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
+def retrieval_stages(state: Dict[str, Any], n: int = RETRIEVAL_STAGES_SHOWN) -> List[Dict[str, Any]]:
+    """v79.18.2 (item 4): the retrieval's sub-stages as round 1's meter measured them (timings round1_stages: <stage>_s;
+    round1_counts: <stage>_llm / _embed / _graph), the slowest n first: [{stage, s, llm, embed, graph}]. The fusion's
+    own sub-steps are marked select:current / searches / vote / fetch / crossref / spotted; [] when the flow did not
+    time round 1."""
+    t = (state or {}).get("timings") or {}
+    secs = t.get("round1_stages") or {}
+    counts = t.get("round1_counts") or {}
+    out: List[Dict[str, Any]] = []
+    for key, value in secs.items():
+        if not str(key).endswith("_s") or key == "total_s":
+            continue
+        stage = str(key)[:-2]
+        try:
+            seconds = round(float(value), 1)
+        except (TypeError, ValueError):
+            continue
+        out.append({"stage": stage, "s": seconds, **{k: int(counts.get(f"{stage}_{k}") or 0) for k in ("llm", "embed", "graph")}})
+    out.sort(key=lambda x: -x["s"])
+    return out[:n]
+
+
+def retrieval_stages_text(stages: Sequence[Dict[str, Any]]) -> str:
+    parts = []
+    for x in stages or []:
+        calls = ", ".join(f"{k} {x[k]}" for k in ("llm", "embed", "graph") if x.get(k))
+        parts.append(f"{x['stage']} {x['s']}" + (f" ({calls})" if calls else ""))
+    return "; ".join(parts) or "—"
+
+
 def _counters(state: Dict[str, Any], keys: Sequence[str]) -> Dict[str, Any]:
     c = state.get("block_counters") or {}
     return {k: c[k] for k in keys if k in c}
@@ -247,7 +286,8 @@ def measure(case_id: str, state: Dict[str, Any], answer: str, seconds: float,
             "rites_block": list(state.get("rites_block") or []),                                            # v79.18.1 (C6)
             "retrieval": retrieval_fields(state, events), "retrieval_counters": _counters(state, RETRIEVAL_COUNTERS),
             "qa": _counters(state, QA_COUNTERS),
-            "stages": stage_seconds(state)}                                     # v79.17.1 (item 8)
+            "stages": stage_seconds(state),                                     # v79.17.1 (item 8)
+            "retrieval_stages": retrieval_stages(state)}                        # v79.18.2 (item 4)
 
 
 class _Capture:
@@ -446,6 +486,7 @@ def case_table(row: Dict[str, Any]) -> str:
     lines.append(f"| seconds | {row.get('seconds')} |")
     stages = row.get("stages") or {}      # v79.17.1 (item 8): where the time goes, stage by stage
     lines.append("| stages (s) | " + (", ".join(f"{k} {stages[k]}" for k in STAGES if k in stages) or "—") + " |")
+    lines.append("| retrieval stages (s) | " + retrieval_stages_text(row.get("retrieval_stages") or []) + " |")   # v79.18.2
     return "\n".join(lines)
 
 

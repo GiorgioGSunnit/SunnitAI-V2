@@ -1035,13 +1035,15 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             matter_log: Dict[str, Any] = {}
             named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
             article_rows = _isolated("matter_gate", lambda: topic_groups.matter_gate(
-                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True), article_rows)
+                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True,
+                touched=[str(analysis.get("frame_charge") or "")]), article_rows)     # v79.18.2 (item 5)
             track_gate(top, gates, "matter_gate", article_rows)
+            out["matter_gate"] = matter_log                 # v79.18.2 (item 5): the areas and the demoted rows, always
             if matter_log.get("dropped"):
                 gone = {x["article"] for x in matter_log["dropped"]}
                 anchor_keep = [a for a in anchor_keep if a not in gone]
                 must = [a for a in must if a not in gone]
-                out["matter_gate"] = matter_log
+            if matter_log.get("dropped") or matter_log.get("demoted"):
                 _log("matter_gate", matter_log)
         if case_first:          # v64: a general-part article (c.p. Libro I) is never a grading candidate -- the user's
             from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
@@ -1688,6 +1690,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
             quesiti_gate_log({"queries": 0, "source": "", "reason": "flag_off"})
         from . import case_frame        # v79.17.1 (item 6): the frame's verified rito, read by the family gate
         analysis["frame_rito"] = case_frame.verified_rito(frame) if frame else ""
+        # v79.18.2 (item 5): the frame's pretesa article -- an area the matter gate keeps (demoted) beside the case's
+        analysis["frame_charge"] = (case_frame.charge_label(frame) if frame else "") or ""
         # v79.18.1 (C3): a penal pretesa adds the standing quesito «qualificazione alternativa del fatto» to the
         # questions searched (through the family gate as the others)
         if retrieval_module.question_retrieval_enabled() and analysis["frame_rito"] in case_frame.PENAL_RITI \
@@ -1760,6 +1764,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
         "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
         "family_gate": _jsonable(found.get("family_gate") or {}),           # v79.9 (C1, C2)
         "code_scope": _jsonable(found.get("code_scope") or {}),             # v79.12.1: the Capo-scope gate, every book
+        "matter_gate": _jsonable(found.get("matter_gate") or {}),           # v79.18.2 (item 5): the areas, the demoted
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
                   "rubrica": str((r.get("s") or {}).get("titolo_articolo") or "")}
@@ -1767,6 +1772,9 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
         "rendered": rendered, "answered": {}, "chosen": [], "angle": "", "changes": [], "answers": {},
         "timings": {"analysis_s": round(t1 - t0, 1), "retrieval_s": round(t2 - t1, 1),
                     "round1_stages": {k: v for k, v in round1_stages.items() if k.endswith("_s")},
+                    # v79.18.2 (item 4): each sub-stage's chat, embedding and graph calls (the replay names the outlier)
+                    "round1_counts": {k: v for k, v in round1_stages.items()
+                                      if k.endswith(("_llm", "_embed", "_graph"))},
                     "round1_llm": round1_stages.get("total_llm"),                   # v79.8 (A5)
                     "graded_round1": (found.get("grading") or {}).get("graded")},
         "grade_funnel": _jsonable(found.get("grade_funnel") or {})}
@@ -7865,6 +7873,7 @@ def fit_pretesa_quesiti(state: Dict[str, Any]) -> Tuple[str, List[str]]:
 
 
 TIER_SI, TIER_DIPENDE, TIER_UNVERIFIED = "si_verificato", "dipende_verificato", "non_verificato"   # v79.18.0 (A1)
+TIER_ALTERNATIVA = "alternativa"       # v79.18.2 (item 6): a «no» in the charge's Titolo / Capo, a riqualificazione candidate only
 
 
 def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -7894,7 +7903,7 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"applied": False, "asked": bool(fit.get("governs_asked")), "principale": [], "quesiti": {},
                            "context_only": [], "recalled": [], "enforced": enforced, "nonsubstantive_tagged": [],
                            "reasons": {}, "fit_si": [], "fit_dipende": [], "fit_non_verificato": [],
-                           "tiers": {}, "pretesa_article": ""}                       # v79.18.0 (A1): the tiers
+                           "tiers": {}, "pretesa_article": "", "alternative": []}    # v79.18.0 (A1): the tiers
     if out["asked"]:
         from . import case_frame               # v79.17.3 (item 3): the pretesa's own article
         held = case_frame.held(state)
@@ -7918,10 +7927,12 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
                 out["fit_dipende"].append(label)
             if not j.get("verified") and j.get("fit") in ("si", "dipende") and substantive:    # v79.18.0 (A1): the
                 out["fit_non_verificato"].append(label)      # unverified «si» / «dipende»: in the set, the lowest tier
+            if j.get("alternative") and verified_fit == "no":       # v79.18.2 (item 6): a «no» kept as the charge's
+                out["alternative"].append(label)                     # neighbour: the alternativa tier, never a line
             if own_key is not None and _key(_parse_label(label)) == own_key:    # v79.17.3 (item 3): the pretesa's
-                out["pretesa_article"] = label                                   # own article: fit not a verified
-                if verified_fit != "no" and j.get("has_elements", substantive):  # «no», and with elements
-                    add(label, "pretesa")
+                out["pretesa_article"] = label                                   # own article: in the set only with a
+                if verified_fit in ("si", "dipende") and j.get("has_elements", substantive):  # verified «si» /
+                    add(label, "pretesa")                            # «dipende» (v79.18.2, item 3: never on «≠ no»)
             if verified_fit not in ("si", "dipende"):
                 continue
             if not isinstance(j.get("governs"), list):      # the verdict said nothing of it: neither set
@@ -7954,6 +7965,8 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
         labels = list(dict.fromkeys(str(j.get("article") or "") for j in judgments if str(j.get("article") or "") in reasons))
         out["principale"] = sorted(labels, key=lambda x: order.get(tier_of.get(x, TIER_UNVERIFIED), 2))
         out["tiers"] = {label: tier_of.get(label, TIER_UNVERIFIED) for label in out["principale"]}
+        out["alternative"] = [x for x in dict.fromkeys(out["alternative"]) if x not in out["principale"]]
+        out["tiers"].update({x: TIER_ALTERNATIVA for x in out["alternative"]})     # v79.18.2 (item 6)
         out["reasons"] = {label: reasons[label] for label in out["principale"]}
         out["context_only"] = [x for x in out["context_only"] if x not in out["principale"]]
         out["applied"] = bool(out["principale"])
@@ -7962,6 +7975,7 @@ def binding_pretesa(state: Dict[str, Any]) -> Dict[str, Any]:
     counters["binding_pretesa_excluded"] = list(out["context_only"]) if out["applied"] else []
     counters["binding_set_size"] = len(out["principale"])                      # v79.17.2 (item 1)
     counters["binding_set_unverified"] = sum(1 for x in out["tiers"].values() if x == TIER_UNVERIFIED)   # v79.18.0 (A1)
+    counters["binding_set_alternative"] = len(out["alternative"])                                      # v79.18.2 (item 6)
     counters["binding_empty_honesty"] = int(enforced and not out["principale"])
     _log("binding_pretesa", out)
     return out
@@ -8089,6 +8103,9 @@ def quesiti_counters(state: Dict[str, Any]) -> None:
                                                  if x in records and not (records.get(x) or {}).get("dropped")])
     counters["family_rito_dropped"] = len((state.get("family_gate") or {}).get("rito_dropped") or [])   # v79.17.1
     counters["retrieval_quesiti_standing"] = int(bool((state.get("analysis") or {}).get("quesiti_standing")))   # v79.18.1 (C3)
+    mg = state.get("matter_gate") or {}                        # v79.18.2 (item 5): the areas kept, the rows demoted
+    counters["topic_filter_areas"] = len(mg.get("areas") or mg.get("matters") or [])
+    counters["topic_filter_demoted"] = len(mg.get("demoted") or [])
     counters["qa_questions_detected"] = len(asked_questions(state))
 
 
@@ -8244,7 +8261,15 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     # v79.17.2 (item 1): the recall runs later, on the records as decomposed (pretesa_recall_step): here the named and
     # the charged articles have no requisites yet, so nothing could tell a substantive article from a bare one
     protected = fit_protected(state, posture)
-    done = applicability.effects(result, protected)
+    # v79.18.2 (item 6): a «no» never removes an article of the same Titolo / Capo of the code as the charge or the
+    # pretesa's article: kept as an alternative candidate (the strategy's riqualificazione line, never the principale)
+    anchors = list(dict.fromkeys([case_frame.charge_label(case_frame.held(state)) if case_frame.held(state) else ""]
+                                 + fit_charged(state, posture)))
+    anchors = [a for a in anchors if a]
+    from . import topic_groups as _tg
+    unit_of = lambda label: next((u for u in (_tg.same_code_unit(_parse_label(label), _parse_label(a)) for a in anchors)   # noqa: E731
+                                  if u), "")
+    done = applicability.effects(result, protected, alternative=unit_of if anchors else None)
     known = [f["id"] for f in facts]
     sig = applicability.facts_signature(facts)
     removed: set = set()
@@ -8281,6 +8306,7 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     texts = {n["article"]: n["text"] for n in norms}
     state["applicability"] = {
         "prompt_hash": result.get("prompt_hash"), "removed": done["removed"], "kept_named": done["kept_named"],
+        "kept_alternative": done.get("kept_alternative") or [],        # v79.18.2 (item 6)
         "open": done["open"], "texts": {e["article"]: texts.get(e["article"], "") for e in done["open"]},
         "facts": known, "protected": protected, "charged": fit_charged(state, posture), "facts_sig": sig,
         "timing": result.get("timing") or {},
@@ -8288,7 +8314,8 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
                                              "perche", "condizione", "ambito", "cita_norma", "cita_fatti",
                                              "governs",                    # v79.17.0 (item 3): what the norm decides
                                              "governs_recalled",           # v79.17.1 (item 9): by the recall
-                                             "substantive")}               # v79.17.2 (item 1): may be in the set
+                                             "substantive",                # v79.17.2 (item 1): may be in the set
+                                             "alternative")}               # v79.18.2 (item 6): the shared unit
                       for r in result.get("judgments") or []        # v79.16.1 (item 3): the ids, for the analysis
                       if r],
         "governs_asked": bool(result.get("governs_asked")), "quesiti": list(quesiti_list),       # v79.17.0 (item 3)
@@ -8303,6 +8330,7 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     counters["fit_removed"] = len(removed)          # v79.14.2 (A): the brief's name for it
     counters["fit_kept_named"] = len(done["kept_named"])
     counters["fit_protected_kept"] = len(done["kept_named"])     # v79.15.0 (item 3): a verified «no» on a protected norm
+    counters["fit_no_kept_alternative"] = len(done.get("kept_alternative") or [])     # v79.18.2 (item 6)
     # a judgment rejected for unquoted content never has an effect (must be 0: verify never passes one)
     counters["fit_added_content_in_effects"] = sum(1 for part in done.values() for e in part if e.get("added_content"))
     counters["fit_seconds"] = round(time.time() - started, 3)     # the whole step: inputs, judgment, effects
@@ -8652,8 +8680,10 @@ RANKED_TOP = 10          # v79 (D1, D2): the retrieval step's top-ranked article
 
 
 def _rank_of(row: Dict[str, Any], position: int) -> tuple:
+    """(demoted, fused rank, position): v79.18.2 (item 5) a row the matter gate kept demoted («_demoted») ranks after
+    every other row, whatever its fused rank."""
     fused = row.get("_fused_rank")
-    return (fused if isinstance(fused, (int, float)) else 10 ** 6, position)
+    return (1 if row.get("_demoted") else 0, fused if isinstance(fused, (int, float)) else 10 ** 6, position)
 
 
 def retrieval_top(rows: Sequence[Dict[str, Any]], n: int = RANKED_TOP) -> List[Dict[str, Any]]:
@@ -8661,7 +8691,7 @@ def retrieval_top(rows: Sequence[Dict[str, Any]], n: int = RANKED_TOP) -> List[D
     rank}] -- its fused rank, else its place in the list."""
     order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
     out: List[Dict[str, Any]] = []
-    for (fused, position), r in order:
+    for (_demoted, fused, position), r in order:
         label = _label(_key(r["_article"]))
         if label not in {x["article"] for x in out}:
             out.append({"article": label, "rank": fused if fused < 10 ** 6 else position + 1})

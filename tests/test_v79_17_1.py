@@ -318,7 +318,8 @@ def test_the_replay_row_carries_the_binding_and_the_recall():
              "binding_pretesa": {"principale": ["1382 c.c."], "recalled": ["1382 c.c."]}}
     row = R.measure("c", state, "a", 1.0)
     assert row["recall"] == {"status": "ok", "articles": ["1382 c.c."], "dropped": ["A0cc"], "principale": ["1382 c.c."],
-                             "recalled": ["1382 c.c."], "reasons": {}, "pretesa_article": ""}
+                             "recalled": ["1382 c.c."], "reasons": {}, "pretesa_article": "",
+                             "alternative": [], "tiers": {}}          # v79.18.2 (item 6)
     assert "| binding / recall | principale [1382 c.c.]; recall ok, articles [1382 c.c.], recalled [1382 c.c.], dropped [A0cc] |" \
         in R.case_table(row)
     assert R._row_values(row)["recall.status"] == "ok" and R.measure("c", {}, "a", 1.0)["recall"] == {}

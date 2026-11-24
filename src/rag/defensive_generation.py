@@ -3931,6 +3931,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from .doc_lookup import _fetch_doc_names
     from .nodes.retrieval import broaden_article_context
 
+    from . import stage_meter          # v79.18.2 (item 4): the sub-stages on the request's meter (a no-op without one)
+    stage_meter.mark("select:current")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     v2 = _select_articles_v2(session, driver, database, facts, request, analysis, store=store)
     _mark("select:fusion_baseline_search")
     keep, named = v2["keep"], v2["named"]
@@ -3994,6 +3996,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         return ruling_map, issue_refs
 
     _mark("select:fusion_branches")
+    stage_meter.mark("select:searches")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="fusion") as pool:
         baseline_job = early["baseline"] if early else pool.submit(_baseline_branch, driver, database, case, clean,
                                                                     session)
@@ -4020,6 +4023,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     voted, how = [], None
     vote_stats: Dict[tuple, Dict[str, int]] = {}
     _mark("select:fusion_vote_pool")
+    stage_meter.mark("select:vote")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     if vote_pool.enabled() and not hybrid:
         voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX,
                                            analysis, vote_stats), vote_pool.mode()
@@ -4079,6 +4083,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
                                     "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
     _mark("select:fusion_fetch")
+    stage_meter.mark("select:fetch")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     candidate_rows = _fetch_any(session, documents, selected, store)
     if hybrid and (map_channel or map_rulings):
         fetched = {row.get("_article") for row in candidate_rows}
@@ -4128,6 +4133,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in article_rows}
 
     _mark("select:fusion_broaden")
+    stage_meter.mark("select:crossref")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     crossref_seed_refs = set(named) | set(institutions_resolved)
     seed_rows = [r for r in article_rows if r.get("_article") in crossref_seed_refs]
     if seed_rows:
@@ -4152,6 +4158,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     # own candidates; reusing its "spotted" rows here (rather than calling
     # spotted_rows a second time on fusion's differently-built article_rows)
     # adds those articles at no extra LLM cost.
+    stage_meter.mark("select:spotted")      # v79.18.2 (item 4): the retrieval's sub-stages named (seconds, llm, embed, graph)
     spotted = v2.get("spotted") or []
     for row in spotted:
         key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))

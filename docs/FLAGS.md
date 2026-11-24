@@ -735,6 +735,36 @@ a remedy) only when its passage cites the line's article number or an element's 
 verb) to article X with no A-id of X is dropped (`prose_rule_without_id_dropped`). The strategy prompt changed (hash
 logged); the analysis, fit, frame and recall prompts are unchanged.
 
+## 5r. v79.18.2 (24 Nov 2026): the side's re-ask; the frame-named article's set entry; the retrieval's sub-stages; the matter gate demotes; the «alternativa» tier
+
+No new flag. Item 1 the risk thresholds are data by side (`data/strategy_step.json` «risk»: misura provato | aperti,
+favorevole_min, sfavorevole_max; `strategy_step.risk_word`). Item 2 `strategy_step.side_of`: the strategy's side is the
+analysis step's from the verified frame; with the frame's ruolo unverified it is the one the pretesa's tipo implies
+(data «side_by_tipo»: accusa / opposizione -> difesa, domanda / ricorso / impugnazione -> attore), logged as
+`side_source`; a reply whose every linea is rejected for the side's rules («contestare» on a non-open element,
+«fondare» on a non-provato one: `_side_mismatch`) is re-asked once with the side stated explicitly (`side_statement`,
+data «reask_side» / «side_rules», the re-ask's `{lato}` line; `strategy_side_reasked`). Item 3
+`interactive_flow.binding_pretesa`: the frame-named article enters the set with the «pretesa» reason only on a verified
+«si» / «dipende» (never on «≠ no»; an unverified verdict leaves it to the unverified tier, no verdict leaves it out).
+Item 4 the fusion's sub-steps are marked on round 1's meter (`defensive_generation._select_articles_fusion`:
+select:current, select:searches -- the baseline / distill / frame searches, their embedding and graph calls --,
+select:vote, select:fetch, select:crossref, select:spotted); `state["timings"]["round1_counts"]` keeps each sub-stage's
+llm / embed / graph counts beside `round1_stages`; the replay row (`replay_cases.retrieval_stages`) names the slowest
+sub-stages with their calls («retrieval stages (s)»). Item 5 `topic_groups.matter_gate` demotes, never drops, once the
+case spans more than one area: the areas are the case's matters plus those the frame's pretesa article touches
+(`analysis["frame_charge"]`, passed as `touched`) or a quesito's rows touch (`_quesito`; a row only a quesito brought
+opens a further area instead of a case matter); in each further area the top `MATTER_AREA_TOP_K` (3) hits by retrieval
+rank stay tagged `_demoted` and rank after every other row (`interactive_flow._rank_of`: the grade cap and the ranked
+list), the rest go as before (`state["matter_gate"]`: areas, demoted; counters `topic_filter_areas`,
+`topic_filter_demoted`). Item 6 a verified «no» never removes an article of the same Titolo / Capo of the code as the
+charge or the pretesa's article (`topic_groups.same_code_unit`: `CODE_UNITS` and the contracts' `capo_of`;
+`applicability.effects(..., alternative=)`, `kept_alternative`, the judgment marked `alternative`, `fit_no_kept_alternative`):
+the binding lists it as `alternative` with the tier «alternativa» (`TIER_ALTERNATIVA`, `binding_set_alternative`), never in
+the set's `principale`; the strategy input carries it (`alternative: True`, labels.alternativa) and admits a
+«riqualificare» linea on it only (`_verify_line`), counted among `alternative_articles` for C3, and never the principale
+whatever its forza (`finish`, `strategy_alternativa_demoted`). The strategy prompt changed (hash logged); the analysis,
+fit, frame and recall prompts are unchanged.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

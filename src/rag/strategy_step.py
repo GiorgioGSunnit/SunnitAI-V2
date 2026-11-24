@@ -62,12 +62,16 @@ COUNTERS = ("strategy_calls", "strategy_reasked", "strategy_lines", "strategy_ra
             # v79.18.1 (C3, C4, C5): no «riqualificare» linea for a penal defence with another set article; an
             # obiezione whose risposta rests on an element whose esito does not fit the side; a passo that is no
             # concrete fact to acquire
-            "strategy_riqualificazione_missing", "strategy_objection_mismatch", "strategy_passi_not_concrete")
+            "strategy_riqualificazione_missing", "strategy_objection_mismatch", "strategy_passi_not_concrete",
+            # v79.18.2 (item 2): every proposed line rejected for the side's rules -- the re-ask states the side; (item
+            # 6) a riqualificazione line on an «alternativa» article moved below the first set line (never principale)
+            "strategy_side_reasked", "strategy_alternativa_demoted")
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITO_RANK = {PROVATO: 3, CONTESTATO: 2, DA_PROVARE: 1, ESCLUSO: 0}
 OPEN = (CONTESTATO, DA_PROVARE)
 SIDE_CLAIMANT, SIDE_DEFENCE, SIDE_NEUTRAL = "attore", "difesa", "neutro"
+TIER_ALTERNATIVA = "alternativa"         # v79.18.2 (item 6): a «no» in the pretesa's Titolo / Capo -- riqualificare only
 FAVOREVOLE, INCERTO, SFAVOREVOLE = "favorevole", "incerto", "sfavorevole"
 PRINCIPALE, SUBORDINATA = "principale", "subordinata"
 _S_RE = re.compile(r"^S\d+$")
@@ -150,12 +154,14 @@ def state_input(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> Op
     norms = [n for n in state.get("analysis_norms") or [] if isinstance(n, dict) and n.get("article")]
     tiers = dict(binding.get("tiers") or {})
     in_set = [str(x) for x in binding.get("principale") or []]
+    alternative = [str(x) for x in binding.get("alternative") or []]        # v79.18.2 (item 6): riqualificazione only
     labels = list(in_set)
     for kind in A.LINE_KINDS:
         x = a.get(kind)
         if x and x.get("articolo") and x.get("stato") == A.VERIFIED and not any(
                 A.same_article(x["articolo"], y) for y in labels):
             labels.append(str(x["articolo"]))
+    labels += [x for x in alternative if not any(A.same_article(x, y) for y in labels)]     # v79.18.2 (item 6)
     esiti = a.get("elementi") if isinstance(a.get("elementi"), dict) else {}
     articles = []
     for label in labels:
@@ -177,11 +183,12 @@ def state_input(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> Op
         if not elements:
             continue
         label_in_set = any(A.same_article(label, y) for y in in_set)
+        is_alt = any(A.same_article(label, y) for y in alternative) and not label_in_set
         articles.append({"article": str(n["article"]), "token": _ap().article_token(n["article"]),
                          "rubrica": _flat(n.get("rubrica")), "tier": tiers.get(label) or tiers.get(n["article"])
-                         or ("linea" if not label_in_set else "non_verificato"),
-                         "in_set": label_in_set, "valutato": bool(got), "elements": elements})
-    if not articles:
+                         or (TIER_ALTERNATIVA if is_alt else "linea" if not label_in_set else "non_verificato"),
+                         "in_set": label_in_set, "alternative": is_alt, "valutato": bool(got), "elements": elements})
+    if not any(a for a in articles if not a.get("alternative")):      # nothing to strategise on alternatives alone
         return None
     maps = state.get("analysis_maps") if isinstance(state.get("analysis_maps"), dict) else {}
     sents = maps.get("sentences") or {}
@@ -194,8 +201,9 @@ def state_input(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> Op
     client = _flat(verified.get("client") or flow.client_of(state))
     mark_own(facts, frame, client)                      # v79.18.1 (C1): the client's own facts
     quesiti = flow.fit_pretesa_quesiti(state)[1] if held else [str(q) for q in flow.asked_questions(state)]
+    side, side_source = side_of(a.get("side"), frame)           # v79.18.2 (item 2): the pretesa's tipo when unverified
     return {"pretesa": _flat(verified.get("pretesa_line") or (case_frame.pretesa_text(held) if held else "")),
-            "client": client, "side": a.get("side") or SIDE_NEUTRAL,
+            "client": client, "side": side, "side_source": side_source,
             "charge": _flat(a.get("frame_charge") or binding.get("pretesa_article")),
             "articles": articles, "facts": facts,
             "allegations": allegations(facts, frame, client),
@@ -205,6 +213,23 @@ def state_input(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> Op
                       for k in A.LINE_KINDS if a.get(k)],
             "honesty": _flat(a.get("honesty")), "rulings": [],
             "penal": bool(A.penal_frame(frame)), "rito": A.frame_rito(frame)}       # v79.18.1 (C3)
+
+
+def side_of(side: Any, frame: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    """v79.18.2 (item 2): (the strategy's side, its source) -- the analysis step's side when the verified frame gave one
+    («frame»); else, the frame's ruolo unverified, the side the pretesa's tipo implies (data «side_by_tipo»: accusa /
+    opposizione -> difesa, domanda / ricorso / impugnazione -> attore; «pretesa_tipo:<tipo>»); else neutro («»)."""
+    got = str(side or SIDE_NEUTRAL)
+    if got in (SIDE_CLAIMANT, SIDE_DEFENCE):
+        return got, "frame"
+    f = frame if isinstance(frame, dict) else {}
+    from . import case_frame
+    pretesa = f.get(case_frame.PRETESA_FIELD) if isinstance(f.get(case_frame.PRETESA_FIELD), dict) else {}
+    tipo = _flat(pretesa.get("tipo")).lower()
+    by_tipo = config().get("side_by_tipo") or {}
+    if tipo and str(by_tipo.get(tipo) or "") in (SIDE_CLAIMANT, SIDE_DEFENCE):
+        return str(by_tipo[tipo]), f"pretesa_tipo:{tipo}"
+    return SIDE_NEUTRAL, ""
 
 
 def mark_own(facts: List[Dict[str, Any]], frame: Dict[str, Any], client: str) -> None:
@@ -270,6 +295,8 @@ def _article_block(art: Dict[str, Any], sents: Dict[str, str]) -> List[str]:
     labels = config().get("labels") or {}
     head = f"- A{art['token']}: art. {art['article']}" + (f" ({art['rubrica']})" if art.get("rubrica") else "") \
         + f" [{str(art.get('tier') or '').replace('_', ' ')}]"
+    if art.get("alternative"):          # v79.18.2 (item 6): a riqualificazione candidate only
+        head += f" — {labels.get('alternativa') or 'solo «riqualificare»'}"
     out = [head, f"  {labels.get('elements') or 'elementi'}:"]
     if not art.get("valutato"):
         out.append(f"  ({labels.get('unassessed') or 'esiti non valutati'})")
@@ -317,13 +344,31 @@ def build_messages(inp: Dict[str, Any]) -> List[Any]:
 
 def allowed_text(inp: Dict[str, Any]) -> str:
     rows = []
+    labels = config().get("labels") or {}
     for art in inp.get("articles") or []:
         ids = ", ".join(f"{e['eid']} ({e['esito']})" for e in art.get("elements") or [])
-        rows.append(f"- A{art['token']} (art. {art['article']}): {ids}")
+        alt = f" — {labels.get('alternativa') or 'solo «riqualificare»'}" if art.get("alternative") else ""
+        rows.append(f"- A{art['token']} (art. {art['article']}){alt}: {ids}")
     return "\n".join(rows) or f"- {(config().get('labels') or {}).get('none') or '(nessuno)'}"
 
 
-def reask_messages(messages: List[Any], reply: str, reasons: Sequence[str], inp: Dict[str, Any]) -> List[Any]:
+def side_statement(inp: Dict[str, Any]) -> str:
+    """v79.18.2 (item 2): the re-ask's line naming the client's side and its rules (data «reask_side», «side_rules»)."""
+    side = inp.get("side") or SIDE_NEUTRAL
+    rules = config().get("side_rules") or {}
+    line = str(config().get("reask_side") or "PARTE E LATO: {client} — {side}. {regola}")
+    return line.format(client=inp.get("client") or (config().get("labels") or {}).get("none") or "(nessuno)",
+                       side=side, regola=str(rules.get(side) or rules.get(SIDE_NEUTRAL) or ""))
+
+
+def _side_mismatch(why: str) -> bool:
+    """v79.18.2 (item 2): the rejection is the side's -- «contestare» on a non-open element or «fondare» on a non-provato
+    one (the model argued the other side's case)."""
+    return "«contestare» su" in str(why or "") or "«fondare» su" in str(why or "")
+
+
+def reask_messages(messages: List[Any], reply: str, reasons: Sequence[str], inp: Dict[str, Any],
+                   side_mismatch: bool = False) -> List[Any]:
     from langchain_core.messages import AIMessage, HumanMessage
     out = []
     for line in config().get("reask") or []:
@@ -332,6 +377,10 @@ def reask_messages(messages: List[Any], reply: str, reasons: Sequence[str], inp:
             if others:
                 out.append(f"{(config().get('labels') or {}).get('penal_defence') or 'DIFESA PENALE'}: "
                            + ", ".join(f"art. {x}" for x in others))
+            continue
+        if "{lato}" in line:                    # v79.18.2 (item 2): the side stated when every line missed it
+            if side_mismatch:
+                out.append(side_statement(inp))
             continue
         out.append(line.replace("{reasons}", "\n".join(f"- {r}" for r in reasons)).replace("{allowed}", allowed_text(inp)))
     return list(messages) + [AIMessage(content=str(reply or "")), HumanMessage(content="\n".join(out))]
@@ -345,7 +394,8 @@ def penal_defence(inp: Dict[str, Any]) -> bool:
 def alternative_articles(inp: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.18.1 (C3): the set's articles other than the pretesa's (the charge) -- a riqualificazione's candidates."""
     charge = inp.get("charge") or ""
-    return [a for a in inp.get("articles") or [] if a.get("in_set", True) and not (charge and _as().same_article(a["article"], charge))]
+    return [a for a in inp.get("articles") or [] if (a.get("in_set", True) or a.get("alternative"))
+            and not (charge and _as().same_article(a["article"], charge))]
 
 
 # --- the call ---------------------------------------------------------------------------------------------------------
@@ -515,6 +565,9 @@ def _verify_line(raw: Any, n: int, inp: Dict[str, Any], counters: Dict[str, Any]
     tipo = _flat(raw.get("tipo")).lower()
     if tipo not in (config().get("tipi") or []):
         return None, f"linea {n}: tipo «{tipo or '(vuoto)'}» non ammesso: {' | '.join(config().get('tipi') or [])}"
+    if art.get("alternative") and tipo != "riqualificare":      # v79.18.2 (item 6)
+        return None, (f"linea {n}: art. {art['article']} è un'alternativa (fit «no» nello stesso titolo/capo della "
+                      f"pretesa): ammette solo «riqualificare»")
     if tipo == "contestare" and e["esito"] not in OPEN:
         return None, (f"linea {n}: «contestare» su {e['eid']} con esito {e['esito']}: ammesso solo su un elemento "
                       f"contestato o da_provare")
@@ -538,7 +591,8 @@ def _verify_line(raw: Any, n: int, inp: Dict[str, Any], counters: Dict[str, Any]
     return {"articolo": art["article"], "token": art["token"], "eid": e["eid"], "elemento": e["testo"],
             "esito": e["esito"], "tipo": tipo, "rapporto": rapporto, "rapporto_modello": rapporto,
             "perche_prima": _flat(raw.get("perche_prima")), "cita_fatti": sids, "cita_pronunce": gids,
-            "condizione": condizione, "obiezione": obiezione, "tier": art.get("tier"), "reasons": [why_ob] if why_ob else []}, ""
+            "condizione": condizione, "obiezione": obiezione, "tier": art.get("tier"),
+            "alternative": bool(art.get("alternative")), "reasons": [why_ob] if why_ob else []}, ""
 
 
 def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
@@ -562,6 +616,8 @@ def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
         linee.append(line)
     if not raw_lines:
         reasons.append("«linee» mancante o vuota")
+    # v79.18.2 (item 2): every proposed line rejected for the side's rules -- the re-ask states the side explicitly
+    side_mismatch = bool(raw_lines) and not linee and all(_side_mismatch(r["why"]) for r in rejected)
     lo = int(config().get("lines_min") or 2)
     if len(linee) < lo:
         reasons.append(f"servono almeno {lo} linee verificate (ne restano {len(linee)})")
@@ -574,7 +630,7 @@ def verify(reply: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             if why:
                 reasons.append(why)
     return {"linee": linee[:int(config().get("lines_max") or 3)], "rejected": rejected, "reasons": reasons,
-            "raw": reply, "counters": counters}
+            "raw": reply, "counters": counters, "side_mismatch": side_mismatch}
 
 
 def riqualificazione_of(linee: Sequence[Dict[str, Any]], inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -790,6 +846,11 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             x["obiezione"]["senza_risposta"] = True
     model_order = [f"{x['articolo']} {x['eid']}" for x in linee]
     ranked, reordered = rank(linee)
+    if ranked and ranked[0].get("alternative") and any(not x.get("alternative") for x in ranked):
+        first = next(i for i, x in enumerate(ranked) if not x.get("alternative"))   # v79.18.2 (item 6): never the
+        ranked.insert(0, ranked.pop(first))                                          # principale, whatever its forza
+        counters["strategy_alternativa_demoted"] += 1
+        reordered = True
     counters["strategy_rank_reordered"] = int(reordered)
     counters["strategy_lines"] = len(ranked)
     for i, x in enumerate(ranked):
@@ -813,6 +874,8 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
         if hit is None:
             counters["strategy_riqualificazione_missing"] = 1
     return {"linee": ranked, "principale": principale, "side": inp.get("side") or SIDE_NEUTRAL,
+            "side_source": inp.get("side_source") or "",                                            # v79.18.2 (item 2)
+            "alternative": [a["article"] for a in inp.get("articles") or [] if a.get("alternative")],   # v79.18.2 (item 6)
             "riqualificazione": riq,
             "speakers": {f["id"]: f["said_by"] for f in inp.get("facts") or [] if f.get("said_by")},   # v79.18.1 (C7)
             "reordered": reordered, "model_order": model_order,
@@ -864,15 +927,20 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
             reasons = list(checked["reasons"])
             rejected = [dict(r, attempt=1) for r in checked["rejected"]]
             if checked["reasons"]:
-                second = call_once(reask_messages(messages, first["reply"], checked["reasons"], inp), call,
-                                   deadline - (time.time() - t0))
+                side_mismatch = bool(checked.get("side_mismatch"))
+                second = call_once(reask_messages(messages, first["reply"], checked["reasons"], inp, side_mismatch),
+                                   call, deadline - (time.time() - t0))
                 calls.append({"attempt": 2, "status": second["status"], "seconds": second["seconds"],
                               "error": second["error"]})
                 counters["strategy_reasked"] = 1
+                counters["strategy_side_reasked"] = int(side_mismatch)       # v79.18.2 (item 2)
+                if side_mismatch:
+                    reasons.append(side_statement(inp))                      # logged with the re-ask's reasons
                 if second["status"] == OK:
                     again = verify(second["data"], inp)
                     for k in ("strategy_line_rejected", "strategy_bad_id"):     # the first reply's too
                         again["counters"][k] += checked["counters"][k]
+                    again["counters"]["strategy_side_reasked"] = 0              # counted above, once
                     rejected += [dict(r, attempt=2) for r in again["rejected"]]
                     reasons += [r for r in again["reasons"] if r not in reasons]
                     checked = merge(checked, again)
@@ -897,6 +965,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
               "rejected": rejected}
     _log("strategy_step", {"prompt_hash": result["prompt_hash"], "status": status, "error": error, "seconds": seconds,
                            "calls": calls, "counters": counters, "side": inp.get("side") or SIDE_NEUTRAL,
+                           "side_source": inp.get("side_source") or "",                      # v79.18.2 (item 2)
+                           "alternative": [a["article"] for a in inp.get("articles") or [] if a.get("alternative")],
                            "set": [a["article"] for a in inp.get("articles") or []],
                            "rulings": [r["id"] for r in inp.get("rulings") or []],
                            "allegations": list(inp.get("allegations") or []),
@@ -950,6 +1020,8 @@ def replay_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "contro_difesa": [{"sid": c["allegazione"], "answered": not c["senza_risposta"]}
                               for c in a.get("contro_difesa") or []],
             "riqualificazione": a.get("riqualificazione"),                                  # v79.18.1 (C3)
+            "side": a.get("side") or "", "side_source": a.get("side_source") or "",         # v79.18.2 (item 2)
+            "alternative": list(a.get("alternative") or []),                                # v79.18.2 (item 6)
             "counters": dict(result.get("counters") or {}), "seconds": result.get("seconds", 0.0),
             "prompt_hash": result.get("prompt_hash") or prompt_hash(), "risk": risk_word(result)}
 

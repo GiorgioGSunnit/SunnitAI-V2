@@ -435,30 +435,63 @@ def keyword_hit(row: Dict[str, Any]) -> bool:
     return bool(want) and not want <= _stems(_rubrica(row))
 
 
+MATTER_AREA_TOP_K = 3       # v79.18.2 (item 5): the hits kept, demoted, in each further area the pretesa or a quesito touches
+
+
 def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: Optional[Dict[str, Any]] = None,
-                every: bool = False) -> List[Dict[str, Any]]:
+                every: bool = False, touched: Sequence[str] = (), top_k: int = MATTER_AREA_TOP_K
+                ) -> List[Dict[str, Any]]:
     """v79.6 (item 6): the rows without the keyword hits (keyword_hit) whose matter is none of the case's -- the case's
     matters are those of the rows reached by two signals or more, of the first read's whole-name hits and of the
     articles kept by name or rule (keep: labels). With no matter known, nothing is dropped. log["dropped"]: each with
     its matter. v79.8 (A1): every -- any retrieval hit outside the case's matters goes (a vector hit as a keyword one:
-    another code's institution, another Libro's or Titolo's article), before the applicability grading."""
+    another code's institution, another Libro's or Titolo's article), before the applicability grading.
+    v79.18.2 (item 5): the gate demotes, never drops, once the case spans more than one area -- the areas are the case's
+    matters plus every matter the frame's pretesa touches (touched: its article's label) or any quesito touches (the
+    rows the questions' search brought, «_quesito»); in each further area the top_k hits by retrieval rank stay, tagged
+    «_demoted» with the area (ranked after every other row: interactive_flow._rank_of), the rest of that area and every
+    hit outside the areas go as before. log["areas"] (every area kept), log["demoted"] (each kept row with its area)."""
     keep = set(keep or ())
     matters = set()
     for r in rows or []:
         ref = _ref(r)
         if not ref:
             continue
-        if r.get("_multi_signal") or _label(ref) in keep or (r.get("_first_read") and not keyword_hit(r)):
+        # v79.18.2 (item 5): a row only a quesito brought (kept by label) opens a further area, not a case matter
+        by_quesito_only = bool(r.get("_quesito")) and not r.get("_multi_signal") and not (r.get("_first_read")
+                                                                                            and not keyword_hit(r))
+        if r.get("_multi_signal") or (_label(ref) in keep and not by_quesito_only) or (r.get("_first_read")
+                                                                                        and not keyword_hit(r)):
             matters.add(matter_of(ref))
     matters.discard("")
     if any(m.startswith("c.p. ") for m in matters):        # the general part serves every c.p. matter
         matters.add("c.p. I parte generale")
+    further: set = set()                                    # v79.18.2 (item 5): the areas the pretesa / quesiti touch
+    if matters:
+        for label in touched or ():
+            ref_t = _ref_of_label(label)
+            m_t = matter_of(ref_t) if ref_t else ""
+            if m_t and m_t not in matters:
+                further.add(m_t)
+        for r in rows or []:
+            ref = _ref(r)
+            m_q = matter_of(ref) if ref and r.get("_quesito") else ""
+            if m_q and m_q not in matters:
+                further.add(m_q)
+    kept_in: Dict[str, int] = {m: 0 for m in further}
     out = []
+    demoted: List[Dict[str, Any]] = []
     for r in rows or []:
         ref = _ref(r)
         m = matter_of(ref) if ref else ""
         if matters and ref and (every or keyword_hit(r)) and m and m not in matters and _label(ref) not in keep \
                 and not r.get("_multi_signal") and not (r.get("_first_read") and not keyword_hit(r)):
+            if m in further and kept_in.get(m, 0) < max(0, int(top_k or 0)):     # v79.18.2 (item 5): kept, demoted
+                kept_in[m] = kept_in.get(m, 0) + 1
+                r["_demoted"] = m
+                demoted.append({"article": _label(ref), "area": m})
+                out.append(r)
+                continue
             if log is not None:
                 log.setdefault("dropped", []).append({"article": _label(ref), "matter": m,
                                                       "institution": str(r.get("_first_read") or ""),
@@ -467,7 +500,32 @@ def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: O
         out.append(r)
     if log is not None:
         log["matters"] = sorted(matters)
+        log["areas"] = sorted(matters | further)
+        log["demoted"] = demoted
     return out
+
+
+def _ref_of_label(label: Any) -> Optional[Tuple[str, str]]:
+    """«640 c.p.» -> ("640", "c.p."); None for an empty or unparsable label."""
+    m = re.match(r"\s*(\d+(?:-[a-z]+)?)\s+(.+?)\s*$", str(label or ""))
+    return (m.group(1), topic_step._code(m.group(2))) if m else None
+
+
+def same_code_unit(a: Sequence[str], b: Sequence[str]) -> str:
+    """v79.18.2 (item 6): the Titolo / Capo of the code both articles belong to («c.p. Libro II, Titolo XII, Capo I – …»,
+    or the contracts' Capo of Libro IV Titolo III c.c.: capo_of), "" when they share none -- a general-part article, another
+    code, or two different units."""
+    if not a or not b or len(a) != 2 or len(b) != 2:
+        return ""
+    if topic_step._code(a[1]) != topic_step._code(b[1]):
+        return ""
+    ua, ub = code_unit(a), code_unit(b)
+    if ua and ua == ub:
+        return ua
+    ca, cb = capo_of((str(a[0]), topic_step._code(a[1]))), capo_of((str(b[0]), topic_step._code(b[1])))
+    if ca and ca == cb:
+        return f"c.c. Libro IV, Titolo III, Capo {ca[0]} – {ca[1]}"
+    return ""
 
 
 # --- v79.12.1: the Capo-scope gate on every book of the codes ------------------------------------------------------------

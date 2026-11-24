@@ -76,22 +76,30 @@ def test_the_set_is_the_union_of_the_tags_the_recall_and_the_fits_verified_si(mo
 
 def test_the_pretesas_own_article_enters_the_set_unless_a_verified_no_or_no_element(monkeypatch):
     monkeypatch.setenv("CASE_FRAME", "true")
-    # unverified verdict, with elements: in, reason «pretesa»
+    # v79.18.2 (item 3): an unverified verdict on the pretesa's article is no «pretesa» reason -- the article stays in
+    # the set through the unverified tier alone (A1), never through «≠ no»
     state = _state([_j("1385 c.c.", verified=False, governs=None, substantive=True, has_elements=True),
                     _j("1454 c.c.", governs=["Q1"])], frame_article="1385 c.c.")
     b = flow.binding_pretesa(state)
-    assert b["pretesa_article"] == "1385 c.c." and b["reasons"]["1385 c.c."] == ["pretesa", "fit_non_verificato"]
+    assert b["pretesa_article"] == "1385 c.c." and b["reasons"]["1385 c.c."] == ["fit_non_verificato"]
     assert b["principale"] == ["1454 c.c.", "1385 c.c."]          # v79.18.0 (A1): the verified «si» before the unverified
+    # a verified «si» / «dipende» on it: the «pretesa» reason
+    state = _state([_j("1385 c.c.", governs=[], substantive=True, has_elements=True)], frame_article="1385 c.c.")
+    assert flow.binding_pretesa(state)["reasons"]["1385 c.c."] == ["pretesa", "fit_si"]
+    state = _state([_j("1385 c.c.", fit="dipende", governs=[], substantive=True, has_elements=True)], frame_article="1385 c.c.")
+    assert flow.binding_pretesa(state)["reasons"]["1385 c.c."] == ["pretesa", "fit_dipende"]
     # a verified «no»: out
     state = _state([_j("640 c.p.", fit="no", governs=[], has_elements=True), _j("590 c.p.", governs=["pretesa"])],
                    frame_article="640 c.p.")
     b = flow.binding_pretesa(state)
     assert b["principale"] == ["590 c.p."] and b["pretesa_article"] == "640 c.p." and "640 c.p." not in b["reasons"]
-    # no element: out (the has_elements flag, else the substantive one)
+    # no element: out (the has_elements flag, else the substantive one); unverified with elements: out too (item 3)
     state = _state([_j("645 c.p.c.", verified=False, governs=None, substantive=False, has_elements=False)], frame_article="645 c.p.c.")
     assert flow.binding_pretesa(state)["principale"] == []
     state = _state([_j("645 c.p.c.", verified=False, governs=None, substantive=False, has_elements=True)], frame_article="645 c.p.c.")
-    assert flow.binding_pretesa(state)["principale"] == ["645 c.p.c."]         # the brief's rule: elements + not «no»
+    assert flow.binding_pretesa(state)["principale"] == []
+    state = _state([_j("645 c.p.c.", governs=[], substantive=False, has_elements=True)], frame_article="645 c.p.c.")
+    assert flow.binding_pretesa(state)["principale"] == ["645 c.p.c."]         # verified «si» + elements
     # the frame off: no pretesa article read
     monkeypatch.setenv("CASE_FRAME", "false")
     state = _state([_j("1385 c.c.", verified=False, governs=None)], frame_article="1385 c.c.")

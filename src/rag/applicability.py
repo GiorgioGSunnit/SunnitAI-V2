@@ -1096,7 +1096,8 @@ FLOW_COUNTERS = ("fit_pretesa_recall", "fit_pretesa_recall_empty",              
                  "fit_skipped", "fit_calls", "fit_failed_calls", "fit_timeouts", "norms_removed_by_fit",
                  "fit_kept_named", "fit_added_content_in_effects", "fit_seconds",
                  "fit_no_verified", "fit_removed",                                 # v79.14.2 (A)
-                 "fit_unverified_ids", "fit_no_unverified_ids", "fit_protected_kept")   # v79.15.0 (item 3)
+                 "fit_unverified_ids", "fit_no_unverified_ids", "fit_protected_kept",   # v79.15.0 (item 3)
+                 "fit_no_kept_alternative")                                          # v79.18.2 (item 6)
 
 
 def _quoted(parts: Iterable[Any]) -> str:
@@ -1178,13 +1179,16 @@ def facts_input(sentences: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
             for s in sentences or [] if isinstance(s, dict) and s.get("id") and str(s.get("text") or "").strip()]
 
 
-def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[Dict[str, Any]]]:
+def effects(result: Dict[str, Any], protected: Iterable[str], alternative: Optional[Callable[[str], str]] = None
+            ) -> Dict[str, List[Dict[str, Any]]]:
     """What the verified judgments do: {"removed": the «no» of a norm no one protects, "kept_named": the «no» of a
-    norm the user names or the text charges (kept: the defence's contest), "open": the «dipende»}; each entry {article,
-    fit, perche, passage, comma, facts, condizione, ambito, touches}. An unverified judgment is in none."""
+    norm the user names or the text charges (kept: the defence's contest), "kept_alternative": the «no» of a norm in the
+    charge's or the pretesa's Titolo / Capo (v79.18.2, item 6: alternative(label) names the shared unit; kept as a
+    riqualificazione candidate, the judgment marked «alternative»), "open": the «dipende»}; each entry {article, fit,
+    perche, passage, comma, facts, condizione, ambito, touches}. An unverified judgment is in none."""
     es = _es()
     guard = {es.norm_label(x) for x in protected or []} | {" ".join(str(x).lower().split()) for x in protected or []}
-    out: Dict[str, List[Dict[str, Any]]] = {"removed": [], "kept_named": [], "open": []}
+    out: Dict[str, List[Dict[str, Any]]] = {"removed": [], "kept_named": [], "kept_alternative": [], "open": []}
     for rec in result.get("judgments") or []:
         if not rec or not rec.get("verified"):
             continue
@@ -1194,7 +1198,11 @@ def effects(result: Dict[str, Any], protected: Iterable[str]) -> Dict[str, List[
         label = str(rec.get("article") or "")
         if rec["fit"] == NO:
             named = es.norm_label(label) in guard or " ".join(label.lower().split()) in guard
-            out["kept_named" if named else "removed"].append(entry)
+            unit = "" if named or alternative is None else str(alternative(label) or "")
+            if unit:
+                rec["alternative"] = unit
+                entry["alternative"] = unit
+            out["kept_named" if named else ("kept_alternative" if unit else "removed")].append(entry)
         elif rec["fit"] == DIPENDE:
             out["open"].append(entry)
     return out
