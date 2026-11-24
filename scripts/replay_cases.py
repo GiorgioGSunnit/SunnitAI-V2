@@ -96,6 +96,7 @@ FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_unverified",)                   
 ANALYSIS_COUNTERS = ANALYSIS_COUNTERS + ("analysis_line_fallback_set", "analysis_degree_downgraded")   # v79.18.0 (A2, 11)
 # v79.18.2: item 2 the side re-ask, item 6 the alternativa tier (fit, binding, strategy), item 5 the matter gate's areas
 STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_side_reasked", "strategy_alternativa_demoted")
+STRATEGY_COUNTERS = STRATEGY_COUNTERS + ("strategy_risk_capped",)                                   # v79.18.3 (item 1)
 FIT_COUNTERS = FIT_COUNTERS + ("fit_no_kept_alternative",)
 FRAME_COUNTERS = FRAME_COUNTERS + ("binding_set_alternative",)
 RETRIEVAL_COUNTERS = RETRIEVAL_COUNTERS + ("topic_filter_areas", "topic_filter_demoted")
@@ -192,7 +193,8 @@ def strategy_fields(state: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     return {k: got.get(k) for k in ("status", "ranked", "reordered", "model_order", "final_order", "risk",
                                     "objections", "contro_difesa", "riqualificazione", "prompt_hash", "error",
-                                    "side", "side_source", "alternative") if k in got}      # v79.18.2 (items 2, 6)
+                                    "side", "side_source", "alternative",                   # v79.18.2 (items 2, 6)
+                                    "risk_why", "risk_capped") if k in got}                 # v79.18.3 (item 1)
 
 
 def retrieval_fields(state: Dict[str, Any], events: Dict[str, List[Any]]) -> Dict[str, Any]:

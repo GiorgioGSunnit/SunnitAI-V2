@@ -29,15 +29,17 @@ _spec.loader.exec_module(R)
 # --- item 1 ---------------------------------------------------------------------------------------------------------------
 
 def test_item1_the_risk_thresholds_are_data_by_side():
+    # v79.18.3: the rules are data (the full set of cases in test_v79_18_0.test_the_risk_thresholds_by_side_from_the_data)
     risk = S.config().get("risk") or {}
-    assert set(risk) >= {"attore", "difesa", "neutro"}
-    for side, cfg in risk.items():
-        assert cfg["misura"] in ("provato", "aperti") and 0.0 <= float(cfg["sfavorevole_max"]) <= float(cfg["favorevole_min"]) <= 1.0
-    # the word follows the data: the defence measures the open elements, the claimant the proven ones
+    assert set(risk) == {"attore", "difesa", "neutro", "cap"}
+    assert risk["attore"]["favorevole"] == {"esito": ["provato"], "provati_min": 2, "oppure_pronuncia": True}
+    assert risk["difesa"]["favorevole"] == {"esito": ["contestato"], "fatti_propri": True, "pronuncia": True}
+    assert risk["cap"] == {"tier_non_verificato": True, "elementi_min": 2}
+    assert "strategy_risk_capped" in S.COUNTERS and "strategy_risk_capped" in R.STRATEGY_COUNTERS
+    # the defence's own-fact flag travels with the forza
     inp = Z._inp(side="difesa")
-    line = {"articolo": "1385 c.c.", "eid": "A1385cc:E2", "cita_fatti": [], "cita_pronunce": []}
-    f = S.forza("1385 c.c.", "A1385cc:E2", inp, line)
-    assert S.risk_word({"analysis": {"linee": [{"forza": f}], "side": "difesa"}}) in ("favorevole", "incerto", "sfavorevole")
+    f = S.forza("1385 c.c.", "A1385cc:E2", inp, {"cita_fatti": ["S3"], "cita_pronunce": ["G2"]})
+    assert f["esito"] == "contestato" and f["pronuncia"] is True and isinstance(f["fatti_propri"], bool)
 
 
 # --- item 2 ---------------------------------------------------------------------------------------------------------------

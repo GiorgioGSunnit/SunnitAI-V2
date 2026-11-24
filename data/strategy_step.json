@@ -1,5 +1,5 @@
 {
-  "_doc": "v79.18.0 (B): the strategy as a verified step (src/rag/strategy_step.py, flag ANALYSIS_STEP, after the analysis step, in place of the retired objections call). One model call (thinking off, temperature 0, a JSON reply, as the fit and the analysis step), one re-ask, within deadline_s; max_tokens the reply's budget per call. Input, ids only and verbatim texts: the pretesa and the client's side, the governs-pretesa set with its tiers (si verificato > dipende verificato > non verificato; the verified lines' articles too), each article's schema elements with their verified esito and cited S-ids, the facts (S-ids, the record's stato and speaker), the counterparty's allegations (one contro_difesa entry each), the registry's rulings on those articles (G-ids as the registry numbers them, their verified passage), the quesiti. Output: linee (2-3: articolo, eid, tipo fondare | contestare | riqualificare | eccepire, rapporto principale | subordinata | alternativa | cumulativa, perche_prima, cita_fatti, cita_pronunce, obiezione {testo, risposta_cita_fatti | nessuna risposta nei fatti, cita_pronunce}), passi (the principale's da_provare / contestato elements, what would prove each), passi_immediati (prova e termini: the decadenza / prescrizione elements and their S-ids), contro_difesa (one per allegation: the line or fact that answers it, or «senza risposta»), verifiche_documentali (contract items the case leaves open). Verification by code: every id exists, a linea's articolo is in the set and its eid belongs to it; «contestare» only on a contestato / da_provare element, «fondare» only on a provato one (else rejected, re-asked once); forza computed from the tables by side (defence: contestato + da_provare on the line's article, more = stronger; claimant: the eid's esito first, then fewer further conditions in the same comma, then the provato count -- item 10: a remedy whose own element is da_provare never ranks above one whose element is provato); the ranking rule (a linea ranks above one with strictly greater forza only citing a G-id, else the code reorders by forza: strategy_rank_reordered, both orders logged; ties keep the model's order); an obiezione with no risposta_cita_fatti prints rendering.senza_risposta, never an invented answer. risk: §9's word from the principale's forza, by side -- misura «provato» (the share of provato elements) or «aperti» (contestato + da_provare), favorevole at favorevole_min or more, sfavorevole at sfavorevole_max or less, else incerto; an escluso element: sfavorevole for the pretesa's holder, favorevole for the defence. rendering: the code's labels (user-visible, docs/copy_review.md): §6 in the order passi immediati -> linee per forza (the table) -> risposta ai quesiti -> contro-difesa -> verifiche documentali; §7 the obiezioni with their verified answers (the cited facts as written, the rulings by reference); §10 the passi. prompt_system is joined with newlines, hashed (prompt_hash) and logged with every run. v79.18.1 (section C of 79.18.0, the penal defence review): C1 the defence's forza order -- (a) an element contestato by the client's own facts (a cited fact stated accertato or by the client), (b) an element da_provare where a ruling (a G-id the linea cites or its «condizione») sets a condition the facts do not show, (c) a bare da_provare; then the open count -- never «most da_provare». C2 a linea's «condizione»: a G-id attached to its eid (the jurisprudential condition), verified by id and article. C3 the penal defence must have a «riqualificare» linea on another article of the set, else (after one re-ask) the code prints rendering.riqualificazione_nessuna citing the set; C4 an obiezione's risposta declares the eids / G-ids it relies on («risposta_cita_elementi»): an eid whose esito does not fit the side (defence: contestato / da_provare / escluso; claimant: provato) is a mismatch -- re-asked once, then «senza risposta nei fatti narrati» (strategy_objection_mismatch); C5 a passo is a concrete fact to acquire (one of passi_words: referto, perizia, testimoni, …), never a restatement of the element (restatement_overlap of the element's words), else re-asked once and then the code's label (strategy_passi_not_concrete). v79.18.2: item 1 the risk thresholds are these data («risk», by side); item 2 the side -- the analysis step's from the verified frame, else the pretesa's tipo (side_by_tipo), and a reply whose every line is rejected for the side's rules («contestare» on a non-open element, «fondare» on a non-provato one) is re-asked with the side stated (reask_side, side_rules: strategy_side_reasked); item 6 an article the fit judged «no» in the same Titolo / Capo of the code as the charge or the pretesa's article enters the input as «alternativa» (labels.alternativa): a «riqualificare» line only, never the principale (strategy_alternativa_demoted).",
+  "_doc": "v79.18.0 (B): the strategy as a verified step (src/rag/strategy_step.py, flag ANALYSIS_STEP, after the analysis step, in place of the retired objections call). One model call (thinking off, temperature 0, a JSON reply, as the fit and the analysis step), one re-ask, within deadline_s; max_tokens the reply's budget per call. Input, ids only and verbatim texts: the pretesa and the client's side, the governs-pretesa set with its tiers (si verificato > dipende verificato > non verificato; the verified lines' articles too), each article's schema elements with their verified esito and cited S-ids, the facts (S-ids, the record's stato and speaker), the counterparty's allegations (one contro_difesa entry each), the registry's rulings on those articles (G-ids as the registry numbers them, their verified passage), the quesiti. Output: linee (2-3: articolo, eid, tipo fondare | contestare | riqualificare | eccepire, rapporto principale | subordinata | alternativa | cumulativa, perche_prima, cita_fatti, cita_pronunce, obiezione {testo, risposta_cita_fatti | nessuna risposta nei fatti, cita_pronunce}), passi (the principale's da_provare / contestato elements, what would prove each), passi_immediati (prova e termini: the decadenza / prescrizione elements and their S-ids), contro_difesa (one per allegation: the line or fact that answers it, or «senza risposta»), verifiche_documentali (contract items the case leaves open). Verification by code: every id exists, a linea's articolo is in the set and its eid belongs to it; «contestare» only on a contestato / da_provare element, «fondare» only on a provato one (else rejected, re-asked once); forza computed from the tables by side (defence: contestato + da_provare on the line's article, more = stronger; claimant: the eid's esito first, then fewer further conditions in the same comma, then the provato count -- item 10: a remedy whose own element is da_provare never ranks above one whose element is provato); the ranking rule (a linea ranks above one with strictly greater forza only citing a G-id, else the code reorders by forza: strategy_rank_reordered, both orders logged; ties keep the model's order); an obiezione with no risposta_cita_fatti prints rendering.senza_risposta, never an invented answer. risk (v79.18.3, item 1 of 79.18.2): §9's word from the principale, by side -- claimant: favorevole = the principale's element provato AND (provati_min provato elements on its article OR a G-cite on the line), sfavorevole = the principale's element da_provare / escluso, else incerto; defence: favorevole = the element contestato by the client's own facts AND a G-cite, sfavorevole = the charge's elements all provato and none contestato, else incerto; any side: a set from unverified tiers only or a one-element article caps the word at incerto (cap; strategy_risk_capped). rendering: the code's labels (user-visible, docs/copy_review.md): §6 in the order passi immediati -> linee per forza (the table) -> risposta ai quesiti -> contro-difesa -> verifiche documentali; §7 the obiezioni with their verified answers (the cited facts as written, the rulings by reference); §10 the passi. prompt_system is joined with newlines, hashed (prompt_hash) and logged with every run. v79.18.1 (section C of 79.18.0, the penal defence review): C1 the defence's forza order -- (a) an element contestato by the client's own facts (a cited fact stated accertato or by the client), (b) an element da_provare where a ruling (a G-id the linea cites or its «condizione») sets a condition the facts do not show, (c) a bare da_provare; then the open count -- never «most da_provare». C2 a linea's «condizione»: a G-id attached to its eid (the jurisprudential condition), verified by id and article. C3 the penal defence must have a «riqualificare» linea on another article of the set, else (after one re-ask) the code prints rendering.riqualificazione_nessuna citing the set; C4 an obiezione's risposta declares the eids / G-ids it relies on («risposta_cita_elementi»): an eid whose esito does not fit the side (defence: contestato / da_provare / escluso; claimant: provato) is a mismatch -- re-asked once, then «senza risposta nei fatti narrati» (strategy_objection_mismatch); C5 a passo is a concrete fact to acquire (one of passi_words: referto, perizia, testimoni, …), never a restatement of the element (restatement_overlap of the element's words), else re-asked once and then the code's label (strategy_passi_not_concrete). v79.18.2: item 1 the risk thresholds are these data («risk», by side); item 2 the side -- the analysis step's from the verified frame, else the pretesa's tipo (side_by_tipo), and a reply whose every line is rejected for the side's rules («contestare» on a non-open element, «fondare» on a non-provato one) is re-asked with the side stated (reask_side, side_rules: strategy_side_reasked); item 6 an article the fit judged «no» in the same Titolo / Capo of the code as the charge or the pretesa's article enters the input as «alternativa» (labels.alternativa): a «riqualificare» line only, never the principale (strategy_alternativa_demoted).",
   "deadline_s": 40,
   "max_tokens": 2500,
   "tipi": [
@@ -22,19 +22,50 @@
   ],
   "risk": {
     "attore": {
-      "misura": "provato",
-      "favorevole_min": 1.0,
-      "sfavorevole_max": 0.0
+      "favorevole": {
+        "esito": [
+          "provato"
+        ],
+        "provati_min": 2,
+        "oppure_pronuncia": true
+      },
+      "sfavorevole": {
+        "esito": [
+          "da_provare",
+          "escluso"
+        ]
+      }
     },
     "neutro": {
-      "misura": "provato",
-      "favorevole_min": 1.0,
-      "sfavorevole_max": 0.0
+      "favorevole": {
+        "esito": [
+          "provato"
+        ],
+        "provati_min": 2,
+        "oppure_pronuncia": true
+      },
+      "sfavorevole": {
+        "esito": [
+          "da_provare",
+          "escluso"
+        ]
+      }
     },
     "difesa": {
-      "misura": "aperti",
-      "favorevole_min": 1.0,
-      "sfavorevole_max": 0.0
+      "favorevole": {
+        "esito": [
+          "contestato"
+        ],
+        "fatti_propri": true,
+        "pronuncia": true
+      },
+      "sfavorevole": {
+        "tutti_provati": true
+      }
+    },
+    "cap": {
+      "tier_non_verificato": true,
+      "elementi_min": 2
     }
   },
   "labels": {

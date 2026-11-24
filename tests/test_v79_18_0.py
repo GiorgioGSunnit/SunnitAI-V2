@@ -282,12 +282,12 @@ def test_the_rendering_sections_one_to_ten_from_the_verified_strategy(monkeypatc
          "fonte": "strategia", "linea": "A1385cc:E1"},
         {"obiezione": "Bassi era legittimato a vendere", "risposta": "Senza risposta nei fatti narrati.", "fonte": "strategia",
          "linea": "A1385cc:E2"}]
-    # §9: the risk from the principale's forza by the data's thresholds (a claimant: the provato share)
-    assert S.risk_word(res) == "incerto"
+    # §9: the risk from the principale by the data's rules (v79.18.3: a claimant's provato element with a G-cite -> favorevole)
+    assert S.risk_word(res) == "favorevole" and res["analysis"]["risk"]["capped"] is False
     conclusions = A.conclusions_text({**v, "analysis": {**v["analysis"], "elementi": {"1385 c.c.": [
         {"elemento": "x", "esito": "provato"}]}, "linea_principale": {"articolo": "1385 c.c.", "stato": A.VERIFIED, "tesi": "t"}},
         "client": "Anna Corsi"}, risk=S.risk_word(res))
-    assert "**Rischio per Anna Corsi**: incerto." in conclusions
+    assert "**Rischio per Anna Corsi**: favorevole." in conclusions
     assert A.conclusions_text({**v, "client": "Anna Corsi"}, risk="incerto", lines=S.summary_lines(res, v)).splitlines()[0] == \
         "**Linea principale**: art. 1385 c.c. — «una parte dà all'altra, a titolo di caparra, una somma» risulta provato: " \
         "«Anna Corsi ha versato 15.000 euro a titolo di caparra»."
@@ -300,27 +300,46 @@ def test_the_rendering_sections_one_to_ten_from_the_verified_strategy(monkeypatc
     summary = S.replay_summary(res)
     assert summary["ranked"][0] == {"articolo": "1385 c.c.", "eid": "A1385cc:E1", "tipo": "fondare", "rapporto": "principale",
                                     "forza": "provato 1 / contestato 1 / da provare 1", "key": [3, 0, 1], "pronunce": ["G2"]}
-    assert summary["reordered"] is True and summary["risk"] == "incerto" and summary["prompt_hash"] == S.prompt_hash()
+    assert summary["reordered"] is True and summary["risk"] == "favorevole" and summary["prompt_hash"] == S.prompt_hash()
+    assert summary["risk_why"] == "elemento provato, con pronuncia" and summary["risk_capped"] is False
     assert summary["objections"] == [{"linea": "A1385cc:E1", "answered": True}, {"linea": "A1385cc:E2", "answered": False}]
 
 
 def test_the_risk_thresholds_by_side_from_the_data():
-    def res(side, esiti):
-        els = [_el(f"A1385cc:E{i}", f"e{i}", e, 1) for i, e in enumerate(esiti, 1)]
-        inp = {"side": side, "articles": [{"article": "1385 c.c.", "token": "1385cc", "tier": "si_verificato", "in_set": True,
-                                           "valutato": True, "elements": els}], "facts": []}
-        linea = dict(_linea("1385 c.c.", "A1385cc:E1", "fondare"), forza=S.forza("1385 c.c.", "A1385cc:E1", inp))
-        return {"status": S.OK, "analysis": {"linee": [linea], "side": side}}
+    # v79.18.3 (item 1 of 79.18.2): the rules of data «risk», by side
+    def res(side, esiti, cg=(), own=False, tier="si_verificato"):
+        els = [_el(f"A1385cc:E{i}", f"e{i}", e, 1, ["S2"] if (own and i == 1) else []) for i, e in enumerate(esiti, 1)]
+        inp = {"side": side, "articles": [{"article": "1385 c.c.", "token": "1385cc", "tier": tier, "in_set": True,
+                                           "valutato": True, "elements": els}],
+               "facts": [{"id": "S2", "text": "x", "own": own}]}
+        linea = dict(_linea("1385 c.c.", "A1385cc:E1", "fondare", cg=cg), forza=S.forza("1385 c.c.", "A1385cc:E1", inp,
+                                                                                      {"cita_pronunce": list(cg), "cita_fatti": []}))
+        return {"status": S.OK, "analysis": {"linee": [linea], "side": side, "set_non_verificato": tier == "non_verificato"}}
+    # claimant: provato + a second provato -> favorevole; provato + a G-cite -> favorevole; provato alone -> incerto
     assert S.risk_word(res("attore", ["provato", "provato"])) == "favorevole"
-    assert S.risk_word(res("attore", ["da_provare", "contestato"])) == "sfavorevole"
+    assert S.risk_word(res("attore", ["provato", "da_provare"], cg=["G2"])) == "favorevole"
     assert S.risk_word(res("attore", ["provato", "da_provare"])) == "incerto"
-    assert S.risk_word(res("attore", ["provato", "escluso"])) == "sfavorevole"
-    assert S.risk_word(res("difesa", ["da_provare", "contestato"])) == "favorevole"       # every element open
+    assert S.risk_word(res("attore", ["contestato", "provato"])) == "incerto"
+    assert S.risk_word(res("attore", ["da_provare", "contestato"])) == "sfavorevole"
+    assert S.risk_word(res("attore", ["escluso", "provato"])) == "sfavorevole"
+    assert S.risk_word(res("neutro", ["provato", "provato"])) == "favorevole"
+    # defence: contestato by own facts + a G-cite -> favorevole; either alone -> incerto; every element provato -> sfavorevole
+    assert S.risk_word(res("difesa", ["contestato", "provato"], cg=["G2"], own=True)) == "favorevole"
+    assert S.risk_word(res("difesa", ["contestato", "provato"], own=True)) == "incerto"
+    assert S.risk_word(res("difesa", ["contestato", "provato"], cg=["G2"])) == "incerto"
+    assert S.risk_word(res("difesa", ["da_provare", "provato"], cg=["G2"])) == "incerto"
+    assert S.risk_word(res("difesa", ["da_provare", "provato"])) == "incerto"
     assert S.risk_word(res("difesa", ["provato", "provato"])) == "sfavorevole"
-    assert S.risk_word(res("difesa", ["provato", "da_provare"])) == "incerto"
-    assert S.risk_word(res("difesa", ["provato", "escluso"])) == "favorevole"
-    assert S.risk_word(None) == "" and S.risk_word({"status": "failed"}) == ""
-    assert set(S.config()["risk"]) == {"attore", "neutro", "difesa"}
+    assert S.risk_word(res("difesa", ["provato", "escluso"])) == "incerto"            # not all provato, no own contest
+    # the cap: an unverified-only set, or a one-element article, never above incerto
+    assert S.risk_word(res("attore", ["provato", "provato"], tier="non_verificato")) == "incerto"
+    assert S.risk_of(res("attore", ["provato", "provato"], tier="non_verificato")["analysis"])["capped"] is True
+    assert S.risk_word(res("attore", ["provato"], cg=["G2"])) == "incerto"
+    assert S.risk_of(res("attore", ["provato"], cg=["G2"])["analysis"]) == {
+        "word": "incerto", "capped": True, "why": "elemento provato, con pronuncia; tetto incerto: articolo con un solo elemento"}
+    assert S.risk_of(res("attore", ["da_provare"])["analysis"])["capped"] is False      # the cap lowers favorevole only
+    assert S.risk_word(None) == "" and S.risk_word({"status": "failed"}) == "" and S.risk_of(None) == {}
+    assert set(S.config()["risk"]) == {"attore", "neutro", "difesa", "cap"}
 
 
 # --- B. the input from the state, the flow's hook, the counters ----------------------------------------------------------

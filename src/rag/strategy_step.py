@@ -65,13 +65,15 @@ COUNTERS = ("strategy_calls", "strategy_reasked", "strategy_lines", "strategy_ra
             "strategy_riqualificazione_missing", "strategy_objection_mismatch", "strategy_passi_not_concrete",
             # v79.18.2 (item 2): every proposed line rejected for the side's rules -- the re-ask states the side; (item
             # 6) a riqualificazione line on an «alternativa» article moved below the first set line (never principale)
-            "strategy_side_reasked", "strategy_alternativa_demoted")
+            "strategy_side_reasked", "strategy_alternativa_demoted",
+            "strategy_risk_capped")      # v79.18.3 (item 1): a favorevole word capped at incerto (unverified set / one element)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITO_RANK = {PROVATO: 3, CONTESTATO: 2, DA_PROVARE: 1, ESCLUSO: 0}
 OPEN = (CONTESTATO, DA_PROVARE)
 SIDE_CLAIMANT, SIDE_DEFENCE, SIDE_NEUTRAL = "attore", "difesa", "neutro"
 TIER_ALTERNATIVA = "alternativa"         # v79.18.2 (item 6): a «no» in the pretesa's Titolo / Capo -- riqualificare only
+TIER_UNVERIFIED_SET = "non_verificato"   # v79.18.3 (item 1): the binding's lowest tier (interactive_flow.TIER_UNVERIFIED)
 FAVOREVOLE, INCERTO, SFAVOREVOLE = "favorevole", "incerto", "sfavorevole"
 PRINCIPALE, SUBORDINATA = "principale", "subordinata"
 _S_RE = re.compile(r"^S\d+$")
@@ -708,7 +710,11 @@ def forza(label: str, eid: str, inp: Dict[str, Any], linea: Optional[Dict[str, A
     testo = str(cfg.get("forza") or "provato {provato} / contestato {contestato} / da provare {da_provare}").format(**n)
     if n[ESCLUSO]:
         testo += str(cfg.get("forza_escluso") or " / escluso {escluso}").format(**n)
-    return {**n, "totale": len(els), "key": list(key), "testo": testo, "valutato": bool(art.get("valutato"))}
+    own = {f["id"] for f in inp.get("facts") or [] if f.get("own")}          # v79.18.3 (item 1): what the risk reads
+    cited = set(e.get("cita_fatti") or []) | set((linea or {}).get("cita_fatti") or [])
+    return {**n, "totale": len(els), "key": list(key), "testo": testo, "valutato": bool(art.get("valutato")),
+            "esito": e.get("esito") or "", "fatti_propri": bool(e.get("esito") == CONTESTATO and cited & own),
+            "pronuncia": bool((linea or {}).get("cita_pronunce") or (linea or {}).get("condizione"))}
 
 
 def rank(linee: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
@@ -725,29 +731,63 @@ def rank(linee: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
     return out, [x["eid"] for x in out] != [x["eid"] for x in linee]
 
 
+def risk_of(a: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.18.3 (item 1): §9's word for the client from the principale, by side (data «risk»): {word, capped, why}.
+    Claimant (attore, neutro): favorevole = the principale's element provato AND (provati_min or more provato elements on
+    its article OR a G-cite on the line); sfavorevole = the principale's element da_provare / escluso; else incerto (provato
+    without that support, or contestato). Defence: favorevole = the principale's element contestato by the client's own
+    facts AND a G-cite; sfavorevole = the article's elements all provato and none contestato; else incerto (contestato or
+    da_provare with a G-cite but no own fact, an own fact without a G-cite, a bare da_provare). Any side: a set built only
+    from unverified tiers (a recall-empty set), or a one-element article, caps the word at incerto (capped, the counter
+    strategy_risk_capped). {} without a verified strategy."""
+    if not isinstance(a, dict) or not a.get("linee"):
+        return {}
+    cfg_all = config().get("risk") or {}
+    side = a.get("side") or SIDE_NEUTRAL
+    cfg = cfg_all.get(side) or cfg_all.get(SIDE_NEUTRAL) or {}
+    cap = cfg_all.get("cap") or {}
+    f = a["linee"][0].get("forza") or {}
+    tot = int(f.get("totale") or 0)
+    if not tot:
+        return {}
+    esito = f.get("esito") or a["linee"][0].get("esito") or ""
+    fav, sfav = cfg.get("favorevole") or {}, cfg.get("sfavorevole") or {}
+    if side == SIDE_DEFENCE:
+        if sfav.get("tutti_provati", True) and f.get(PROVATO, 0) == tot and not f.get(CONTESTATO, 0):
+            word, why = SFAVOREVOLE, "ogni elemento dell'accusa provato, nessuno contestato"
+        elif esito in (fav.get("esito") or [CONTESTATO]) and (not fav.get("fatti_propri", True) or f.get("fatti_propri")) \
+                and (not fav.get("pronuncia", True) or f.get("pronuncia")):
+            word, why = FAVOREVOLE, "elemento contestato dai fatti propri del cliente, con pronuncia"
+        else:
+            word, why = INCERTO, f"elemento {esito}" + (", senza pronuncia" if not f.get("pronuncia") else "") \
+                + (", senza fatti propri" if esito == CONTESTATO and not f.get("fatti_propri") else "")
+    else:
+        if esito in (sfav.get("esito") or [DA_PROVARE, ESCLUSO]):
+            word, why = SFAVOREVOLE, f"elemento della linea principale {esito}"
+        elif esito in (fav.get("esito") or [PROVATO]) and (f.get(PROVATO, 0) >= int(fav.get("provati_min", 2))
+                                                           or (fav.get("oppure_pronuncia", True) and f.get("pronuncia"))):
+            word, why = FAVOREVOLE, ("elemento provato, " + (f"{f.get(PROVATO)} elementi provati" if f.get(PROVATO, 0)
+                                                               >= int(fav.get("provati_min", 2)) else "con pronuncia"))
+        else:
+            word, why = INCERTO, f"elemento {esito}" + (" senza altri elementi provati né pronuncia" if esito == PROVATO else "")
+    capped = ""
+    if word == FAVOREVOLE:
+        if cap.get("tier_non_verificato", True) and a.get("set_non_verificato"):
+            capped = "insieme da soli livelli non verificati"
+        elif tot < int(cap.get("elementi_min", 2)):
+            capped = "articolo con un solo elemento"
+    if capped:
+        word = INCERTO
+    return {"word": word, "capped": bool(capped), "why": why + (f"; tetto incerto: {capped}" if capped else "")}
+
+
 def risk_word(result: Optional[Dict[str, Any]]) -> str:
-    """§9's word for the client from the principale's forza (data «risk», by side): the share of the measured esiti
-    at favorevole_min or more -> favorevole, at sfavorevole_max or less -> sfavorevole, else incerto; an escluso
-    element -> sfavorevole for the pretesa's holder, favorevole for the defence. "" without a verified strategy."""
+    """§9's word for the client (risk_of, stored by finish as analysis["risk"]); "" without a verified strategy."""
     a = (result or {}).get("analysis") if isinstance(result, dict) else None
     if not a or not a.get("linee"):
         return ""
-    f = a["linee"][0].get("forza") or {}
-    side = a.get("side") or SIDE_NEUTRAL
-    cfg = (config().get("risk") or {}).get(side) or (config().get("risk") or {}).get(SIDE_NEUTRAL) or {}
-    tot = int(f.get("totale") or 0)
-    if not tot:
-        return ""
-    if f.get(ESCLUSO):
-        return FAVOREVOLE if side == SIDE_DEFENCE else SFAVOREVOLE
-    measure = f.get(PROVATO, 0) if str(cfg.get("misura") or "provato") == "provato" else \
-        f.get(CONTESTATO, 0) + f.get(DA_PROVARE, 0)
-    share = measure / tot
-    if share >= float(cfg.get("favorevole_min", 1.0)):
-        return FAVOREVOLE
-    if share <= float(cfg.get("sfavorevole_max", 0.0)):
-        return SFAVOREVOLE
-    return INCERTO
+    got = a.get("risk") if isinstance(a.get("risk"), dict) else risk_of(a)
+    return str((got or {}).get("word") or "")
 
 
 # --- the result -------------------------------------------------------------------------------------------------------
@@ -873,7 +913,12 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
                "alternative": [a["article"] for a in alternative_articles(inp)]}
         if hit is None:
             counters["strategy_riqualificazione_missing"] = 1
+    set_arts = [x for x in inp.get("articles") or [] if not x.get("alternative")]       # v79.18.3 (item 1): the cap
+    set_non_verificato = bool(set_arts) and all(str(x.get("tier") or "") in (TIER_UNVERIFIED_SET, "linea") for x in set_arts)
+    risk = risk_of({"linee": ranked, "side": inp.get("side") or SIDE_NEUTRAL, "set_non_verificato": set_non_verificato})
+    counters["strategy_risk_capped"] = int(bool(risk.get("capped")))
     return {"linee": ranked, "principale": principale, "side": inp.get("side") or SIDE_NEUTRAL,
+            "set_non_verificato": set_non_verificato, "risk": risk,                                  # v79.18.3 (item 1)
             "side_source": inp.get("side_source") or "",                                            # v79.18.2 (item 2)
             "alternative": [a["article"] for a in inp.get("articles") or [] if a.get("alternative")],   # v79.18.2 (item 6)
             "riqualificazione": riq,
@@ -1023,7 +1068,9 @@ def replay_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "side": a.get("side") or "", "side_source": a.get("side_source") or "",         # v79.18.2 (item 2)
             "alternative": list(a.get("alternative") or []),                                # v79.18.2 (item 6)
             "counters": dict(result.get("counters") or {}), "seconds": result.get("seconds", 0.0),
-            "prompt_hash": result.get("prompt_hash") or prompt_hash(), "risk": risk_word(result)}
+            "prompt_hash": result.get("prompt_hash") or prompt_hash(), "risk": risk_word(result),
+            "risk_why": str((a.get("risk") or {}).get("why") or ""),                     # v79.18.3 (item 1)
+            "risk_capped": bool((a.get("risk") or {}).get("capped"))}
 
 
 # --- rendering --------------------------------------------------------------------------------------------------------

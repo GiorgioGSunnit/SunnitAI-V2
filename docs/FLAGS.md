@@ -737,8 +737,8 @@ logged); the analysis, fit, frame and recall prompts are unchanged.
 
 ## 5r. v79.18.2 (24 Nov 2026): the side's re-ask; the frame-named article's set entry; the retrieval's sub-stages; the matter gate demotes; the «alternativa» tier
 
-No new flag. Item 1 the risk thresholds are data by side (`data/strategy_step.json` «risk»: misura provato | aperti,
-favorevole_min, sfavorevole_max; `strategy_step.risk_word`). Item 2 `strategy_step.side_of`: the strategy's side is the
+No new flag. Item 1 the risk thresholds are data by side (`data/strategy_step.json` «risk»; the rules of 5s replaced
+79.18.2's share thresholds). Item 2 `strategy_step.side_of`: the strategy's side is the
 analysis step's from the verified frame; with the frame's ruolo unverified it is the one the pretesa's tipo implies
 (data «side_by_tipo»: accusa / opposizione -> difesa, domanda / ricorso / impugnazione -> attore), logged as
 `side_source`; a reply whose every linea is rejected for the side's rules («contestare» on a non-open element,
@@ -764,6 +764,19 @@ the set's `principale`; the strategy input carries it (`alternative: True`, labe
 «riqualificare» linea on it only (`_verify_line`), counted among `alternative_articles` for C3, and never the principale
 whatever its forza (`finish`, `strategy_alternativa_demoted`). The strategy prompt changed (hash logged); the analysis,
 fit, frame and recall prompts are unchanged.
+
+## 5s. v79.18.3 (24 Nov 2026): item 1 of 79.18.2 -- the risk thresholds
+
+No new flag. `strategy_step.risk_of` (data `risk`, by side; `risk_word` reads what `finish` stores as `analysis["risk"]`:
+word, capped, why). Claimant (attore, neutro): favorevole = the principale's element provato AND (`provati_min` (2) or more
+provato elements on its article OR a G-cite on the line: `cita_pronunce` or `condizione`); sfavorevole = the principale's
+element da_provare / escluso; else incerto (provato without that support, or contestato). Defence: favorevole = the
+principale's element contestato by the client's own facts (`forza.fatti_propri`: a cited fact accertato or the client's)
+AND a G-cite; sfavorevole = the charge's elements all provato and none contestato; else incerto (contestato or da_provare
+with a G-cite but no own fact, an own fact without a G-cite, a bare da_provare, an escluso element). Any side: a set built
+only from unverified tiers (`analysis["set_non_verificato"]`: every non-alternative article of the input at the
+non_verificato tier -- a recall-empty set) or a one-element article (`cap.elementi_min`) caps a favorevole at incerto
+(`strategy_risk_capped`; the replay's strategy row carries `risk_why` and `risk_capped`). The strategy prompt is unchanged.
 
 ## 6. Which copy sets what
 
