@@ -248,7 +248,7 @@ def test_method_candidates_need_both_flags_and_are_never_exempt(monkeypatch):
 # --- draft rules ------------------------------------------------------------------------
 
 def test_the_draft_rules_ask_for_the_answers_first_and_forbid_concessions():
-    for phrase in ("**Risposte ai quesiti**", "mai \"art. 585\" da solo", "Non concedere mai un elemento contestato",
+    for phrase in ("**Risposte ai quesiti**", "mai il numero da solo", "Non concedere mai un elemento contestato",
                    "Niente sezioni o paragrafi generici", "ometti il riferimento"):
         assert phrase in dg._DRAFT_RULES
 

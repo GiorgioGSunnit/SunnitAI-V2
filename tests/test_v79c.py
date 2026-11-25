@@ -218,5 +218,7 @@ def test_the_method_writes_from_the_derived_role_and_says_so_in_one_line(monkeyp
     monkeypatch.setattr(flow, "lawyer_method_on", lambda: True)
     monkeypatch.setattr(flow, "_assumed_party", lambda s, a: None)
     client, line = flow.settle_client(state, {"facts": {}})
-    assert "Non mi hai indicato chi assisti" not in line and line == C.fill(C.CLIENT_DERIVED, role="attore")
+    # v79.19.0 (item 4): the one sentence for a side read from the facts -- the brief's banner, no question
+    assert "Non mi hai indicato chi assisti" not in line and line == C.fill(C.CLIENT_DEDUCED, parte="la parte attore")
+    assert line == "Il parere è impostato per la parte attore, dedotto dai fatti: dimmi se assisti un'altra parte."
     assert line.count(".") == 1

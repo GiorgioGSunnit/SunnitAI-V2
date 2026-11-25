@@ -325,7 +325,7 @@
     "- \"articolo\": l'articolo esattamente come ti è dato;",
     "- \"fit\": \"si\" (la disposizione governa i fatti), \"no\" (non li governa) o \"dipende\" (un solo punto, che i fatti non dicono, decide);",
     "- \"perche\": UNA sola frase, con le parole dell'articolo e dei fatti come sono scritte: non aggiungere requisiti, numeri, soglie, condizioni o regole che i periodi citati non dicono; non citare altre norme né la giurisprudenza;",
-    "- \"cita_norma\": gli id dei periodi dell'articolo su cui il giudizio si fonda o di cui il \"perche\" usa le parole, come sono dati nel suo testo numerato (es. [\"A640cp.1\"]): solo di questo articolo; con \"si\" almeno uno, con \"no\" e \"dipende\" può essere [] se il \"perche\" non usa parole dell'articolo;",
+    "- \"cita_norma\": gli id dei periodi dell'articolo su cui il giudizio si fonda o di cui il \"perche\" usa le parole, come sono dati nel suo testo numerato (es. [\"<id periodo>\"]): solo di questo articolo; con \"si\" almeno uno, con \"no\" e \"dipende\" può essere [] se il \"perche\" non usa parole dell'articolo;",
     "- \"cita_fatti\": con \"no\" e con \"dipende\", gli id dei fatti su cui il giudizio si fonda (es. [\"S2\"]): almeno uno, solo tra i fatti dati; con \"si\" può essere [];",
     "- \"condizione\": solo con \"dipende\": il solo punto che deciderebbe, come una domanda all'utente che finisce con «?», scritta con parole dell'articolo e dei fatti; altrimenti \"\";",
     "- \"ambito\": uno tra fattispecie, scriminante, circostanza, rimedio, procedura, definizione.",

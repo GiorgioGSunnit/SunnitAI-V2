@@ -207,7 +207,7 @@ def test_a_dipende_must_cite_an_existing_fact_and_a_si_its_article_period():
 def test_the_prompt_schema_carries_the_id_fields_and_its_hash_is_new():
     text = ap.prompt_system()
     assert '"fatto_citato"' not in text and '"cita_fatti"' in text and '"cita_norma"' in text
-    assert ap.prompt_hash() == "5b06ff45a132"
+    assert ap.prompt_hash() == "1c71b3e09bcd"
 
 
 # --- 3. an empty plan with a verified charge -----------------------------------------------------------------------------

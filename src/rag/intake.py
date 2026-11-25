@@ -1831,6 +1831,7 @@ def _refine_frame_role(frame: Optional[Dict[str, Any]], values: Dict[str, str], 
     if not role or values.get("role") != role.get("intake") or not finer or finer == role.get("intake"):
         return
     if finer in ((case_frame.config().get("role_refinements") or {}).get(role.get("intake")) or []):
+        role["refined_from"] = role.get("intake")       # v79.19.0 (item 2): settle logs it as a correction
         role["intake"] = finer
         values["role"] = finer
         why["role"] = f"{why.get('role', '')}; {client.get('why') or ''}".strip("; ")

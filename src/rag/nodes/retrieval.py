@@ -158,11 +158,11 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         "4. Identify relationships between nodes. The 'type' must be one of the types defined in the schema for the given source and target nodes.\n"
         "5. Format the output as a single JSON object.\n\n"
         "Example:\n"
-        "Question: 'Who was appointed by the Ministry of Oil in Decree No. 46 of 2025?'\n"
+        "Question: 'Who was appointed by <institution> in <act type> No. <number> of <year>?'\n"
         'Result: {{"graph": {{"nodes": ['
-        '{{"id": "node1", "label": "Person", "properties": {{\'role\': \'Undersecretary\'}}}},'
-        '{{"id": "node2", "label": "Institution", "properties": {{"name": "Ministry of Oil"}}}},'
-        '{{"id": "node3", "label": "LegalAct", "properties": {{"act_type": "Decree", "act_number": "46", "act_year": "2025"}}}}'
+        '{{"id": "node1", "label": "Person", "properties": {{\'role\': \'<role>\'}}}},'
+        '{{"id": "node2", "label": "Institution", "properties": {{"name": "<institution>"}}}},'
+        '{{"id": "node3", "label": "LegalAct", "properties": {{"act_type": "<act type>", "act_number": "<number>", "act_year": "<year>"}}}}'
         '], "relationships": ['
         '{{"source_id": "node2", "target_id": "node1", "type": "APPOINTS"}},'
         '{{"source_id": "node3", "target_id": "node1", "type": "APPOINTS"}}'

@@ -5801,7 +5801,9 @@ def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str,
         derived = derived_role(state, analysis) if single_mode(state) and lawyer_method_on() else ""
         if derived:             # v79 (C5): the method writes a parere anyway -- from the role derived, said in one line
             _log("client_settled", {"how": "derived_role", "role": derived, "line": not quiet})
-            return "", "" if quiet else (C.fill(C.CLIENT_DERIVED, role=derived.replace("_", " ")) or "")
+            # v79.19.0 (item 4): one sentence for a side read from the facts -- the brief's banner, no question
+            return "", "" if quiet else (C.fill(C.CLIENT_DEDUCED, parte=f"la parte {derived.replace('_', ' ')}")
+                                         or "")
         _log("client_settled", {"how": "unknown", "line": not quiet})
         return "", "" if quiet else C.CLIENT_UNKNOWN
     label = frame_party_label(analysis, str(analysis.get(CASE_KEY) or ""), str(pick.get("role") or ""))   # v60r (5)
@@ -5831,6 +5833,10 @@ def settle_framed(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[T
         if case_frame.role_unknown_held(state):
             line = C.fill(C.ROLE_UNKNOWN_CLIENT, client=party_names.label(framed, str(analysis.get(CASE_KEY) or "")))
             return framed, "" if quiet else party_names.contract(line or "")
+        if case_frame.role_deduced(state):      # v79.19.0 (item 4): the side deduced from the facts, said -- no stop,
+            line = deduced_client_line(state, analysis, framed)      # no question
+            _log("client_settled", {"how": "frame_role_deduced", "client": framed, "line": not quiet})
+            return framed, "" if quiet else line
         return framed, (known_client_line(state, analysis, framed) if single_mode(state) and not quiet else "")
     if not case_frame.role_unknown_held(state):
         if answered:
@@ -5858,6 +5864,18 @@ def settle_framed(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[T
     framed_no_client(state, analysis)
     _log("client_settled", {"how": "frame_role_unknown", "line": not quiet})
     return "", "" if quiet else C.CLIENT_UNKNOWN
+
+
+def deduced_client_line(state: Dict[str, Any], analysis: Dict[str, Any], client: str) -> str:
+    """v79.19.0 (item 4): the banner when the frame deduced the client's side from the facts (nothing in the text
+    states it): «Il parere è impostato per <parte>, dedotto dai fatti: dimmi se assisti un'altra parte» -- the party
+    its name and role word (party_names.label; the frame's role in the posture's words)."""
+    from . import case_frame, party_names, posture as posture_mod
+    role = case_frame.bound(state, "ruolo") or ""
+    shown = party_names.label(client, str(analysis.get(CASE_KEY) or ""))
+    word = posture_mod.role_label(role, case_frame.bound(state, "stadio") or "") if role else ""
+    parte = f"{shown} ({word})" if word and word.lower() not in shown.lower() else shown
+    return party_names.contract(C.fill(C.CLIENT_DEDUCED, parte=parte) or "")
 
 
 def frame_plan(state: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -6261,6 +6279,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.setdefault("block_counters", {})["role_resisting"] = int(bool(posture.get("resisting")))
     state["posture"] = _jsonable(posture)
     _log("posture", posture)
+    from . import case_frame as case_frame_mod      # v79.19.0 (item 2): the posture's correction pass, once
+    _isolated("frame_settle_posture", lambda: case_frame_mod.settle_posture(state, posture))
     all_rows = _restored_rows(state.get("rows"))
     from .article_text import row_abrogated, row_misaligned     # v60c: an abrogated article is never written; v60e:
     dead = {_key(r["_article"]) for r in all_rows if r.get("_article") and (row_abrogated(r) or row_misaligned(r))}
@@ -7677,7 +7697,8 @@ DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativ
                  "defence": "difesa di parte generale", "ranked": "candidata dalla classifica del recupero",   # v79
                  "claim": "domanda (ipotesi principale della prima lettura)",
                  "hypothesis": "addebito (ipotesi di reato della prima lettura)",      # v79 (C4)
-                 "remedy": "rimedio civile della persona offesa"}                     # v79.12.4 (item 1)
+                 "remedy": "rimedio civile della persona offesa",                     # v79.12.4 (item 1)
+                 "frame_alternative": "altro addebito o articolo letto dal quadro"}    # v79.19.0 (items 3, 5)
 
 
 def fit_removed_keys(state: Dict[str, Any]) -> set:
@@ -7716,8 +7737,12 @@ def fit_protected(state: Dict[str, Any], posture: Dict[str, Any]) -> List[str]:
     from . import case_frame
     out = [_label(k) for k in user_named(state)] + fit_charged(state, posture)
     framed = case_frame.charge_label(case_frame.held(state)) if case_frame.held(state) is not None else ""
-    if framed:
+    # v79.19.0 (item 5): a disputed article is not protected -- the judgment decides between the text's article and
+    # the facts' (case_frame.apply_fit), never the number alone
+    if framed and not case_frame.disputed(state):
         out.append(framed)
+    elif framed:
+        out = [x for x in out if x != framed]
     out += [x for x, r in (state.get("records") or {}).items()
             if isinstance(r, dict) and (r.get("named_due") or r.get("decomposed_for") == DECOMPOSE_WHY["named"])]
     return _with_aliases(state, list(dict.fromkeys(out)))      # (review) a special law's charge as its store's article
@@ -7805,11 +7830,13 @@ def applicability_fit(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     facts = applicability.facts_input(sents)
     role = str((posture or {}).get("role") or "")
     from . import case_frame                    # v79.14.0 (CASE_FRAME): the verified frame as the judgment's context
-    context = case_frame.fit_context(state.get("case_frame")) if case_frame.enabled() else ""
+    context = case_frame.fit_context(case_frame.held(state)) if case_frame.enabled() else ""    # v79.19.0: settled
     # v79.15.0 (item 3): every judgment verified by the ids it cites (the facts' S-ids, the article's period ids)
     result = applicability.judge(norms, facts, role, started=started, frame_context=context)
     protected = fit_protected(state, posture)
     done = applicability.effects(result, protected)
+    # v79.19.0 (item 5): a disputed article settled by the judgment, into the one frame (a correction, logged)
+    _isolated("frame_apply_fit", lambda: case_frame.apply_fit(state, result.get("judgments") or []))
     known = [f["id"] for f in facts]
     sig = applicability.facts_signature(facts)
     removed: set = set()
@@ -8009,6 +8036,8 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     framed = case_frame.bound(state, "addebito_o_domanda", posture)
     if framed:                  # v79.14.0 (CASE_FRAME): the frame's charge decomposed first, whatever the rules read
         wanted[framed] = DECOMPOSE_WHY["charge"]
+    for x in case_frame.alternative_charges(state):     # v79.19.0 (items 3, 5): the other charges, the disputed one
+        wanted.setdefault(x, DECOMPOSE_WHY["frame_alternative"])
     for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
         # v79.12.4 (item 1): the victim's charge is the querela's offence -- a civil article its remedy, never decisive
         wanted.setdefault(x, DECOMPOSE_WHY["remedy"] if victim and not posture_mod.penal_article(x)
@@ -9534,6 +9563,7 @@ def hold_frame(state: Dict[str, Any]) -> None:
     if not case_frame.enabled() or not isinstance(got, dict):
         return
     state["case_frame"] = got
+    case_frame.settle(state)            # v79.19.0 (item 2): state["frame"], the corrected frame, written once
     if isinstance(state.get("analysis"), dict):     # the extraction's «posizione»: the frame role's side
         pos = case_frame.position(state, state["analysis"].get("posizione"), "analysis.posizione")
         if pos is not None:

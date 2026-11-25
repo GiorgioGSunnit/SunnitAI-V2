@@ -79,15 +79,15 @@ ANCHOR_RULE = (
     "parole iniziali del comma seguite da «ai sensi dell'art.». Una regola che nessun passo sostiene non si scrive.")
 PLAN_RULE = (
     "- Per ogni questione indica in \"passi\" i commi delle sue norme e le pronunce su cui si fonda l'argomento: "
-    "l'identificativo della norma con il comma (\"art. 2051 c.c. co. 1\") o il riferimento della pronuncia.\n")
+    "l'identificativo della norma con il comma (\"art. <numero> <codice> co. <n>\") o il riferimento della pronuncia.\n")
 PLAN_KEY = '"passi": ["art. N codice co. K", "riferimento"], '
 
 REWRITE_SYSTEM = (
     "Sei un avvocato italiano e correggi un parere. Ricevi alcuni PASSI di norme e pronunce, ciascuno con la sua "
     "ancora, e alcune FRASI del parere, numerate, ciascuna con le ancore dei passi da cui va riscritta.\n"
     "Per una frase segnata [prima il tipo] decidi prima il tipo: \"applicazione\" se applica una regola ai fatti di "
-    "questo caso (il soggetto è una parte o un fatto del caso: \"la reazione di Tizio era proporzionata\", \"il "
-    "ritardo è imputabile al venditore\"): non va riscritta, lascia la frase vuota; \"generale\" se enuncia la legge "
+    "questo caso (il soggetto è una parte o un fatto del caso: \"la reazione di <parte> era proporzionata\", \"il "
+    "ritardo è imputabile a <parte>\"): non va riscritta, lascia la frase vuota; \"generale\" se enuncia la legge "
     "o la giurisprudenza in generale (ciò che una norma prevede, ciò che la giurisprudenza afferma, una definizione, "
     "dei requisiti). Le altre frasi sono \"generale\".\n"
     "Riscrivi ogni frase \"generale\" dicendo solo ciò che i suoi passi dicono, con le loro parole o "

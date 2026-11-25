@@ -306,7 +306,9 @@ def test_the_reason_the_rubrica_fallback_did_not_run(case, reason, fired, monkey
         assert c["analysis_frame_charge_missing"] == 1
         assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE
     if case in ("no_named_charge", "no_rubrica_match"):
-        assert c["analysis_line_undetermined"] == 1
+        # v79.19.0 (item 6): the reason says why the rubrica fallback did not run; the fitted article leads anyway
+        assert c["analysis_line_undetermined"] == 0 and c["analysis_line_fallback_fit"] == 1
+        assert res["analysis"]["linea_principale"]["stato"] == A.FIT_LINE
     if case == "fired":
         assert res["analysis"]["linea_principale"]["stato"] == A.FALLBACK_LINE
 
@@ -384,7 +386,8 @@ def test_with_no_verified_line_the_counter_says_why_the_fallback_did_not_run(des
                                               FRAME_REPLY=_truffa_frame(descrizione), OLDER_FRAME={}))
     c, step = run["state"]["block_counters"], run["by"]["analysis_step"][0][0]
     assert [r["articolo"] for r in step["rejected"]] == ["640 c.p.", "640 c.p."]
-    assert c["analysis_line_fallback_rubrica"] == fired and c["analysis_line_undetermined"] == 1 - fired
+    assert c["analysis_line_fallback_rubrica"] == fired and c["analysis_line_undetermined"] == 0
+    assert c["analysis_line_fallback_fit"] == 1 - fired                 # v79.19.0 (item 6): a fitted article leads
     assert c["analysis_fallback_skipped_reason"] == step["fallback_skipped_reason"] == reason
     assert run["state"]["analysis_step"]["counters"]["analysis_fallback_skipped_reason"] == reason
 

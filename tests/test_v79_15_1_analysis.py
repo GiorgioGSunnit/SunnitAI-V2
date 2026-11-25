@@ -84,7 +84,7 @@ def test_the_prompt_numbers_every_articles_elements_by_id():
     assert [e["eid"] for e in inp["norms"][0]["elements"]] == ["A640cp:E1", "A640cp:E2", "A640cp:E3"]
     system = A.prompt_system()
     assert "A<articolo>:E<n>" in system and "copiato esattamente" not in system
-    assert A.prompt_hash() == "472423ea32d3"
+    assert A.prompt_hash() == "b69eefcd0577"
     assert "analysis_bad_eid" in A.COUNTERS and "analysis_element_not_verbatim" not in A.COUNTERS
 
 
@@ -179,13 +179,16 @@ def test_the_rubrica_match_is_exact_after_case_and_accents_only():
         frame = _no_charge(T.PENAL_FRAME, addebito_o_domanda={"articolo": None, "descrizione": name, "frase": "«x»"})
         got = A.rubrica_fallback(T._penal(frame=frame))
         assert bool(got) == hit, name
-    # nothing matches: «da determinare»
+    # nothing matches: no rubrica fallback -- v79.19.0 (item 6): the fitted article leads (640 c.p., the one norm
+    # outside the remedy set), never «da determinare»
     frame = _no_charge(T.PENAL_FRAME, addebito_o_domanda={"articolo": None, "descrizione": "estorsione",
                                                           "frase": "«x»"})
     remedy = _reply(_line("62-bis c.p.", "A62biscp:E1", "Attenuanti.", ["S5"]))
     res = A.analyse(T._penal(frame=frame), call=_Model(remedy, remedy))
-    assert res["analysis"]["linea_principale"]["stato"] == "da_determinare"
-    assert res["counters"]["analysis_line_undetermined"] == 1 and res["counters"]["analysis_line_fallback_rubrica"] == 0
+    assert res["analysis"]["linea_principale"]["stato"] == A.FIT_LINE
+    assert res["analysis"]["linea_principale"]["articolo"] == "640 c.p."
+    assert res["counters"]["analysis_line_fallback_fit"] == 1 and res["counters"]["analysis_line_fallback_rubrica"] == 0
+    assert res["counters"]["analysis_line_undetermined"] == 0
 
 
 def test_the_frames_charge_article_comes_before_the_rubrica_fallback():

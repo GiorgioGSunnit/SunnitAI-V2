@@ -58,12 +58,11 @@ SYSTEM = (
     "Sei un avvocato italiano. Ricevi un CASO e i FATTI che ne sono stati estratti. Per ciascun fatto che decide "
     "l'esito (un danno, un difetto, un ritardo, un intervento, una qualità di una parte, un atto ricevuto, una data, "
     "un importo), indica gli istituti giuridici che quel fatto pone, anche se il caso non li nomina: per esempio "
-    "un'infezione dopo un intervento pone la responsabilità della struttura sanitaria e del medico; un "
-    "elettrodomestico che si guasta dopo pochi mesi pone la garanzia per i vizi della cosa venduta e il difetto di "
-    "conformità del bene di consumo. Ogni istituto con il nome con cui è intitolato nel codice o nella legge, il "
+    "<un fatto> pone <l'istituto che lo disciplina>, e un fatto può porne "
+    "più d'uno. Ogni istituto con il nome con cui è intitolato nel codice o nella legge, il "
     "codice (c.c., c.p.c., c.p., c.p.p., c.p.a., c.d.s., o il nome per intero di un'altra legge), l'area, tra "
-    + ", ".join(f'"{a}"' for a in _AREAS) + ", e il ruolo che la parte assistita ha in esso (per esempio "
-    "\"danneggiato\", \"acquirente consumatore\", \"imputato\"). Mai un numero di articolo; nessun istituto che i "
+    + ", ".join(f'"{a}"' for a in _AREAS) + ", e il ruolo che la parte assistita ha in esso (<il ruolo "
+    "con le parole del codice o della legge>). Mai un numero di articolo; nessun istituto che i "
     "fatti non pongono; dal fatto più decisivo al meno, al massimo otto istituti in tutto. Rispondi SOLO con un "
     "oggetto JSON: {\"istituti\": [{\"fatto\": \"il fatto, con le parole del caso\", \"nome\": \"...\", "
     "\"codice\": \"...\", \"area\": \"...\", \"ruolo_cliente\": \"...\"}]}.")
@@ -77,13 +76,11 @@ assert _ONE_CAP_RULE in SYSTEM
 
 NAMING_RULE = (
     "\nNOMI DEGLI ISTITUTI: ogni nome è un istituto specifico del diritto italiano, preciso come la rubrica di un "
-    "articolo e con i termini del codice o della legge (per esempio \"inadempimento del conduttore\", \"risoluzione "
-    "della locazione per morosità\", \"responsabilità contrattuale della struttura sanitaria\", \"giudizio di "
-    "ottemperanza\", \"garanzia per i vizi della cosa venduta\"). Ogni nome dice anche il rapporto giuridico su cui "
+    "articolo e con i termini del codice o della legge (\"<istituto> "
+    "<del rapporto o della parte>\", come il codice o la legge lo intitola). Ogni nome dice anche il rapporto giuridico su cui "
     "l'istituto si fonda -- contrattuale, extracontrattuale, da reato o amministrativo -- e chi ne risponde verso chi: "
-    "\"responsabilità contrattuale della struttura sanitaria verso il paziente\", non \"responsabilità civile "
-    "dell'ente pubblico per lesioni\"; \"responsabilità extracontrattuale del precettore per il danno cagionato "
-    "dall'allievo\". Vietati i nomi generici (\"risarcimento danni\", \"responsabilità\", \"responsabilità medica\", "
+    "\"responsabilità <contrattuale o extracontrattuale> di <chi> verso <chi>\", non "
+    "\"responsabilità civile per <evento>\". Vietati i nomi generici (\"risarcimento danni\", \"responsabilità\", \"responsabilità medica\", "
     "\"decisione amministrativa\", \"tutela\") e il latino (\"dolus eventualis\", \"diligentia\"): nomina "
     "l'istituto preciso che il fatto pone, nella lingua del codice.")
 # A liability names the relationship it rests on (smoke test c1: "Responsabilità civile dell'ente pubblico per lesioni

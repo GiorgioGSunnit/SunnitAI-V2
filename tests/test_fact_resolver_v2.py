@@ -97,7 +97,7 @@ def test_generic_and_latin_names(name, why):
 
 
 def test_the_prompt_names_precisely_and_a_generic_name_is_renamed_once(monkeypatch, v2):
-    assert fi.NAMING_RULE in fi.system_for(8) and "giudizio di ottemperanza" in fi.system_for(8)
+    assert fi.NAMING_RULE in fi.system_for(8) and "<istituto>" in fi.system_for(8)      # v79.19.0: no example name
     calls = []
 
     def chat(messages, max_tokens, **k):

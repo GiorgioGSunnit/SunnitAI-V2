@@ -482,9 +482,19 @@ def test_review_a_civil_frame_charge_with_no_rito_to_check_it_is_refused_by_the_
     assert cf.bound(state, "addebito_o_domanda", p) is None and state["frame_charge_refused"] == "1439 c.c."
     a = cf.audit(state)
     assert a["charge_rito_mismatch"] == 0 and a["charge_rito_dropped"] == 1 and a["frame_conflict"] == 0
-    # a civil posture keeps the same frame charge
+    # v79.19.0 (item 2): the refusal is a correction written once into the one frame (state["frame"]) -- every later
+    # read, whatever posture it passes, sees the corrected value; the correction is logged old -> new
     assert cf.bound({**state, "frame_charge_refused": None}, "addebito_o_domanda",
-                    {"rito": "civile", "family": "civile"}) == "1439 c.c."
+                    {"rito": "civile", "family": "civile"}) is None
+    made = cf.corrections(state)
+    assert [(m["field"], m["old"], m["new"], m["step"]) for m in made] == \
+        [("addebito_o_domanda.articolo", "1439 c.c.", "", "posture")]
+    assert a["frame_corrections_applied"] == 1
+    # a civil posture on a fresh state keeps the same frame charge
+    fresh = _state(PENAL_NO_RITO, records={})
+    flow.take_intake(fresh, intake.request_intake(PENAL_NO_RITO), PENAL_NO_RITO)
+    assert cf.bound(fresh, "addebito_o_domanda", {"rito": "civile", "family": "civile"}) == "1439 c.c."
+    assert cf.corrections(fresh) == []
 
 
 def test_review_no_frame_client_means_no_party_served_anywhere_not_the_extractions(monkeypatch):

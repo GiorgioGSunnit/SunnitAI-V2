@@ -176,7 +176,7 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
         "- opposing_claims: riassunto delle pretese della controparte (max 300 caratteri)\n"
         "- cited_articles: lista degli articoli di legge citati dalla controparte\n"
         "- cited_codes: lista delle abbreviazioni dei codici citati dalla controparte "
-        "(es. [\"c.c.\", \"c.p.c.\", \"c.p.\", \"c.p.p.\"])\n"
+        "(solo quelle che il testo cita)\n"
         "- key_facts: fatti chiave allegati dalla controparte (max 300 caratteri)\n"
         "Restituisci SOLO il JSON, niente altro."
     )
@@ -372,7 +372,7 @@ def _generate_legal_reasoning(
         "**4. Analisi di Forza e Rischio**\n"
         "- Sviluppa la tesi principale con argomentazione specifica ai fatti: non dire genericamente "
         "'il gesto era intenzionale' ma spiega PERCHÉ sulla base dei fatti concreti (modalità, "
-        "contesto, sequenza temporale, violazione delle regole di gioco)\n"
+        "contesto, sequenza temporale, regole violate)\n"
         "- Per ogni tesi subordinata, indica l'articolo specifico e perché si applica a questo caso, "
         "solo se quell'articolo e quel contenuto risultano dalle fonti fornite\n"
         "- Per le eccezioni della controparte: anticipale e confutale con argomenti specifici\n"
@@ -386,7 +386,7 @@ def _generate_legal_reasoning(
         "questo procedimento — mai un'opzione riservata alla controparte o a un'altra parte del "
         "procedimento\n"
         "- Il piano operativo deve indicare l'atto concreto da compiere CON il termine specifico "
-        "(es. '15 giorni dalla notifica della sentenza motivata') e i documenti esatti da produrre\n"
+        "(<termine> dalla <decorrenza>) e i documenti esatti da produrre\n"
         "- La raccomandazione deve spiegare PERCHÉ quella strada è preferibile rispetto alle altre "
         "in questo caso specifico\n\n"
         "REGOLE:\n"
@@ -459,8 +459,8 @@ def generate_defensive_draft(
         "specifica contestazione regge in questo caso, citando i fatti e le norme."
         "\n- Per la sezione 4, stima la probabilità di successo con una motivazione concreta "
         "basata sui fatti del caso, non una generica valutazione 'media/alta/bassa'."
-        "\n- Per la sezione 5, indica il prossimo atto concreto da compiere (es. 'depositare "
-        "atto di appello entro X giorni dalla notifica della sentenza motivata') non "
+        "\n- Per la sezione 5, indica il prossimo atto concreto da compiere ('depositare "
+        "<atto> entro <termine> dalla <decorrenza>') non "
         "descrizioni generiche."
         "\n- Ogni articolo, pena o fattispecie citata deve essere supportata dal testo delle fonti "
         "fornite: se un articolo pertinente non è tra le fonti, o le fonti non ne confermano il "
@@ -889,12 +889,12 @@ _CASE_ANALYSIS_V2_SYSTEM = (
     'solo se il caso la pone. Ciascuna è {"titolo": stringa, "categoria": una tra "qualificazione", '
     '"elemento_soggettivo", "nesso_causale", "qualificazione_alternativa", "circostanza", "procedura", '
     '"istituti": da 2 a 6 istituti giuridici che disciplinano la questione, ciascuno {"nome": il nome '
-    'dell\'istituto con le stesse parole con cui è intitolato nel codice (per esempio "omicidio '
-    'colposo", "morte o lesione come conseguenza di altro delitto", "elemento psicologico del reato" — '
+    'dell\'istituto con le stesse parole con cui è intitolato nel codice (la rubrica '
+    'dell\'articolo, come intitolata nel codice — '
     'mai un numero da solo, il nome dell\'istituto, non la tua opinione su di esso), "codice": il nome '
     'del codice o della legge come lo scriveresti in un atto — per i codici tradizionali usa c.c., '
-    'c.p.c., c.p., c.p.p., c.p.a., c.d.s.; per qualsiasi altra legge scrivi il nome per intero, per '
-    'esempio "Codice del Consumo" o "l. 392/1978" — non limitarti ai sei codici tradizionali se il caso '
+    'c.p.c., c.p., c.p.p., c.p.a., c.d.s.; per qualsiasi altra legge scrivi il nome per intero '
+    '(<nome della legge>) — non limitarti ai sei codici tradizionali se il caso '
     'richiede un\'altra legge, "numero_indicativo": il numero dell\'articolo se lo ricordi con '
     'certezza, altrimenti stringa vuota — non indovinare: un numero sbagliato è peggio di nessun '
     'numero, verrà comunque verificato sul testo reale prima di essere usato}, "parole_chiave": da 4 a '
@@ -902,7 +902,7 @@ _CASE_ANALYSIS_V2_SYSTEM = (
     'parole generiche}. Per le questioni di categoria "qualificazione_alternativa": l\'istituto '
     'alternativo deve avere lo stesso esito materiale dei fatti dell\'istituto principale — se i fatti '
     'hanno causato la morte della vittima, l\'alternativa è un\'altra fattispecie che ha la morte come '
-    'esito (per esempio omicidio colposo, o morte o lesione come conseguenza di altro delitto), mai una '
+    'esito (una diversa fattispecie con lo stesso evento), mai una '
     'fattispecie di lesione personale che presuppone la sua sopravvivenza, e viceversa se la vittima è '
     'sopravvissuta; proponi l\'istituto giusto per l\'esito, non il più generico. Quando la '
     'responsabilità civile può fondarsi sia su un rapporto contrattuale sia su un fatto illecito verso '
@@ -1162,7 +1162,7 @@ _STRUCTURED_GRID_SYSTEM = (
     'voce ai fatti (vuota se non pertinente), "istituti": da 1 a 3 istituti giuridici che la disciplinano, '
     'ciascuno {"nome": il nome dell\'istituto con le parole con cui è intitolato nel codice o nella legge, '
     '"codice": per i codici tradizionali c.c., c.p.c., c.p., c.p.p., c.p.a., c.d.s.; per qualsiasi altra '
-    'legge il nome per intero, per esempio "Codice del Consumo"}, "parole_chiave": da 3 a 6 termini tecnici '
+    'legge il nome per intero (<nome della legge>)}, "parole_chiave": da 3 a 6 termini tecnici '
     "con cui le sentenze trattano la questione}\n"
     "Regole: una voce è pertinente solo se un fatto elencato la pone; nel dubbio è false. Una voce non "
     "pertinente ha istituti e parole_chiave vuoti. Mai un numero di articolo. Mai un istituto scelto solo per "
@@ -1197,8 +1197,7 @@ _STRUCTURED_GRIDS = {
          "esercizio di un diritto, eccesso colposo", "circostanza"),
         ("qualificazioni_alternative", "Qualificazioni alternative",
          "reati diversi che gli stessi fatti possono integrare al posto di quello principale, con lo stesso "
-         "esito materiale: se la vittima è morta, solo fattispecie che hanno la morte come esito (per esempio "
-         "omicidio colposo, morte o lesione come conseguenza di altro delitto), mai una lesione personale",
+         "esito materiale: se la vittima è morta, solo fattispecie che hanno la morte come esito, mai una fattispecie con un esito minore",
          "qualificazione_alternativa"),
         ("procedura", "Procedura",
          "procedibilità (querela o d'ufficio), fase del procedimento e rimedi, solo se i fatti li indicano",
@@ -1402,14 +1401,13 @@ _FRAME_AREAS = ("penale", "contratti", "responsabilita_civile", "locazione", "su
 _CASE_FRAME_SYSTEM = (
     "Sei un avvocato italiano. Leggi il caso e restituisci SOLO un oggetto JSON con queste chiavi:\n"
     '- "facts": i fatti del caso uno per uno, in forma neutra e breve, senza valutazioni\n'
-    '- "procedural_posture": in una frase, a che punto è la vicenda (per esempio "condanna in primo grado, '
-    'termine per l\'appello in corso", "sentenza amministrativa passata in giudicato e non eseguita", '
-    '"indagini preliminari", "controversia contrattuale prima del giudizio")\n'
+    '- "procedural_posture": in una frase, a che punto è la vicenda (<grado o fase>, '
+    '<atto pendente o scadenza in corso>)\n'
     '- "posture_type": quella stessa fase, una tra ' + ", ".join(f'"{p}"' for p in _POSTURE_TYPES) + "\n"
     '- "areas": da 1 a 3 aree del diritto che la vicenda tocca, tra '
     + ", ".join(f'"{a}"' for a in _FRAME_AREAS) + "\n"
-    '- "tasks": ogni domanda o richiesta esplicita che il caso rivolge a chi deve rispondere (per esempio '
-    '"quale reato è configurabile", "quali rimedi ha il cliente", "redigere l\'atto di appello"), con parole '
+    '- "tasks": ogni domanda o richiesta esplicita che il caso rivolge a chi deve rispondere (<la domanda '
+    'o la richiesta, con le sue parole>), con parole '
     "il più possibile vicine al testo, una per voce; nessuna domanda che il testo non pone\n"
     '- "central_issue_candidates": da 1 a 3 istituti giuridici attorno a cui il caso è costruito, cioè quelli '
     "su cui la risposta si decide, anche se il testo non li nomina, ciascuno {\"nome\": il nome dell'istituto "
@@ -3142,7 +3140,7 @@ _DRAFT_RULES = (
     "- Se il caso pone domande o richieste esplicite (quelle in QUESITI DEL CASO, quando presenti), apri il "
     "parere con **Risposte ai quesiti**, prima della sezione 1: una risposta diretta e motivata a ciascuna, "
     "nell'ordine in cui è posta; le sezioni successive la sviluppano.\n"
-    "- Ogni articolo che citi porta il suo codice o la sua legge (\"art. 585 c.p.p.\", mai \"art. 585\" da "
+    "- Ogni articolo che citi porta il suo codice o la sua legge (\"art. <numero> <codice>\", mai il numero da "
     "solo) e deve trovarsi in NORME o nei passi di GIURISPRUDENZA con quel codice: se lo stesso numero compare "
     "nelle fonti solo per un altro codice, non citarlo. Una circostanza, un termine o un rimedio si cita con "
     "l'articolo che lo disciplina per quel reato o quella pretesa, mai con un articolo di un'altra materia.\n"
@@ -4417,7 +4415,7 @@ _APPLICABILITY_SYSTEM = (
     "alternative nei fatti e nel testo dell'articolo (morte o sopravvivenza della vittima, invalidità "
     "permanente o temporanea, danno o pericolo) e il testo presuppone quella che i fatti escludono, "
     "l'articolo non è un'alternativa, è \"incompatibile\" — anche se descrive lo stesso tipo di condotta. "
-    "Esempio: se i fatti dicono che la vittima è morta, un articolo sulla lesione personale (che "
+    "Esempio: se i fatti dicono che <l'evento> si è verificato, un articolo su un evento minore (che "
     "presuppone la sopravvivenza della vittima) non è un'alternativa all'omicidio, è incompatibile con "
     "quell'esito — scrivi il requisito in positivo (\"presuppone la sopravvivenza della vittima\"), non "
     "come negazione (\"non deve esserne derivata la morte\"): lo stesso requisito espresso con una "
@@ -5378,30 +5376,30 @@ def _graded_issues(analysis: Optional[Dict[str, Any]]) -> List[str]:
 # tests/eval_narrative_cases.json), so they set the scale without teaching a held-out answer.
 _GRADED_EXAMPLES = (
     "ESEMPI (casi inventati, solo per il metro di giudizio):\n"
-    "1. Penale. Durante una lite Tizio rompe con un bastone il vetro dell'auto del vicino, poi lo ripaga. Q1 "
-    "qualificazione del fatto; Q2 attenuanti. Art. 635 c.p. -> 3 (Q1, il reato); art. 62 c.p. -> 2 (Q2, il danno "
-    "risarcito prima del giudizio); art. 133 c.p. -> 1 (la misura della pena non decide nessuna questione); "
-    "art. 2043 c.c. -> 0 (civile, il caso è solo penale).\n"
+    "1. Penale. Durante una lite <parte> danneggia un bene del vicino, poi lo ripaga. Q1 "
+    "qualificazione del fatto; Q2 attenuanti. L'articolo del reato -> 3 (Q1); l'attenuante del danno "
+    "risarcito prima del giudizio -> 2 (Q2); la norma sulla misura della pena -> 1 (non decide nessuna questione); "
+    "una norma civile sul risarcimento -> 0 (civile, il caso è solo penale).\n"
     "2. Penale, fase. Il cliente ha ricevuto l'avviso di conclusione delle indagini. Q1 che cosa può fare ora. "
-    "Art. 415-bis c.p.p. -> 3 (Q1); art. 408 c.p.p. -> 2 (Q1, l'archiviazione da sollecitare); art. 585 c.p.p. "
-    "-> 0 (i termini per impugnare una sentenza che non c'è).\n"
-    "3. Penale, parte generale. Tizio, aggredito con un coltello, colpisce l'aggressore. Q1 se il fatto è "
-    "giustificato. Art. 52 c.p. -> 3 (Q1: una norma generale che qui decide la questione); art. 55 c.p. -> 2 (Q1, "
-    "l'eccesso colposo, se i fatti lo pongono); art. 62-bis c.p. -> 1 (le attenuanti generiche non decidono se il "
+    "La norma su quell'avviso -> 3 (Q1); la norma sull'archiviazione da sollecitare -> 2 (Q1); la norma sui termini "
+    "per impugnare -> 0 (una sentenza che non c'è).\n"
+    "3. Penale, parte generale. <parte>, aggredito, colpisce l'aggressore. Q1 se il fatto è "
+    "giustificato. La norma sulla legittima difesa -> 3 (Q1: una norma generale che qui decide la questione); la norma "
+    "sull'eccesso colposo -> 2 (Q1, se i fatti lo pongono); le attenuanti generiche -> 1 (non decidono se il "
     "fatto è giustificato).\n"
     "4. Civile, contratti. Il compratore riceve merce difettosa e vuole sciogliere il contratto. Q1 risoluzione "
-    "per inadempimento; Q2 garanzia per vizi. Art. 1453 c.c. -> 3 (Q1); art. 1455 c.c. -> 2 (Q1, l'importanza "
-    "dell'inadempimento); art. 1495 c.c. -> 2 (Q2, i termini della denuncia); art. 1175 c.c. -> 1 (principio "
-    "generale che qui non decide nulla); art. 2051 c.c. -> 0 (nessuna cosa in custodia).\n"
+    "per inadempimento; Q2 garanzia per vizi. La norma sulla risoluzione -> 3 (Q1); quella sull'importanza "
+    "dell'inadempimento -> 2 (Q1); quella sui termini della denuncia dei vizi -> 2 (Q2); un principio "
+    "generale di correttezza -> 1 (qui non decide nulla); la norma sulle cose in custodia -> 0 (nessuna cosa in custodia).\n"
     "5. Civile, illecito. Un vaso cade da un balcone e danneggia un'auto in sosta. Q1 responsabilità del "
-    "proprietario del vaso; Q2 il danno. Art. 2051 c.c. -> 3 (Q1, la custodia); art. 2056 c.c. -> 2 (Q2, la "
-    "misura del risarcimento); art. 1490 c.c. -> 0 (garanzia nella vendita: nessuna vendita).\n"
+    "proprietario del vaso; Q2 il danno. La norma sulle cose in custodia -> 3 (Q1); quella sulla "
+    "misura del risarcimento -> 2 (Q2); la garanzia nella vendita -> 0 (nessuna vendita).\n"
     "6. Amministrativo. Il Comune non risponde da mesi a un'istanza di accesso agli atti. Q1 come ottenere i "
-    "documenti. Art. 25 l. 241/1990 -> 3 (Q1, il rimedio contro il diniego o il silenzio sull'accesso); art. 116 "
-    "c.p.a. -> 3 (Q1, il rito dell'accesso); art. 22 l. 241/1990 -> 2 (Q1, chi ha diritto di accesso); art. 41 "
-    "c.p.a. -> 1 (la notifica di ogni ricorso: non decide nulla qui); art. 1453 c.c. -> 0 (nessun contratto con il "
+    "documenti. La norma sul rimedio contro il diniego o il silenzio sull'accesso -> 3 (Q1); il rito "
+    "dell'accesso -> 3 (Q1); la norma su chi ha diritto di accesso -> 2 (Q1); la norma sulla notifica "
+    "di ogni ricorso -> 1 (non decide nulla qui); la risoluzione del contratto -> 0 (nessun contratto con il "
     "Comune).\n"
-    "7. Indizi. Un articolo dalla rubrica generica, applicato da 5 sentenze simili e della materia del caso, che "
+    "7. Indizi. Un articolo dalla rubrica generica, applicato da più sentenze simili e della materia del caso, che "
     "disciplina un elemento di Q1 -> 2, non 1; lo stesso articolo trovato da una sola ricerca, senza un fatto che "
     "lo ponga -> 1.\n"
 )
@@ -5708,8 +5706,8 @@ def _check_client_stance(draft: str, facts: str, request: str, analysis: Dict[st
 _QUALIFICATION_SYSTEM = (
     "Sei un giurista. Per ciascun articolo citato in una bozza di parere ti vengono dati la sua rubrica reale "
     "(il titolo ufficiale nel codice) e la frase della bozza che lo cita. Decidi se la rubrica è compatibile con "
-    "l'uso che la frase ne fa: un articolo sulla violenza sessuale citato come circostanza attenuante in un caso "
-    "di corruzione è incompatibile; un articolo generale (concorso di persone, circostanze, elemento psicologico) "
+    "l'uso che la frase ne fa: un articolo su un altro reato citato come circostanza attenuante in un caso "
+    "che non lo riguarda è incompatibile; un articolo generale (concorso di persone, circostanze, elemento psicologico) "
     "citato per quell'istituto è compatibile. Nel dubbio è compatibile. Restituisci SOLO un array JSON di oggetti "
     '{"articolo": l\'identificativo dato, "compatibile": true o false, "perche": una frase}.'
 )
@@ -6846,8 +6844,8 @@ def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str
         + (f"\n\nFonti dal corpus legale:\n{citations_text}" if citations_text else "")
         + (f"\n\nBOZZA DIFENSIVA DEL CASO (usa questi fatti come riferimento):\n{original_draft}" if original_draft else "")
         + "\n\nATTENZIONE CRITICA: "
-        "\n- L'art. 2697 c.c. è la norma generale sull'onere della prova — NON inventare altri articoli"
-        "\n- NON citare MAI numeri di sentenza specifici (es. n. 12345) a meno che non siano "
+        "\n- Cita la norma generale sull'onere della prova con il suo numero solo se è tra i testi forniti — NON inventare altri articoli"
+        "\n- NON citare MAI numeri di sentenza specifici (<numero>/<anno>) a meno che non siano "
         "esplicitamente presenti nelle fonti del corpus fornite sopra"
         "\n- Se non hai una sentenza specifica dal corpus, scrivi 'orientamento consolidato della "
         "Cassazione [DA VERIFICARE]' senza inventare numeri"

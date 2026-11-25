@@ -731,6 +731,21 @@ def frame_charge(state: Optional[Dict[str, Any]], mode: str = "") -> str:
     return label if label and binding_allows(mode, label) else ""
 
 
+def charge_view(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.19.0 (item 2): the charge the method reads -- the settled frame's (case_frame.bound «addebito_o_domanda»:
+    one source of truth, its rule «case_frame», its alternatives the frame's other charges), else the charge rule's
+    (state["charge"]: no verified frame charge)."""
+    from . import case_frame, posture as posture_mod
+    held = dict((state or {}).get("charge") or {}) if isinstance(state, dict) else {}
+    label = case_frame.bound(state, "addebito_o_domanda") if isinstance(state, dict) else None
+    if not label:
+        return held
+    if held.get("article") == label:
+        return {**held, "alternatives": case_frame.alternative_charges(state)}
+    return {**held, "article": label, "rule": posture_mod.FRAME_CHARGE_RULE,
+            "alternatives": case_frame.alternative_charges(state)}
+
+
 def charge_in_corpus(label: str) -> bool:
     """v79.14.3 (item 3): the charge's article is a code's (code_law: c.p., c.c., c.p.p. …) or of a law
     data/institution_laws.json lists (the laws the corpus is read for) -- the corpus line never names it."""
@@ -3340,6 +3355,12 @@ def corpus_line(ctx: Dict[str, Any]) -> str:
     if not institution_names(ctx.get("institutions") or []):
         return ""
     gap = corpus_gap(ctx)
+    # v79.19.0 (item 6): the honesty line only when the retrieval returned nothing for the pretesa -- a record read on
+    # the matter (any fitted article) means the parere is built on it, never on the corpus's silence
+    if gap and any(isinstance(r, dict) and not r.get("ranked_candidate") and not r.get("unprinted")
+                   for r in (ctx.get("records") or {}).values()):
+        ctx["corpus_line_skipped"] = "retrieval returned records for the pretesa"
+        return ""
     return CORPUS_LINE.format(materia=gap["materia"]) + "." if gap else ""
 
 
@@ -7656,7 +7677,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "certain_text": certain,
            "events": fact_events(state),
            "family_words": family_words(state, case),                        # v79.9 (C1)
-           "charge": dict(state.get("charge") or {}),                         # v79.10.5 (E1): held, by its rule
+           "charge": charge_view(state),                                      # v79.10.5 (E1): held, by its rule
            "event_proven": event_proven,                                      # v79.12.4 (item 4)
            "terms": computed_terms(state),                                    # v79.12.4 (item 7)
            # v79.12.7: the case's sentences (the riqualificazione's facts, the soccorso), the absorbed titles, the

@@ -352,7 +352,11 @@ def test_a_no_claim_answer_on_a_special_law_outside_the_archive_says_the_line(mo
     ctx = {"records": {"1218 c.c.": _rec("Responsabilità del debitore", _req(1, "l'inadempimento", "da provare"))},
            "circumstances": {}, "posture": _posture("civile", "attore"), "case": trip, "assessment": {},
            "institutions": ["pacchetto turistico"], "client": "Tizio", "no_action": "x", "no_action_kind": "none"}
-    assert M.no_claim_summary(ctx, "none") == M.CORPUS_LINE.format(materia="pacchetto turistico") + "."
+    # v79.19.0 (item 6): a record read on the matter -- the honesty line never prints, the norms read are the parere
+    assert M.no_claim_summary(ctx, "none") == M.NO_CLAIM_SUMMARY.format(materia="pacchetto turistico", client="Tizio")
+    assert ctx["corpus_line_skipped"] == "retrieval returned records for the pretesa"
+    empty = {**ctx, "records": {}}      # the retrieval returned nothing for the pretesa: the line, naming the gap
+    assert M.no_claim_summary(empty, "none") == M.CORPUS_LINE.format(materia="pacchetto turistico") + "."
     assert M.no_claim_summary({**ctx, "institutions": ["comodato"]}, "none") == M.NO_CLAIM_SUMMARY.format(
         materia="comodato", client="Tizio")
 

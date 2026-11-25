@@ -778,7 +778,8 @@ def test_the_examples_teach_no_held_out_article():
             for e in c.get("expected") or [] for a in (e.get("any_of") or [e["article"]])}
     codes = {"c.p.": "cp", "c.c.": "cc", "c.p.p.": "cpp", "c.p.c.": "cpc", "c.p.a.": "cpa", "l. 241/1990": "l241"}
     cited = re.findall(r"[Aa]rt\. ([\w-]+) (c\.p\.p\.|c\.p\.a\.|c\.p\.c\.|c\.p\.|c\.c\.|l\. 241/1990)", dg._GRADED_EXAMPLES)
-    assert len(cited) >= 20 and not {(n, codes[c]) for n, c in cited} & held
+    # v79.19.0 (item 1): the examples name no article at all -- nothing to copy, nothing held out
+    assert cited == [] and "<parte>" in dg._GRADED_EXAMPLES and held
 
 
 def test_with_evidence_the_check_grades_per_issue_without_examples(monkeypatch, logged):

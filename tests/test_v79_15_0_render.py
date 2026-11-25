@@ -39,19 +39,30 @@ def _verified_penal():
 
 # --- 1. «da determinare» ----------------------------------------------------------------------------------------------
 
-def test_a_step_not_ok_is_the_undetermined_line_everywhere():
+FIT_640 = "art. 640 c.p. — Truffa: elementi da provare dall'accusa (norma applicabile ai fatti, linea non verificata)"
+
+
+def test_a_step_not_ok_is_the_fitted_line_everywhere_and_undetermined_only_with_no_norm():
+    # v79.19.0 (item 6): the step not ok -- the best-tier fitted article (640 c.p.) leads with its elements da provare,
+    # everywhere the undetermined line stood; «da determinare» only when no fitted norm exists
     inp = T._penal()
     for result in (None, {"status": "failed", "analysis": None}, {"status": "timeout"}):
         v = A.view(result, inp)
-        assert A.summary_text(v) == "Linea principale: da determinare (linea non verificata)."
-        assert "da determinare (linea non verificata)" in A.solutions_text(v)
-        assert A.solutions_text(v).count("\n") == 2               # the head, the rule, the one undetermined row
-        assert A.conclusions_text(v) == "**Linea principale**: da determinare (linea non verificata)."
+        assert A.summary_text(v) == f"Linea principale: {FIT_640}."
+        assert FIT_640 not in A.solutions_text(v) and "| art. 640 c.p. | — | Truffa: elementi da provare dall'accusa | — |" \
+            in A.solutions_text(v)
+        assert A.solutions_text(v).count("\n") == 2               # the head, the rule, the one row
+        assert A.conclusions_text(v) == f"**Linea principale**: {FIT_640}."
         tables = A.norms_tables(v)
         assert tables.startswith(A.LABEL_NO_TABLE) and " su " not in tables
         assert "art. 62-bis c.p." in tables                       # the fitted general-part norm, named only
-        assert A.answer_strategy(v) == ["La linea principale è: da determinare (linea non verificata)."]
+        assert A.answer_strategy(v) == [f"La linea principale è: {FIT_640}."]
         assert A.statements_block(v) == ""
+    bare = T._penal(norms=[])
+    for result in (None, {"status": "failed", "analysis": None}):
+        v = A.view(result, bare)
+        assert A.summary_text(v) == "Linea principale: da determinare (linea non verificata)."
+        assert A.answer_strategy(v) == ["La linea principale è: da determinare (linea non verificata)."]
 
 
 def test_an_undetermined_line_from_the_step_prints_the_label_not_the_rejected_line():
@@ -169,5 +180,8 @@ def test_the_legacy_comparison_counts_the_line_and_the_verdicts():
     assert same["legacy_disagrees_esito"] == 2          # R1: provato vs contestato; R3: da provare vs escluso
     other = A.compare(v, {"linea_principale": {"articolo": "62-bis c.p."}}, records)
     assert other["legacy_disagrees_line"] == 1
-    undetermined = A.compare(A.view(None, T._penal()), {"linea_principale": {"articolo": "640 c.p."}}, records)
+    # v79.19.0 (item 6): the step not run -- the fitted article (640 c.p.) leads, so the legacy line agrees
+    fitted = A.compare(A.view(None, T._penal()), {"linea_principale": {"articolo": "640 c.p."}}, records)
+    assert fitted["legacy_disagrees_line"] == 0 and fitted["legacy_disagrees_esito"] == 0
+    undetermined = A.compare(A.view(None, T._penal(norms=[])), {"linea_principale": {"articolo": "640 c.p."}}, records)
     assert undetermined["legacy_disagrees_line"] == 1 and undetermined["legacy_disagrees_esito"] == 0

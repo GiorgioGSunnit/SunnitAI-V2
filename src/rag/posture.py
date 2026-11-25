@@ -603,7 +603,9 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
     if framed and article != framed and framed not in repealed:     # v79.14.0 (CASE_FRAME): the frame's charge --
         case_frame.defer(state, "addebito_o_domanda", "posture.choose_charge", article)     # the rule's logged, loses
         article, rule, extra, chosen_h = framed, FRAME_CHARGE_RULE, [], None
-    order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))
+    if framed and article == framed:        # v79.19.0 (items 3, 5): the frame's other charges are charged too --
+        extra = [x for x in case_frame.alternative_charges(state) if x not in repealed] + list(extra)   # alternative
+    order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))                 # lines
     # v79.12.4 (item 3): the heaviest charged fattispecie -- (review) never a circumstance (583 c.p., counted False),
     # the same filter main_threat and charge_rites read
     exposure = heaviest([x for x in order if x in records

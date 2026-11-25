@@ -240,7 +240,7 @@ def test_the_prompt_is_the_datas_with_the_verified_frame_the_facts_the_norms_and
     inp = _penal()
     system, human = [m.content for m in A.build_messages(inp)]
     assert system == A.prompt_system() and "linea_principale" in system and "affermazioni_di_diritto" in system
-    assert len(A.prompt_hash()) == 12 and A.prompt_hash() == "472423ea32d3"      # v79.15.1: elements by id
+    assert len(A.prompt_hash()) == 12 and A.prompt_hash() == "b69eefcd0577"      # v79.15.1: elements by id
     assert human.startswith("QUADRO DEL CASO (verificato):\nCliente: Paolo Sarti\nRuolo del cliente: imputato/indagato")
     assert "Addebito o domanda: 640 c.p.; truffa" in human and "- Giulia Neri (controparte; acquirente)" in human
     assert "S3 [certo] Secondo la Procura" in human and "S8 [certo] L'indagato dichiara" in human
@@ -434,12 +434,19 @@ def test_a_remedy_article_as_the_line_is_rejected_re_asked_once_then_da_determin
     assert res["status"] == "ok" and len(model.seen) == 2
     assert "rimedio o parte generale, mai una linea" in model.seen[1]["messages"][3].content
     lp = res["analysis"]["linea_principale"]
-    assert lp["stato"] == "da_determinare" and lp["articolo"] is None and lp["tesi"] == ""
-    assert lp["label"] == A.LINE_UNDETERMINED == "da determinare"
-    assert lp["label_sintesi"] == A.LINE_UNVERIFIED_LABEL == "linea non verificata"
-    assert res["analysis"]["elementi"] == {}                        # nothing from the old engine, nothing invented
+    # v79.19.0 (item 6): «da determinare» never while a fitted article exists -- the best-tier fitted norm (1385 c.c.,
+    # the first outside the remedy set) leads with its elements da provare; no element in play, no tesi of the model
+    assert lp["stato"] == A.FIT_LINE == "norma_applicabile" and lp["articolo"] == "1385 c.c."
+    assert lp["tesi"] == "Caparra confirmatoria: elementi da provare" and lp["eid"] is None
+    assert res["counters"]["analysis_line_fallback_fit"] == 1 and res["counters"]["analysis_line_undetermined"] == 0
+    assert set(res["analysis"]["elementi"]) == {"1385 c.c."}       # its elements, every one «da_provare»
+    assert all(e["esito"] == "da_provare" for e in res["analysis"]["elementi"]["1385 c.c."])
     c = res["counters"]
-    assert c["analysis_line_rejected"] == 2 and c["analysis_line_undetermined"] == 1 and c["analysis_calls"] == 2
+    assert c["analysis_line_rejected"] == 2 and c["analysis_line_undetermined"] == 0 and c["analysis_calls"] == 2
+    # no fitted norm at all: «da determinare»
+    bare = A.analyse(_civil(frame=no_claim, norms=[]), call=_Model(remedy, remedy))
+    assert bare["status"] == "no_input"
+    assert A.view(bare, _civil(frame=no_claim, norms=[]))["analysis"]["linea_principale"]["stato"] == "da_determinare"
     # 2043 c.c. on a contractual frame is a remedy too; the re-ask's own verified line is taken
     model = _Model(_reply(_line("2043 c.c.", E2043[1], "Danno.", ["S4"], ["A2043cc.1"])),
                    _reply(_line("1385 c.c.", E1385[1], "Inadempiente chi ha ricevuto.", ["S4"], ["A1385cc.2"])))
@@ -521,7 +528,7 @@ def test_a_failed_re_ask_keeps_the_first_replys_verification_with_its_fallbacks(
     model = _Model(_reply(_line("1453 c.c.", E1453[0], "Risoluzione.", ["S4"], ["A1453cc.1"])),
                    RuntimeError("down"))
     res = A.analyse(_civil(frame=no_claim), call=model)
-    assert res["status"] == "ok" and res["analysis"]["linea_principale"]["stato"] == "da_determinare"
+    assert res["status"] == "ok" and res["analysis"]["linea_principale"]["stato"] == A.FIT_LINE   # v79.19.0 (item 6)
     assert [c["status"] for c in res["calls"]] == ["ok", "failed"] and res["counters"]["analysis_calls"] == 2
 
 
@@ -621,7 +628,7 @@ def test_no_string_matcher_is_left_in_the_fit():
                  "_rests_on_passage", "_comma_of"):
         assert not hasattr(ap, name), name
     assert not hasattr(flow, "fact_source")
-    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "5b06ff45a132"
+    assert "fatto_citato" not in ap.prompt_system() and ap.prompt_hash() == "1c71b3e09bcd"
 
 
 def test_the_frames_verified_charge_is_protected_from_a_fit_no(monkeypatch):

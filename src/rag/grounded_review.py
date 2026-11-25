@@ -93,7 +93,7 @@ JUDGE_SYSTEM = (
     "\"procedura\" (un passaggio, un termine o un atto processuale), \"massima\" (ciò che la giurisprudenza o una "
     "sentenza afferma in generale: \"la Cassazione ha affermato...\", \"la giurisprudenza ritiene...\"), "
     "\"applicazione\" (applica una regola o una massima ai fatti di questo caso: il soggetto è una parte o un fatto "
-    "del caso, \"la reazione di Tizio era proporzionata\", \"il ritardo è imputabile al venditore\"), \"altro\" "
+    "del caso, \"la reazione di <parte> era proporzionata\", \"il ritardo è imputabile a <parte>\"), \"altro\" "
     "(fatti del caso, valutazioni, consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito "
     "confrontandole SOLO con il MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella "
     "regola o quel contenuto (per un'applicazione: la regola che applica), anche con altre parole, \"assente\" se "

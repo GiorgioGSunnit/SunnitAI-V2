@@ -273,6 +273,8 @@ CLIENT_ASSUMED = ("Non mi hai indicato chi assisti: imposto il parere per {name}
                   "come destinataria dell'azione. Se assisti un'altra parte, dimmelo e lo riscrivo.")   # name, role
 ROLE_READING = "Il quesito non indica la posizione del cliente: il parere la legge come {role}, perché {why}."   # v79.6
 CLIENT_DERIVED = "Il quesito non indica chi assisti: il parere è impostato per la parte {role}, come si ricava dal caso."   # v79
+# v79.19.0 (item 4, the brief's line): the frame deduced the client's side from the facts -- said, no stop, no question
+CLIENT_DEDUCED = "Il parere è impostato per {parte}, dedotto dai fatti: dimmi se assisti un'altra parte."   # parte
 CLIENT_UNKNOWN = ("Non mi hai indicato chi assisti e il caso non lo fa capire: il parere esamina la posizione delle parti "
                   "senza assumerne una. Dimmi chi assisti e lo riscrivo dal suo punto di vista.")
 # v79.14.0 (my draft): the case frame reads the client but no role (a verified «sconosciuto»): the honesty line, neither

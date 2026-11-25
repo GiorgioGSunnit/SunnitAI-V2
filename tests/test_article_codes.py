@@ -1,4 +1,5 @@
 """Every article a chat answer cites carries its code or law (src/rag/article_codes.py). Invented rows."""
+import re
 import os
 
 os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
@@ -65,4 +66,5 @@ def test_tagged_rows_and_law_labels():
 
 def test_the_synthesis_prompt_asks_for_the_code():
     from src.rag.prompts import synthesis_system_message
-    assert "art. 585 c.p.p." in synthesis_system_message("it")
+    assert "art. <numero> <codice>" in synthesis_system_message("it")      # v79.19.0: a placeholder, no example
+    assert not re.search(r"\b\d{2,4} c\.(c|p|p\.c|p\.p)\.", synthesis_system_message("it"))

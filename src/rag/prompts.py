@@ -57,7 +57,7 @@ _STANDING = {
     1: (
         "ACCESSIBLE. Write for an intelligent reader who is not a lawyer: short sentences and everyday "
         "words. When a technical term is unavoidable, explain it in a few words the first time it appears "
-        "(e.g. 'la caparra confirmatoria, cioè la somma versata alla firma a garanzia dell'adempimento'). "
+        "(e.g. '<termine>, cioè <spiegazione in poche parole>'). "
         "No Latin."
     ),
     2: (
@@ -68,7 +68,7 @@ _STANDING = {
         "ELEVATED. Formal legal prose as in a senior jurist's opinion: technical vocabulary, longer "
         "periodic sentences, impersonal constructions such as 'si osserva che', 'giova rilevare che', "
         "'ne discende che'. Use at least one Latin legal maxim or Latin technical expression that fits "
-        "the point (e.g. 'pacta sunt servanda', 'inadimplenti non est adimplendum', 'ex tunc', "
+        "the point (e.g. 'pacta sunt servanda', 'ex tunc', "
         "'ope legis', 'in dubio pro reo'). Latin is style, not content: it is allowed although it does "
         "not appear in the retrieved documents - the only exception to the grounding rules - but never "
         "present it as coming from a document and never use it to add a rule the documents do not contain."
@@ -265,9 +265,9 @@ def synthesis_system_message(
         f"CRITICAL GROUNDING: Answer ONLY using the retrieved data above. Never use knowledge outside the retrieved documents. If data is insufficient, say 'non è presente nei documenti' or 'non trovo informazioni nei documenti forniti'. "
         f"GROUNDING RULES - follow these strictly in order of priority: "
         f"Rule 1 - Answer from documents first: "
-        f"If the retrieved documents contain relevant information, always use it as the primary basis for your answer. Cite specific sections inline in your answer by referring to the document title and section. ARTICLE CITATION FORMAT: every article you cite carries its code or law, written right after the number, e.g. 'art. 585 c.p.p.', 'art. 52 c.p.', 'art. 1490 c.c.', 'art. 21-nonies l. 241/1990', 'art. 3 Cost.' -- never a bare 'art. 585' or '585', since c.p. and c.p.p. (or c.c. and c.p.c.) share article numbers. Only cite a section if the specific claim you are making is directly supported by content in that section - not merely because the document is topically related. How many sections to cite is set under RESPONSE LENGTH. Do not list all retrieved documents. Never say \"I don't have information\" when relevant documents are present. "
+        f"If the retrieved documents contain relevant information, always use it as the primary basis for your answer. Cite specific sections inline in your answer by referring to the document title and section. ARTICLE CITATION FORMAT: every article you cite carries its code or law, written right after the number, e.g. 'art. <numero> <codice>', 'art. <numero> <legge>' -- never a bare 'art. <numero>' or '<numero>', since c.p. and c.p.p. (or c.c. and c.p.c.) share article numbers. Only cite a section if the specific claim you are making is directly supported by content in that section - not merely because the document is topically related. How many sections to cite is set under RESPONSE LENGTH. Do not list all retrieved documents. Never say \"I don't have information\" when relevant documents are present. "
         f"Documents are relevant if they address the same legal domain or subject matter as the question, even partially. "
-        f"Documents are unrelated if they cover a completely different legal domain (e.g. anti-money laundering rules retrieved for a cultural heritage question, or HR policies retrieved for a tax law question). "
+        f"Documents are unrelated if they cover a completely different legal domain (rules of one legal domain retrieved for a question of another). "
         f"Rule 2 - Be honest about partial coverage: "
         f"If documents cover the topic generally but not the specific detail asked (e.g. a specific article number), say in the user's language: 'My documents cover this topic generally but do not contain the specific article/provision requested. Based on available documents I can tell you that...' then answer from what IS available. "
         f"Rule 3 - Missing topics - HARD STOP: "

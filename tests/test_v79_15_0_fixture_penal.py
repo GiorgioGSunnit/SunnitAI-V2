@@ -210,11 +210,16 @@ def test_a_failed_step_prints_the_undetermined_line_never_the_old_engines(monkey
     state, answer, by = run["state"], run["answer"], run["by"]
     c = state["block_counters"]
     assert by["analysis_step"][0][0]["status"] == "failed" and c["analysis_failed"] == 1 and c["analysis_calls"] == 1
-    assert H.section(answer, "sintesi") == "Linea principale: da determinare (linea non verificata)."
+    # v79.19.0 (item 6): never «da determinare» while a fitted article exists -- the charge's article leads with its
+    # elements da provare, said as unverified; no table, no count, nothing of the old engine
+    fit_line = ("art. 646 c.p. — Appropriazione indebita: elementi da provare dall'accusa (norma applicabile ai fatti, "
+                "linea non verificata)")
+    assert H.section(answer, "sintesi") == f"Linea principale: {fit_line}."
+    assert "da determinare" not in answer
     assert H.esito_column(answer) == [] and "Nessuna linea verificata" in H.section(answer, "norme")
     assert not re.search(r"\b\d+ su \d+\b", answer)
-    assert "da determinare (linea non verificata)" in H.section(answer, "soluzioni")
-    assert H.section(answer, "conclusioni") == "**Linea principale**: da determinare (linea non verificata)."
+    assert "Appropriazione indebita: elementi da provare dall'accusa" in H.section(answer, "soluzioni")
+    assert H.section(answer, "conclusioni") == f"**Linea principale**: {fit_line}."
     legacy = by["legacy_plan"][0][0]
-    assert legacy["legacy_disagrees_line"] == 1 and legacy["linea_principale"]["tesi"] not in answer
+    assert legacy["linea_principale"]["tesi"] not in answer
     assert "L'accusa deve provare" not in answer and "Esito probabile" not in answer

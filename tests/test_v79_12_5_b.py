@@ -146,7 +146,11 @@ def test_the_corpus_line_fires_where_the_governing_law_is_outside_the_codes_and_
     ctx = _civil({"1218 c.c.": _rec("Responsabilità del debitore", _req(1, "l'inadempimento"))},
                  "Tizio ha prestato a Caio una somma per un viaggio.", ["contratto di viaggio"])
     mods = {m["id"] for m in M.institution_modules()["modules"]}
-    assert not set(M.read_families(ctx)) & mods and M.corpus_line(ctx) == (
+    # v79.19.0 (item 6): a record read on the matter -- the line never prints; it prints only when the retrieval
+    # returned nothing for the pretesa (no record at all)
+    assert not set(M.read_families(ctx)) & mods and M.corpus_line(ctx) == ""
+    assert ctx["corpus_line_skipped"] == "retrieval returned records for the pretesa"
+    assert M.corpus_line({**ctx, "records": {}}) == (
         "Il corpus non contiene ancora informazioni sufficienti su contratto di viaggio: il parere si limita alle norme "
         "dei codici.")
     assert M.corpus_line({**ctx, "institutions": ["comodato"]}) == ""        # a module: never
@@ -162,7 +166,7 @@ def test_the_corpus_line_fires_where_the_governing_law_is_outside_the_codes_and_
     log = {}
     text = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan, log=log)
     summary = _sections(text)[M.title("sintesi")]
-    assert "Linea principale" in summary and summary.endswith(M.corpus_line(ctx)) and log["corpus_line"] is True
+    assert "Linea principale" in summary and "Il corpus non contiene" not in summary and not log.get("corpus_line")
 
 
 def test_no_objections_call_with_no_line():

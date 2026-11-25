@@ -2758,7 +2758,7 @@ eccepire), soggetto_passivo (chi subisce la condotta): liste di {{"ruolo": R, "c
 elencati ("chiunque" quando il testo dice «Chiunque» o non qualifica il soggetto); "condizione" è una frase («se …») \
 quando il ruolo vale solo a una condizione. Lista vuota quando il testo non lo dice.
 3. rapporto: l'id del rapporto regolato scelto tra {_quoted(module_ids())} quando uno corrisponde; altrimenti una breve \
-descrizione libera (es. "lesioni personali").
+descrizione libera (<il rapporto in poche parole>).
 4. elementi: OGNI comma del testo va coperto. Un elemento è un requisito che deve sussistere (o mancare) perché la \
 norma si applichi: {{"id": "E1", "testo": "...", "kind": "...", "kind_note": null, "comma": "1", "branches": [], \
 "connective": null, "parti": [], "grounding": "explicit", "fonte": {{"comma": "1", "testo": "..."}}, \
@@ -2796,7 +2796,7 @@ altrimenti null.
 "obbligo" | "diritto" | "invalidità" | "altro", "comma": "..."}}.
 8. commi_speciali: per ogni comma che non pone il caso base ma un caso speciale: {{"comma": "2", "kind": K, "schema": \
 {{lo stesso formato, senza commi_speciali}}}} con K tra i kind di un comma speciale elencati.
-9. collegati: gli articoli che il testo richiama espressamente, nella forma "583 c.p.".
+9. collegati: gli articoli che il testo richiama espressamente, nella forma "<numero> <codice>".
 10. Il testo abrogato (tra parentesi quadre o segnato «(abrogato)») non è mai vigente: nessun elemento, eccezione o \
 conseguenza ne deriva.
 11. Nessun elemento, eccezione o articolo che il testo non dica o non implichi necessariamente.

@@ -1,4 +1,5 @@
 """Leonardo v3 on Qwen3: the defects, from their exact strings, as general rules on invented cases."""
+import re
 import importlib.util
 import os
 from pathlib import Path
@@ -264,4 +265,8 @@ def test_the_case_s_context_comes_from_the_signals(monkeypatch):
 
 def test_the_writer_is_told_each_rule():
     rules = ptw._WRITER_RULES
-    assert all(word in rules for word in ("949", "1079", "1223", "2043", "1159", "preclusa", "1062", "TERMINI CALCOLATI"))
+    # v79.19.0 (item 1): each rule said by its institution, never by an article number the writer could copy
+    assert all(word in rules for word in ("negatoria", "confessoria", "misura del danno", "extracontrattuale",
+                                          "usucapione abbreviata", "preclusa", "destinazione del padre di famiglia",
+                                          "TERMINI CALCOLATI"))
+    assert not re.search(r"\b\d{3,4} c\.c\.", rules)

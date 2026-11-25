@@ -108,8 +108,19 @@ FIELDS = ("parti", "cliente", "ruolo", "rito", "stadio", "addebito_o_domanda", "
 VALUE_FIELDS = {"ruolo": "ruoli", "rito": "riti", "stadio": "stadi"}
 PENAL_RITI = ("penale", "penale_gdp")
 COUNTERS = ("frame_fields_verified",) + tuple(f"frame_unverified.{f}" for f in FIELDS) + \
-    tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds")
+    tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds") + \
+    ("frame_corrections_applied", "frame_pretese_count", "frame_article_disputed", "frame_role_deduced")   # v79.19.0
 OK, FAILED, MALFORMED, TIMEOUT, NO_TEXT = "ok", "failed", "malformed", "timeout", "no_text"
+# v79.19.0 (item 3): the frame may read several charges / claims (addebito_o_domanda a list of 1..MAX_PRETESE); the
+# first is the charge the principale line is built on (frame «addebito_o_domanda»), every verified one is in frame
+# «addebiti» (the others: alternative lines, their own §4 schede). (item 4) a role the text does not state but the
+# facts allow to deduce: «fonte»: «dedotto» (frame ruolo «dedotto»: the banner says so). (item 5) the article the facts
+# point to when it differs from the one the text names: «articolo_dai_fatti» (frame addebito «articolo_fatti»,
+# «disputed»: both go to the fit, the judgment decides -- apply_fit).
+MAX_PRETESE = 3
+DEDUCED = "dedotto"
+SETTLED = "settled"             # state["frame"]: the corrected frame, written once (settle), read by every later step
+CORRECTION_EVENT = "frame_correction"
 
 
 def enabled() -> bool:
@@ -414,6 +425,7 @@ class _Report:
         self.empty: List[str] = []
         self.counters = empty_counters()
         self.log: List[Dict[str, Any]] = []
+        self.corrections: List[Dict[str, Any]] = []      # v79.19.0 (item 2): the reading's corrections, old -> new
 
     def fail(self, field: str, reason: str, value: Any = None, count: bool = True) -> None:
         """A field (or a part of it, «field.part») dropped: logged, counted frame_unverified.<field>."""
@@ -457,6 +469,15 @@ def _verify_value(rep: _Report, field: str, raw: Any) -> None:
         return
     rep.frame[field] = {"valore": value_c, "intake": (config().get(table) or {}).get(value_c, value_c),
                         "perche": _flat(why), "citazione": quoted}
+    if field == "ruolo" and isinstance(raw, dict) and _deduced(_get(raw, "fonte", "source")) and value_c != unknown:
+        rep.frame[field][DEDUCED] = True        # v79.19.0 (item 4): read from the facts, not stated: the banner says so
+        rep.counters["frame_role_deduced"] = 1
+
+
+def _deduced(fonte: Any) -> bool:
+    """v79.19.0 (item 4): the reply says the role is deduced from the facts («fonte»: data «deduced_words»)."""
+    f = _fold(fonte)
+    return bool(f) and any(f == w or f.startswith(w) for w in (config().get("deduced_words") or [DEDUCED]))
 
 
 def _verify_parti(rep: _Report, raw: Any) -> List[Dict[str, Any]]:
@@ -630,49 +651,136 @@ def _verify_cliente(rep: _Report, raw: Any, listed: Sequence[Dict[str, Any]]) ->
 
 def _verify_addebito(rep: _Report, raw: Any, rito: str) -> None:
     """The charge or claim: its frase found; its descrizione in the text's words; in a penal rito its article a penal
-    provision."""
+    provision. v79.19.0 (item 3): a list of 1..MAX_PRETESE such objects -- each verified on its own; the first verified
+    one is «addebito_o_domanda», all of them «addebiti» (frame_pretese_count); more than MAX_PRETESE: the rest dropped
+    and logged."""
     if _blank(raw):
         rep.empty.append("addebito_o_domanda")
         return
+    items = [x for x in (raw if isinstance(raw, list) else [raw]) if not _blank(x)]
+    if not items:
+        rep.empty.append("addebito_o_domanda")
+        return
+    if len(items) > MAX_PRETESE:
+        rep.fail("addebito_o_domanda", f"più di {MAX_PRETESE} addebiti ({len(items)}): letti i primi {MAX_PRETESE}",
+                 raw, count=False)
+        items = items[:MAX_PRETESE]
+    kept: List[Dict[str, Any]] = []
+    for item in items:
+        got = _verify_one_addebito(rep, item, rito)
+        if got is not None and not any(got["frase"] == k["frase"] and got.get("articolo") == k.get("articolo")
+                                       for k in kept):
+            kept.append(got)
+    if not kept:
+        return
+    rep.frame["addebito_o_domanda"] = kept[0]
+    rep.frame["addebiti"] = kept
+    rep.counters["frame_pretese_count"] = len(kept)
+
+
+_FRASE_ART_RE = re.compile(r"\bart(?:icol[oi]|t)?\.?\s*(\d+(?:\s*-?\s*(?:bis|ter|quater|quinquies|sexies|septies|"
+                           r"octies|novies|decies))?)\b[^\n«»]{0,40}", re.IGNORECASE)
+
+
+def _frase_articles(frase: Any) -> List[Dict[str, str]]:
+    """v79.19.0 (item 2): the articles a charge sentence cites with their code («contestato l'art. 584 c.p.»), each
+    once, in order -- what the text names, against which the reply's number is checked."""
+    out: List[Dict[str, str]] = []
+    for m in _FRASE_ART_RE.finditer(_flat(frase)):
+        got = parse_article(m.group(0))
+        if got["number"] and got["code"] and not any(x["number"] == got["number"] and x["code"] == got["code"]
+                                                     for x in out):
+            out.append(got)
+    return out
+
+
+def _parse_charge_article(rep: _Report, article_raw: Any, rito: str, part: str, raw: Any) -> Optional[Dict[str, str]]:
+    """One article of the reply (part: «articolo» or «articolo_fatti»): parsed, a bare number taking the code the text
+    cites it with, in a penal rito a penal provision (charge_rito_dropped); None when dropped (logged)."""
+    art = parse_article(article_raw)
+    penal = rito in PENAL_RITI
+    if art["number"] and not art["code"]:
+        cited = _cited_code(rep.text, art["number"])
+        if cited:
+            art = cited
+        else:
+            rep.fail(f"addebito_o_domanda.{part}", f"articolo senza codice: {_flat(article_raw)[:40]!r}", raw)
+            return None
+    elif not art["number"]:
+        rep.fail(f"addebito_o_domanda.{part}", f"articolo illeggibile: {_flat(article_raw)[:40]!r}", raw)
+        return None
+    if penal and not is_penal(art):
+        rep.counters["charge_rito_dropped"] += 1
+        rep.fail(f"addebito_o_domanda.{part}", f"in un rito penale «{_flat(article_raw)[:40]}» non è una norma "
+                                               f"penale", raw)
+        _log("charge_rito_dropped", {"articolo": _flat(article_raw)[:80], "rito": rito})
+        return None
+    return art
+
+
+def _article_text(art: Dict[str, str]) -> str:
+    return f"{art['number']} {art['rest']}".strip()
+
+
+def _verify_one_addebito(rep: _Report, raw: Any, rito: str) -> Optional[Dict[str, Any]]:
+    """One charge / claim object verified (see _verify_addebito). v79.19.0 (item 2): the reply's article number is
+    checked against the article the charge sentence itself cites -- the sentence names one article with its code and
+    the reply's number differs: the text's article stands (a correction: «corretto_da», frame_corrections_applied,
+    logged frame_correction). (item 5) «articolo_dai_fatti»: the article the facts point to when it differs from the
+    one the text names -- kept as «articolo_fatti» with «disputed» (frame_article_disputed; both go to the fit); with
+    no article named by the text it is the article itself («da_fatti»)."""
     if not isinstance(raw, dict):
         rep.fail("addebito_o_domanda", "non è un oggetto", raw)
-        return
+        return None
     frase = _get(raw, "frase", "perche", "perché")
     ok, quoted, reason = quote_check(rep.text, frase)
     if not ok:
         rep.fail("addebito_o_domanda", reason, raw)
-        return
+        return None
     descr = _flat(_get(raw, "descrizione", "description"))
     if descr and ungrounded(descr, rep.text):
         rep.fail("addebito_o_domanda.descrizione",
                  f"parole non nel testo: {', '.join(ungrounded(descr, rep.text)[:6])}", raw)
         descr = ""
-    out = {"articolo": None, "numero": "", "codice": "", "descrizione": descr, "frase": _flat(frase),
-           "citazione": quoted}
+    out: Dict[str, Any] = {"articolo": None, "numero": "", "codice": "", "descrizione": descr, "frase": _flat(frase),
+                           "citazione": quoted}
     article_raw = _get(raw, "articolo", "article")
-    if not _blank(article_raw):
-        art = parse_article(article_raw)
-        penal = rito in PENAL_RITI
-        if art["number"] and not art["code"]:
-            cited = _cited_code(rep.text, art["number"])
-            if cited:
-                art = cited
-            else:
-                rep.fail("addebito_o_domanda.articolo", f"articolo senza codice: {_flat(article_raw)[:40]!r}", raw)
-                art = None
-        elif not art["number"]:
-            rep.fail("addebito_o_domanda.articolo", f"articolo illeggibile: {_flat(article_raw)[:40]!r}", raw)
-            art = None
-        if art and penal and not is_penal(art):
-            rep.counters["charge_rito_dropped"] += 1
-            rep.fail("addebito_o_domanda.articolo", f"in un rito penale «{_flat(article_raw)[:40]}» non è una norma "
-                                                    f"penale", raw)
-            _log("charge_rito_dropped", {"articolo": _flat(article_raw)[:80], "rito": rito})
-            art = None
-        if art:
-            out.update({"articolo": f"{art['number']} {art['rest']}".strip(), "numero": art["number"],
-                        "codice": art["code"]})
-    rep.frame["addebito_o_domanda"] = out
+    art = _parse_charge_article(rep, article_raw, rito, "articolo", raw) if not _blank(article_raw) else None
+    if art:
+        named = _frase_articles(" ".join(quoted))
+        if len(named) == 1 and (named[0]["number"] != art["number"] or named[0]["code"] != art["code"]):
+            before = _article_text(art)
+            art = named[0] if not (rito in PENAL_RITI and not is_penal(named[0])) else art
+            if _article_text(art) != before:
+                _correct(rep, "addebito_o_domanda.articolo", before, _article_text(art),
+                         "il testo cita un altro articolo nella frase dell'addebito", "read")
+                out["corretto_da"] = before
+        out.update({"articolo": _article_text(art), "numero": art["number"], "codice": art["code"]})
+    facts_raw = _get(raw, "articolo_dai_fatti", "articolo_fatti", "article_from_facts")
+    if not _blank(facts_raw):
+        facts = _parse_charge_article(rep, facts_raw, rito, "articolo_fatti", raw)
+        if facts and art and facts["number"] == art["number"] and (facts["code"] == art["code"] or not facts["code"]):
+            facts = None                    # the same article: nothing disputed
+        if facts and not art:
+            out.update({"articolo": _article_text(facts), "numero": facts["number"], "codice": facts["code"],
+                        "da_fatti": True})
+        elif facts:
+            out["articolo_fatti"] = _article_text(facts)
+            out["disputed"] = True
+            rep.counters["frame_article_disputed"] = int(rep.counters.get("frame_article_disputed") or 0) + 1
+            _log("frame_article_disputed", {"articolo": out["articolo"], "articolo_fatti": out["articolo_fatti"],
+                                            "frase": out["frase"][:160]})
+    return out
+
+
+def _correct(rep: _Report, field: str, old: Any, new: Any, why: str, step: str) -> None:
+    """v79.19.0 (item 2): a correction of the frame at reading time, logged with the field and old -> new
+    (frame_correction) and counted frame_corrections_applied; kept in the result's «corrections»."""
+    entry = {"field": field, "old": _flat(old)[:200], "new": _flat(new)[:200], "why": why, "step": step}
+    rep.corrections.append(entry)
+    rep.counters["frame_corrections_applied"] = int(rep.counters.get("frame_corrections_applied") or 0) + 1
+    logger.info("case_frame: %s corrected %r -> %r (%s)", field, entry["old"], entry["new"], why)
+    _log(CORRECTION_EVENT, entry)
 
 
 def _verify_istituto(rep: _Report, raw: Any) -> None:
@@ -786,7 +894,8 @@ def _finish(rep: _Report, failed: bool = False) -> Dict[str, Any]:
     rep.counters["frame_failed"] = int(failed)
     empty = list(FIELDS) if failed else [f for f in FIELDS if f in rep.empty and f not in verified]
     return {"frame": rep.frame, "verified": verified, "unverified": rep.unverified, "empty": empty,
-            "fallback": [f for f in FIELDS if f not in verified], "counters": rep.counters, "log": rep.log}
+            "fallback": [f for f in FIELDS if f not in verified], "counters": rep.counters, "log": rep.log,
+            "corrections": rep.corrections}
 
 
 # --- the call ---------------------------------------------------------------------------------------------------------
@@ -966,15 +1075,210 @@ AUDIT_COUNTERS = ("frame_conflict", "frame_conflict_attempts", "role_flip", "cha
 
 
 def held(holder: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The request's frame (read's result) the holder carries -- a state (state["case_frame"], else its intake's) or an
-    intake result (its «case_frame») -- with CASE_FRAME on; None otherwise (the flag off: nothing binds)."""
+    """The request's frame the holder carries -- v79.19.0 (item 2): the settled one first (state["frame"]: the read's
+    result with the corrections applied, written once by settle -- every later step reads it and nothing else), else
+    the read's result (state["case_frame"], else its intake's, or an intake result's «case_frame») -- with CASE_FRAME
+    on; None otherwise (the flag off: nothing binds)."""
     if not isinstance(holder, dict) or not enabled():
         return None
+    settled = holder.get("frame")
+    if isinstance(settled, dict) and settled.get(SETTLED) and isinstance(settled.get("frame"), dict):
+        return settled
     for got in (holder.get("case_frame"), (holder.get("intake") or {}).get("case_frame")
                 if isinstance(holder.get("intake"), dict) else None):
         if isinstance(got, dict) and isinstance(got.get("frame"), dict):
             return got
     return None
+
+
+# --- v79.19.0 (item 2): one source of truth -- state["frame"], the corrected frame written once ------------------------
+# After the frame's read (verify: its own corrections, «corrections») and the correction passes the pipeline applies
+# (the rules' finer role word -- intake._refine_frame_role --, a penal posture refusing a non-penal charge --
+# settle_posture --, the applicability judgment settling a disputed article -- apply_fit), the corrected values are in
+# state["frame"] (settle: a copy of the read's result, SETTLED); held returns it first, so every consumer (bound,
+# charge_label, intake_view, the line choice, the decomposition, the rites, the procedibilità, §8, the writer) reads
+# the same values. Each correction: {field, old, new, why, step}, logged frame_correction, counted
+# frame_corrections_applied (audit).
+
+def settle(holder: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """state["frame"] from state["case_frame"] (the read's result): a deep copy, SETTLED, its corrections those of the
+    reading plus the role refinement intake recorded («refined_from»); each charge / claim gets its records' label
+    («label», charge_label). Idempotent: an already settled frame is returned as it is. None with no frame."""
+    import copy
+    if not isinstance(holder, dict) or not enabled():
+        return None
+    have = holder.get("frame")
+    if isinstance(have, dict) and have.get(SETTLED) and isinstance(have.get("frame"), dict):
+        return have
+    got = holder.get("case_frame")
+    if not isinstance(got, dict) or not isinstance(got.get("frame"), dict):
+        return None
+    out = copy.deepcopy(got)
+    out[SETTLED] = True
+    out["corrections"] = list(got.get("corrections") or [])
+    f = out["frame"]
+    role = f.get("ruolo") or {}
+    if role.get("refined_from") and role.get("refined_from") != role.get("intake"):
+        _settle_correction(out, "ruolo.intake", role["refined_from"], role["intake"],
+                           "la parola più precisa delle regole per lo stesso lato", "intake")
+    for a in _addebiti(f):
+        a["label"] = charge_label({"frame": {"addebito_o_domanda": a}}) if a.get("articolo") else ""
+        if a.get("articolo_fatti"):
+            got_f = _ap_label(a["articolo_fatti"])
+            a["label_fatti"] = got_f
+    holder["frame"] = out
+    _log("frame_settled", {"corrections": out["corrections"], "addebiti": [a.get("label") for a in _addebiti(f)],
+                           "disputed": [a.get("label_fatti") for a in _addebiti(f) if a.get("disputed")]})
+    return out
+
+
+def _ap_label(articolo: Any) -> str:
+    from . import posture
+    got = posture.sentence_articles(f"art. {_flat(articolo)}")
+    return got[0] if got else ""
+
+
+def _addebiti(f: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The frame's charges / claims in order (v79.19.0 item 3: «addebiti», else the one «addebito_o_domanda»)."""
+    many = f.get("addebiti")
+    if isinstance(many, list) and many:
+        return [a for a in many if isinstance(a, dict)]
+    one = f.get("addebito_o_domanda")
+    return [one] if isinstance(one, dict) else []
+
+
+def _settle_correction(out: Dict[str, Any], field: str, old: Any, new: Any, why: str, step: str) -> Dict[str, Any]:
+    entry = {"field": field, "old": _flat(old)[:200], "new": _flat(new)[:200], "why": why, "step": step}
+    out.setdefault("corrections", []).append(entry)
+    counters = out.setdefault("counters", {})
+    counters["frame_corrections_applied"] = int(counters.get("frame_corrections_applied") or 0) + 1
+    logger.info("case_frame: %s corrected %r -> %r (%s, %s)", field, entry["old"], entry["new"], why, step)
+    _log(CORRECTION_EVENT, entry)
+    return entry
+
+
+def settle_posture(holder: Dict[str, Any], posture: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The posture's correction pass, once: in a penal posture a charge whose article is no penal provision loses its
+    article (the frame had no rito to check it against; charge_rito_dropped, holder «frame_charge_refused» for the
+    audit) -- a correction old -> "". The corrections made."""
+    out = settle(holder)
+    if out is None or out.get("posture_checked"):
+        return []
+    out["posture_checked"] = True
+    made = []
+    if not _penal_posture(posture if posture is not None else holder.get("posture")):
+        return made
+    for a in _addebiti(out["frame"]):
+        for key, label_key in (("articolo", "label"), ("articolo_fatti", "label_fatti")):
+            label = a.get(label_key) or ""
+            if label and not is_penal(parse_article(label)):
+                made.append(_settle_correction(out, f"addebito_o_domanda.{key}", label, "",
+                                               "in una posizione penale non è una norma penale", "posture"))
+                a[f"refused_{key}"] = label
+                a[key], a[label_key] = None, ""
+                if key == "articolo":
+                    a["numero"], a["codice"] = "", ""
+                    if holder.get("frame_charge_refused") != label:     # the audit counts it charge_rito_dropped
+                        holder["frame_charge_refused"] = label
+                    _log("charge_rito_dropped", {"articolo": label, "rito": "penale (posture)", "where": "settle"})
+                else:
+                    a.pop("disputed", None)
+    return made
+
+
+def apply_fit(holder: Dict[str, Any], judgments: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.19.0 (item 5): the applicability judgment settles a disputed article, once -- the text's article judged «no»
+    (verified) and the facts' one «si» or «dipende»: the facts' article is the charge (a correction old -> new, why
+    the judgment); the text's article judged «si» / «dipende»: it stands, the facts' one stays an alternative
+    (alternative_charges). Neither verified: nothing changes (the text's article stands, logged). The corrections
+    made."""
+    out = settle(holder)
+    if out is None or out.get("fit_checked"):
+        return []
+    out["fit_checked"] = True
+    verdict: Dict[str, str] = {}
+    for j in judgments or []:
+        if isinstance(j, dict) and j.get("verified") and j.get("article") and j.get("fit"):
+            verdict[_norm(j["article"])] = str(j["fit"])
+    made = []
+    for a in _addebiti(out["frame"]):
+        if not a.get("disputed") or not a.get("label_fatti"):
+            continue
+        text_v, facts_v = verdict.get(_norm(a.get("label") or "")), verdict.get(_norm(a["label_fatti"]))
+        if text_v == "no" and facts_v in ("si", "dipende"):
+            made.append(_settle_correction(out, "addebito_o_domanda.articolo", a.get("label"), a["label_fatti"],
+                                           f"giudizio di applicabilità: l'articolo citato nel testo non governa i "
+                                           f"fatti («no»), quello letto dai fatti «{facts_v}»", "fit"))
+            a["disputed_resolved"] = "fatti"
+            a["articolo_testo"], a["label_testo"] = a.get("articolo"), a.get("label")
+            a["articolo"], a["label"] = a["articolo_fatti"], a["label_fatti"]
+            parsed = parse_article(a["articolo"])
+            a["numero"], a["codice"] = parsed["number"], parsed["code"]
+        else:
+            a["disputed_resolved"] = "testo"
+            _log("frame_article_disputed_kept", {"articolo": a.get("label"), "articolo_fatti": a["label_fatti"],
+                                                 "fit_testo": text_v, "fit_fatti": facts_v})
+    return made
+
+
+def _norm(label: Any) -> str:
+    try:
+        return _es().norm_label(str(label or ""))
+    except Exception:           # noqa: BLE001
+        return " ".join(str(label or "").lower().split())
+
+
+def charges(holder: Optional[Dict[str, Any]]) -> List[str]:
+    """v79.19.0 (item 3): the frame's charge / claim labels in order (the first the principale line's), "" entries
+    out; [] with no frame or no article."""
+    got = held(holder)
+    if got is None:
+        return []
+    out = []
+    for a in _addebiti(got["frame"]):
+        label = a.get("label") if "label" in a else (charge_label({"frame": {"addebito_o_domanda": a}})
+                                                    if a.get("articolo") else "")
+        if label and label not in out:
+            out.append(label)
+    return out
+
+
+def alternative_charges(holder: Optional[Dict[str, Any]]) -> List[str]:
+    """v79.19.0 (items 3, 5): the labels that become alternative lines -- the charges after the first, and a disputed
+    article not chosen as the charge (the facts' one while the text's stands, the text's once the judgment chose the
+    facts')."""
+    got = held(holder)
+    if got is None:
+        return []
+    out: List[str] = []
+    first = charges(holder)[:1]
+    for n, a in enumerate(_addebiti(got["frame"])):
+        label = a.get("label") or ""
+        if n and label and label not in first and label not in out:
+            out.append(label)
+        other = a.get("label_testo") if a.get("disputed_resolved") == "fatti" else a.get("label_fatti")
+        if a.get("disputed") and other and other not in first and other not in out:
+            out.append(other)
+    return out
+
+
+def disputed(holder: Optional[Dict[str, Any]]) -> bool:
+    """v79.19.0 (item 5): the frame's charge carries a disputed article the judgment has not settled yet."""
+    got = held(holder)
+    if got is None:
+        return False
+    return any(a.get("disputed") and not a.get("disputed_resolved") for a in _addebiti(got["frame"]))
+
+
+def role_deduced(holder: Optional[Dict[str, Any]]) -> bool:
+    """v79.19.0 (item 4): the held frame's role was deduced from the facts, not stated."""
+    got = held(holder)
+    return got is not None and bool((got["frame"].get("ruolo") or {}).get(DEDUCED))
+
+
+def corrections(holder: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    got = held(holder)
+    return list((got or {}).get("corrections") or [])
 
 
 def charge_label(result: Optional[Dict[str, Any]]) -> str:
@@ -1014,14 +1318,16 @@ def bound(holder: Optional[Dict[str, Any]], field: str, posture: Optional[Dict[s
         v = view["rito" if field == "rito" else "stage"]
         return v if v and v != unknown else None
     if field == "addebito_o_domanda":
+        # v79.19.0 (item 2): the penal posture's refusal is a correction pass (settle_posture), applied once into the
+        # settled frame -- the first read with a posture at hand applies it; an unsettled frame's read only refuses
+        # (no side effect)
+        if got.get(SETTLED) and not got.get("posture_checked") and (posture is not None or holder.get("posture")):
+            settle_posture(holder, posture)
+            got = held(holder) or got
         label = charge_label(got)
-        if label and _penal_posture(posture if posture is not None else holder.get("posture")) and \
+        if label and not got.get(SETTLED) and _penal_posture(posture if posture is not None
+                                                             else holder.get("posture")) and \
                 not is_penal(parse_article(label)):
-            if holder.get("frame_charge_refused") != label:
-                holder["frame_charge_refused"] = label
-                logger.info("case_frame: the frame's charge %r is no penal provision in a penal posture: refused",
-                            label)
-                _log("charge_rito_dropped", {"articolo": label, "rito": "penale (posture)", "where": "bound"})
             return None
         return label or None
     if field == "istituto":
@@ -1225,9 +1531,18 @@ def audit(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     charge = delivered["addebito_o_domanda"]
     out["charge_rito_mismatch"] = int(bool(charge) and (rito in PENAL_RITI or posture.get("family") == "penale")
                                       and not is_penal(parse_article(charge)))
+    # v79.19.0: the corrections applied to the settled frame (item 2), the charges read (item 3), the disputed
+    # article (item 5), the deduced role (item 4)
+    made = list(got.get("corrections") or [])
+    out["frame_corrections_applied"] = len(made)
+    out["frame_pretese_count"] = len(_addebiti(got["frame"]))
+    out["frame_article_disputed"] = int(any(a.get("disputed") for a in _addebiti(got["frame"])))
+    out["frame_role_deduced"] = int(role_deduced(state))
     out["frame_audit"] = {"changed": changed, "filled": filled, "conflicts": conflicts,
                           "role": {"frame_or_intake": first, "method": method, "client_is_counterparty": taken,
-                                   "role_flip_reasons": reasons}}
+                                   "role_flip_reasons": reasons},
+                          "corrections": made, "charges": charges(state), "alternative_charges":
+                          alternative_charges(state)}
     return out
 
 

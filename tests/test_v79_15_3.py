@@ -1,5 +1,5 @@
 """v79.15.3 (hotfix) -- three rendering fixes in the analysis step (src/rag/analysis_step.py, data/analysis_step.json
-«claimant», «rendering», «objection_answer_check»). No prompt change (prompt hash 472423ea32d3), no new logic in the
+«claimant», «rendering», «objection_answer_check»). No prompt change (prompt hash b69eefcd0577), no new logic in the
 model call. The model is faked at its source; every other model path and every outbound socket refused
 (tests/test_v79_15_0_analysis.py's sealing, re-exported; the end-to-end runs through tests/_fixture_79_15_0.py).
 Synthetic facts and invented names only; statutory article texts.
@@ -56,7 +56,7 @@ def _civil_reply(esito, cf_=("S4",), tesi="Lucia Ferri può esigere il doppio de
 # --- 1. the tesi rendered by the code ---------------------------------------------------------------------------------
 
 def test_the_prompt_is_unchanged():
-    assert A.prompt_hash() == "472423ea32d3"
+    assert A.prompt_hash() == "b69eefcd0577"
 
 
 @pytest.mark.parametrize("esito,cf_,want", [

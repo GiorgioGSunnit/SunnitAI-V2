@@ -119,7 +119,7 @@ _PLAN_SYSTEM = (
     "- La questione centrale è la domanda da cui dipende l'esito per la parte assistita, in una frase: va "
     "risolta per prima e mai concessa.\n"
     "- Per ogni questione scegli le norme che la disciplinano leggendone la rubrica e il testo in NORME e "
-    "indicale con l'identificativo esatto (\"art. 1384 c.c.\"); una norma va solo dove disciplina proprio ciò "
+    "indicale con l'identificativo esatto (\"art. <numero> <codice>\"); una norma va solo dove disciplina proprio ciò "
     "che l'argomento le attribuisce; mai norme che non sono in NORME, mai a memoria.\n"
     "- L'argomento non può affermare il contrario di ciò che dice il testo della norma su cui si fonda.\n"
     "- Se un quesito chiede quale rito, rimedio o iniziativa scegliere, rispondi confrontando le possibilità "
@@ -220,9 +220,9 @@ def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
 # a party with several roles in the facts is liable for each.
 _STANCE_RULES = (
     "- Non proporre mai azioni, domande, denunce o querele contro la parte assistita o contro chi è assistito "
-    "insieme a essa (per esempio uno dei familiari che chiedono il parere): un loro eventuale concorso di colpa è "
+    "insieme a essa (un'altra parte assistita): un loro eventuale concorso di colpa è "
     "solo una difesa della controparte, da trattare come obiezione con la sua replica.\n"
-    "- Se una parte ha più ruoli nei fatti (per esempio ha costruito un bene e poi lo gestisce o lo mantiene), "
+    "- Se una parte ha più ruoli nei fatti (più condotte in tempi diversi), "
     "valuta la sua responsabilità per ciascun ruolo, con le norme di ciascuno.\n")
 
 
@@ -230,13 +230,13 @@ _PLAN_CHECK_SYSTEM = (
     "Sei un giurista e controlli il piano di un parere prima che venga scritto. Ricevi una questione del piano "
     "(titolo e argomento della parte assistita) e le norme che il piano vi collega, ciascuna con la sua rubrica "
     "reale e il suo testo. Per ciascuna norma rispondi a due domande.\n"
-    "- \"pertinente\": la norma disciplina davvero ciò per cui l'argomento la usa? Una norma sull'arresto in "
-    "flagranza citata per il giudizio abbreviato, o una sulla licenza per finita locazione citata per una "
-    "servitù, non è pertinente; una norma generale citata per il suo istituto lo è; la norma che definisce il "
+    "- \"pertinente\": la norma disciplina davvero ciò per cui l'argomento la usa? Una norma di un istituto "
+    "citata per una questione che riguarda un altro istituto "
+    "non è pertinente; una norma generale citata per il suo istituto lo è; la norma che definisce il "
     "reato o l'istituto di cui la questione tratta è pertinente anche quando l'argomento ne riguarda un aspetto "
     "(il tentativo, le circostanze, la prova).\n"
     "- \"contraddice\": l'argomento afferma il contrario di ciò che il testo della norma dice? Se il testo dice "
-    "che la penale è dovuta indipendentemente dalla prova del danno, un argomento secondo cui la penale "
+    "che una somma è dovuta indipendentemente dalla prova del danno, un argomento secondo cui essa "
     "richiede la prova del danno la contraddice. Un argomento che ne chiede l'applicazione, la riduzione o "
     "un'eccezione prevista dal testo non la contraddice.\n"
     "Nel dubbio: pertinente true, contraddice false. Restituisci SOLO un array JSON, un oggetto per norma: "
@@ -1151,10 +1151,10 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], heading
 #    "Diritto di passaggio", both art. 1051 c.c.); an evidence list identical to an earlier one is not repeated.
 
 _ACQUIRED_RULE = (
-    "- Se i fatti o i DIRITTI GIÀ ACQUISITI indicano che la parte assistita ha già acquistato il diritto (servitù "
-    "per destinazione del padre di famiglia, usucapione, un contratto), la prima questione è il riconoscimento e "
+    "- Se i fatti o i DIRITTI GIÀ ACQUISITI indicano che la parte assistita ha già acquistato il diritto (per un titolo, "
+    "per il decorso del tempo o per legge), la prima questione è il riconoscimento e "
     "la tutela di quel diritto (accertamento, azione confessoria, cessazione delle turbative); un rimedio che "
-    "costituisce il diritto ex novo (passaggio coattivo con indennità, costituzione giudiziale di una servitù) va "
+    "costituisce il diritto ex novo (una costituzione giudiziale, con o senza indennità) va "
     "solo in via subordinata, dopo, e non è la questione centrale.\n"
     "- Le domande subordinate sono ciò che chiede la parte assistita: mai le difese della controparte (un concorso di "
     "colpa dell'assistito va tra i punti deboli o nelle obiezioni).\n")
@@ -1882,8 +1882,8 @@ def _section_system(plan: Dict[str, Any], lang: str, sections_note: str = "", wr
         + ("- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con numero e codice o legge come vi "
            "compaiono, mai il numero da solo; nessun articolo a memoria; riporta tra virgolette solo frasi presenti "
            "nei testi forniti.\n" if _discipline() else
-           "- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con il codice (\"art. 1384 c.c.\", mai "
-           "\"art. 1384\" da solo); riporta tra virgolette solo frasi presenti nei testi forniti.\n") +
+           "- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con il codice (\"art. <numero> <codice>\", mai "
+           "il numero da solo); riporta tra virgolette solo frasi presenti nei testi forniti.\n") +
         "- Pronunce: cita solo quelle del PIANO, con il riferimento esatto indicato; senza riferimento non "
         "richiamare orientamenti giurisprudenziali. I fatti di una pronuncia non sono fatti del caso.\n"
         "- Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato manca, indica che cosa "
@@ -1912,19 +1912,19 @@ _WRITER_RULES = (
     "- Non proporre mai azioni, domande, denunce o querele contro {party} o contro chi è assistito insieme; un loro "
     "eventuale concorso di colpa è solo una difesa della controparte, da superare.\n"
     "- Una parte con più ruoli nei fatti risponde per ciascun ruolo: esaminali uno per uno.\n"
-    "- L'art. 1051 c.c. non è mai il titolo di un acquisto: il passaggio coattivo si costituisce con sentenza e contro "
-    "indennità; non scrivere che una servitù è stata acquistata in base a esso. L'uso di un passaggio non fa presumere "
+    "- La norma sul passaggio coattivo non è mai il titolo di un acquisto: il passaggio coattivo si costituisce con sentenza e contro "
+    "indennità; non scrivere che una servitù è stata acquistata in base a essa. L'uso di un passaggio non fa presumere "
     "una servitù: non parlare di «presunzione di servitù», indica come si è acquistata (titolo, usucapione, "
     "destinazione del padre di famiglia).\n"
     "- Le domande subordinate sono quelle di {party}: mai le difese della controparte, come un suo concorso di colpa.\n"
-    "- La negatoria (art. 949 c.c.) è l'azione del proprietario che nega diritti altrui: chi vanta un diritto sul fondo "
-    "altrui agisce in confessoria (art. 1079 c.c.), mai in negatoria.\n"
-    "- L'art. 1223 c.c. misura il danno, non lo fonda: fuori dal contratto il fondamento è l'art. 2043 c.c. (o l'art. "
-    "1079 c.c. per il titolare della servitù). Mai «inadempimento» senza un contratto.\n"
-    "- L'art. 1159 c.c. richiede un titolo trascritto proveniente da chi non è proprietario: se i fatti non lo mostrano "
+    "- La negatoria è l'azione del proprietario che nega diritti altrui: chi vanta un diritto sul fondo "
+    "altrui agisce in confessoria, mai in negatoria.\n"
+    "- La norma sulla misura del danno non lo fonda: fuori dal contratto il fondamento è la responsabilità "
+    "extracontrattuale (o l'azione confessoria per il titolare della servitù). Mai «inadempimento» senza un contratto.\n"
+    "- L'usucapione abbreviata richiede un titolo trascritto proveniente da chi non è proprietario: se i fatti non lo mostrano "
     "non si applica; non dirlo mai decorso.\n"
     "- Un'azione possessoria il cui termine è decorso è preclusa: mai proponibile, neppure in via subordinata.\n"
-    "- La servitù dell'art. 1062 c.c. nasce dalla separazione dei due fondi con l'opera visibile già presente, non "
+    "- La servitù per destinazione del padre di famiglia nasce dalla separazione dei due fondi con l'opera visibile già presente, non "
     "dall'uso.\n"
     "- I TERMINI CALCOLATI sono l'unica fonte: nessuna sezione dice soddisfatto un termine che risulta da verificare "
     "o incerto, né il contrario.\n"
@@ -2010,7 +2010,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
         return f"{title}:\n{body}" if body.strip() else ""
     every = (" Esamina una per una TUTTE le norme del PIANO, nessuna esclusa, ciascuna indicata con numero e "
              + ("codice o legge esattamente come nel PIANO." if _discipline() else
-                "codice o legge come nel PIANO (\"art. 95 Codice degli Appalti 2026\", \"art. 1784 c.c.\").")
+                "codice o legge come nel PIANO (\"art. <numero> <codice o legge>\").")
              if keep_all and not rules else "")
     scope = _scope_block(plan)
     scoped = (" Ogni norma di NORME E LORO QUESTIONE va citata solo a proposito della questione indicata accanto, "
@@ -2565,7 +2565,7 @@ _TERMS_RULE_REGIMES = ("Indica sempre ciascuno di questi termini con la sua dura
                        "va proposta come praticabile (indicala come preclusa e proponi le alternative). Nessun altro "
                        "termine che non sia qui o nei testi forniti; un'azione non soggetta a prescrizione non ha termine. "
                        "Un termine con «inizio del possesso da accertare» non è maturato: non scrivere mai che il possesso "
-                       "dura da oltre vent'anni né che l'usucapione è compiuta; indicalo come verifica da fare (quando è "
+                       "dura da oltre il tempo richiesto né che il termine è compiuto; indicalo come verifica da fare (quando è "
                        "iniziato il possesso).")
 _TERM_TEXTS_TITLE = "TESTI DELLE NORME SUI TERMINI"
 _QUALIFIED_TITLE = "QUALIFICHE DELLE PARTI"
@@ -4127,8 +4127,8 @@ _UNSUPPORTED_SYSTEM = (
     "in vita o cosciente. Non è da correggere una frase che "
     "enuncia una regola, un termine di legge o un onere della prova, che pone una condizione o che riporta ciò che "
     "il CASO dice. Riscrivi ogni frase da correggere presentando quel punto come condizione o come circostanza da "
-    "verificare (\"se la denuncia è avvenuta entro otto giorni dalla scoperta...\", \"spetterà al venditore "
-    "provare di avere ignorato senza colpa i vizi\"), lasciando invariati il resto della frase e le norme e le "
+    "verificare (\"se <il fatto> è avvenuto entro <il termine>...\", \"spetterà a <parte> "
+    "provare <il fatto>\"), lasciando invariati il resto della frase e le norme e le "
     "pronunce che cita. Rispondi solo con un array JSON, un oggetto per frase: {\"i\": numero, "
     "\"da_correggere\": true o false, \"frase\": \"la frase riscritta, solo se da correggere\"}."
 )

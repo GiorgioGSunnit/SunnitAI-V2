@@ -187,13 +187,17 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "analysis_line_exception", "analysis_line_fallback_rubrica", "objections_from_allegations",
             "objections_from_exceptions", "analysis_line_kept_first",
             # v79.15.2 (item 2): a string, the reason code (SKIP_*), "" when the fallback ran
-            "analysis_fallback_skipped_reason")
+            "analysis_fallback_skipped_reason",
+            # v79.19.0 (item 6): no verified line, no rubrica match -- the best-tier fitted article leads
+            "analysis_line_fallback_fit")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 LINE_KINDS = ("linea_principale", "linea_subordinata")
 VERIFIED, FRAME_LINE, UNDETERMINED = "verificata", "addebito_del_quadro", "da_determinare"     # a line's «stato»
 FALLBACK_LINE = "rubrica_del_quadro"        # v79.15.1 (item 2): the line found by the frame's named charge's rubrica
+FIT_LINE = "norma_applicabile"              # v79.19.0 (item 6): the best-tier fitted article, its elements da provare
+FIT_TIERS = {"si": 0, "dipende": 1, "": 2}  # the tiers of a fitted norm (the judgment's verdict; "" unjudged)
 # my drafts (v79.15.0): the labels build B prints -- the leading line the step could not verify (§1), never a text
 LINE_UNDETERMINED = "da determinare"
 LINE_UNVERIFIED_LABEL = "linea non verificata"
@@ -660,7 +664,7 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
             el["eccezione"], el["eccezione_fonte"] = exception_of(el, periods)
             elements.append(el)
         out_norms.append({"article": label, "rubrica": _flat(n.get("rubrica")), "text": str(n.get("text") or ""),
-                          "elements": elements, "periods": periods,
+                          "elements": elements, "periods": periods, "fit": str(n.get("fit") or ""),  # v79.19.0 (6)
                           "remedy": is_remedy(label, contractual) and not (charge and same_article(label, charge))})
     sents = [{"id": str(s.get("id")), "text": _flat(s.get("text")), "certainty": s.get("certainty"),
               "source": s.get("source"), "alleged_by": str(s.get("alleged_by") or "")}
@@ -689,6 +693,7 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
     have = {flow._key(r["_article"]): r for r in rows if r.get("_article")}
     removed = flow.fit_removed_keys(state)
     norms = []
+    verdicts = fit_verdicts(state)          # v79.19.0 (item 6): each norm's verified judgment (si / dipende)
     for label, rec in (state.get("records") or {}).items():
         if not isinstance(rec, dict) or rec.get("dropped"):
             continue
@@ -696,6 +701,7 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         if key in removed:
             continue
         n = ap.norm_input(label, have.get(key), rec, rows)
+        n["fit"] = verdicts.get(key, "")
         kinds = {str(r.get("id")): r for r in rec.get("requisites") or [] if isinstance(r, dict) and r.get("id")}
         n["elements"] = [dict(e, **{k: kinds[str(e.get("id"))][k] for k in ("schema_kind", "special")
                                     if (kinds.get(str(e.get("id"))) or {}).get(k)})
@@ -709,6 +715,44 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:           # noqa: BLE001 -- no role read: the client's name and side words only
         roles = []
     return make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents))
+
+
+def fit_verdicts(state: Dict[str, Any]) -> Dict[Any, str]:
+    """v79.19.0 (item 6): {norm key: verdict} of the applicability judgment's verified judgments
+    (state["applicability"]["judgments"]: si / dipende / no); {} with none."""
+    from . import interactive_flow as flow
+    out: Dict[Any, str] = {}
+    fit = state.get("applicability") if isinstance(state.get("applicability"), dict) else {}
+    for j in (fit or {}).get("judgments") or []:
+        if isinstance(j, dict) and j.get("verified") and j.get("article") and j.get("fit"):
+            try:
+                out[flow._key(flow._parse_label(str(j["article"])))] = str(j["fit"])
+            except Exception:       # noqa: BLE001 -- an unparseable label: unjudged
+                continue
+    return out
+
+
+def fitted_fallback(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """v79.19.0 (item 6): «da determinare» never prints when a fitted article exists -- the best-tier fitted norm (a
+    verified «si» first, then «dipende», then the unjudged; the input's order within a tier; the remedy set left out)
+    leads with its elements da provare: stato FIT_LINE, no element in play, no id cited, tesi FALLBACK_TESI on the
+    norm's rubrica (its article when it has none); None with no such norm."""
+    best: Optional[Tuple[int, int, Dict[str, Any]]] = None
+    for i, n in enumerate(inp.get("norms") or []):
+        if n.get("remedy") or not n.get("article"):
+            continue
+        tier = FIT_TIERS.get(str(n.get("fit") or ""), FIT_TIERS[""])
+        if str(n.get("fit") or "") == "no":
+            continue
+        if best is None or (tier, i) < best[:2]:
+            best = (tier, i, n)
+    if best is None:
+        return None
+    n = best[2]
+    tesi = FALLBACK_TESI["penale" if penal_frame(inp.get("frame"), n["article"]) else "civile"]
+    return {"articolo": n["article"], "elemento_in_gioco": None, "elemento_id": None, "eid": None,
+            "tesi": tesi.format(rubrica=_stop(n.get("rubrica") or f"art. {n['article']}")), "cita_fatti": [],
+            "cita_norma": [], "stato": FIT_LINE, "fit": str(n.get("fit") or "")}
 
 
 def older_issues(state: Dict[str, Any], sentences: Sequence[Dict[str, Any]] = ()) -> List[str]:
@@ -1529,9 +1573,13 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             counters["analysis_line_fallback_rubrica"] = 1
             counters[SKIPPED_REASON] = ""
         else:
-            counters["analysis_line_undetermined"] = 1
             counters[SKIPPED_REASON] = fallback_miss(inp)  # v79.15.2: no named charge / no exact rubrica
-            principale = undetermined_line()
+            principale = fitted_fallback(inp)               # v79.19.0 (item 6): a fitted article leads
+            if principale is not None:
+                counters["analysis_line_fallback_fit"] = 1
+            else:
+                counters["analysis_line_undetermined"] = 1
+                principale = undetermined_line()
     else:
         counters[SKIPPED_REASON] = SKIP_LINE_VERIFIED       # v79.15.2: a verified leading line, nothing to fall back on
     if subordinata is not None and principale.get("articolo") and same_article(subordinata["articolo"],
@@ -1540,7 +1588,7 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
         subordinata = None          # the same line twice: once
     items = checked["items"] if "items" in checked else _reply_elements(checked.get("reply") or {})
     elements: Dict[str, List[Dict[str, Any]]] = {}
-    open_kinds = {FRAME_LINE: "quadro", FALLBACK_LINE: "rubrica"}
+    open_kinds = {FRAME_LINE: "quadro", FALLBACK_LINE: "rubrica", FIT_LINE: "applicabilità"}     # v79.19.0 (item 6)
     read = list(dict.fromkeys(x["articolo"] for x in (principale, subordinata) if x and x.get("articolo")
                               and x.get("stato") not in open_kinds))
     for x in (principale, subordinata):
@@ -1718,6 +1766,7 @@ LABEL_MAIN = "Linea principale"
 LABEL_SUB = "Linea subordinata"
 LABEL_ELEMENT = "elemento in gioco"
 LABEL_FRAME_LINE = "addebito del quadro, linea non verificata"
+LABEL_FIT_LINE = "norma applicabile ai fatti, linea non verificata"       # v79.19.0 (item 6)
 LABEL_REMEDIES = "Rimedi e parte generale collegati alla linea"
 LABEL_ESITI = "Esiti dell'art. {art}"
 LABEL_TO_PROVE = "Da provare"
@@ -1751,7 +1800,9 @@ def view(result: Optional[Dict[str, Any]], inp: Optional[Dict[str, Any]]) -> Dic
     inp = inp or {}
     analysis = result.get("analysis") if result.get("status") == OK else None
     if not isinstance(analysis, dict):
-        analysis = {"linea_principale": undetermined_line(), "linea_subordinata": None, "elementi": {},
+        # v79.19.0 (item 6): the step not run or failed -- still never «da determinare» while a fitted article exists
+        analysis = {"linea_principale": fitted_fallback(inp) or undetermined_line(), "linea_subordinata": None,
+                    "elementi": {},
                     "affermazioni_di_diritto": [], "rimedi": [n["article"] for n in inp.get("norms") or []
                                                               if n.get("remedy")]}
     return {"status": result.get("status") or NO_INPUT, "analysis": analysis,
@@ -1784,6 +1835,8 @@ def line_text(line: Optional[Dict[str, Any]]) -> str:
         return f"{LINE_UNDETERMINED} ({LINE_UNVERIFIED_LABEL})"
     if x.get("stato") == FRAME_LINE:
         return f"art. {x['articolo']} ({LABEL_FRAME_LINE})"
+    if x.get("stato") == FIT_LINE:          # v79.19.0 (item 6)
+        return f"art. {x['articolo']} — {_stop(x.get('tesi'))} ({LABEL_FIT_LINE})"
     out = f"art. {x['articolo']} — {_stop(x.get('tesi'))}"
     if x.get("elemento_in_gioco") and not x.get("tesi_codice"):
         out += f" ({LABEL_ELEMENT}: «{x['elemento_in_gioco']}»)"
@@ -1871,7 +1924,7 @@ def solutions_text(v: Dict[str, Any]) -> str:
     other the analysis did not return."""
     rows = list(SOLUTIONS_HEAD)
     for label, x in _lines(v):
-        if x.get("stato") == FALLBACK_LINE:          # v79.15.1 (item 2): the rubrica fallback -- no element, no fact
+        if x.get("stato") in (FALLBACK_LINE, FIT_LINE):     # v79.15.1 (item 2), v79.19.0 (item 6): no element, no fact
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | — | {_cell(_stop(x.get('tesi')))} | — |")
         elif x.get("stato") == VERIFIED:
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | {_cell(x.get('elemento_in_gioco'))} | "

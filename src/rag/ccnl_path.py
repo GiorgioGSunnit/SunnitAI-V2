@@ -1142,7 +1142,7 @@ _SYSTEM_HEAD = (
     "L'intestazione con il contratto applicato (e la fonte degli importi) è già scritta: non ripeterla.\n"
     "Scrivi queste sezioni, con questi titoli in grassetto:\n"
     "**Cosa prevede il CCNL** - spiega con parole tue cosa stabiliscono le clausole pertinenti, ciascuna con il "
-    "suo riferimento tra parentesi (es. «art. 16 - Diritti e rapporti sindacali», o il titolo della clausola) e "
+    "suo riferimento tra parentesi («art. <numero> - <titolo>», o il titolo della clausola) e "
     "il documento da cui viene. Se un accordo successivo modifica la clausola, indica la regola aggiornata e da "
     "quando vale. NON copiare frasi del contratto: riformula sempre; puoi riportare solo cifre brevi (importi, "
     "giorni, mesi, percentuali). Se le clausole non rispondono al punto, scrivi che nei testi disponibili non hai "
@@ -1160,7 +1160,7 @@ _SYSTEM_PAY = (
 _SYSTEM_NO_PAY = "Importi solo se scritti nel materiale, con livello e decorrenza: mai calcolarli, stimarli o dedurli.\n"
 _SYSTEM_LAW = (
     "**Quadro normativo** - ciascun articolo di legge fornito che riguarda la domanda, citato con il codice o la "
-    "legge (es. art. 2109 c.c., art. 7 l. 300/1970), e come il CCNL vi si inserisce (il contratto collettivo può "
+    "legge (art. <numero> <codice o legge>), e come il CCNL vi si inserisce (il contratto collettivo può "
     "migliorare, non peggiorare, le tutele inderogabili). Cita solo gli articoli forniti; quelli segnati «testo "
     "non disponibile» citali come norma di riferimento con la loro rubrica, senza attribuire loro contenuti che il "
     "materiale non riporta.\n")

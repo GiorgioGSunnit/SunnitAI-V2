@@ -40,8 +40,8 @@ SYSTEM = (
     "Sei un avvocato italiano. Ti vengono dati il CASO, la PARTE ASSISTITA (il cliente) con la sua posizione, i ruoli "
     "delle parti e il testo di una NORMA. Rispondi a una sola domanda: questa norma, sui fatti di questo caso, opera a "
     "favore di chi? «cliente» se fonda o sostiene la pretesa o la difesa del cliente; «controparte» se è uno strumento "
-    "o una difesa della controparte contro il cliente (per esempio l'azione che spetta al proprietario contro chi "
-    "vanta un diritto sul suo fondo, quando il cliente è chi lo vanta); «entrambi» se può servire all'uno e all'altro. "
+    "o una difesa della controparte contro il cliente (un'azione che spetta alla controparte contro il "
+    "cliente); «entrambi» se può servire all'uno e all'altro. "
     "Rispondi solo con un oggetto JSON: {\"a_favore\": \"cliente\" | \"controparte\" | \"entrambi\", \"perche\": "
     "\"una frase\"}.")
 

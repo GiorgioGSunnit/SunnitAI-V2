@@ -3579,10 +3579,10 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                                 "'RESIDENZA', 'DOMICILIO', 'CODICE FISCALE', 'FIRMA', 'DATA', "
                                 "'IL SOTTOSCRITTO', 'LA SOTTOSCRITTA', 'INDIRIZZO', 'COMUNE', 'PROVINCIA'. "
                                 "Anche un testo seguito da ':' è sempre un'etichetta. "
-                                "Esempi: 'COGNOME E NOME CICCIO ELLE' → nome: CICCIO ELLE; "
-                                "'DATA E LUOGO DI NASCITA 14 LUGLIO 1990 - FOGGIA' → nato il 14/07/1990 a Foggia; "
-                                "'RESIDENZA VIA ROMA 1' → residente in Via Roma 1; "
-                                "'NOME: MARIO ROSSI' → nome: MARIO ROSSI (MARIO ROSSI è il valore, non l'etichetta). "
+                                "Esempi: 'COGNOME E NOME <cognome> <nome>' → nome: <cognome> <nome>; "
+                                "'DATA E LUOGO DI NASCITA <giorno> <mese> <anno> - <luogo>' → nato il <GG/MM/AAAA> a <luogo>; "
+                                "'RESIDENZA <via> <numero>' → residente in <via> <numero>; "
+                                "'NOME: <nome>' → nome: <nome> (<nome> è il valore, non l'etichetta). "
                                 "Non includere mai l'etichetta del campo come parte del valore quando rispondi. "
                                 + _lang_note
                                 + "\n\n" + length_instruction(_doc_settings["response_length"])
