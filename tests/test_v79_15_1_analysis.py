@@ -277,11 +277,14 @@ def test_a_claimants_exception_line_is_refused_and_re_asked_with_the_constitutiv
     assert objs[0]["parte"] == "Edilnova S.r.l."
     assert [e["eid"] for e in objs[0]["elementi"]] == ["A1667cc:E2"]
     assert c["objections_from_allegations"] == 1 and c["objections_from_exceptions"] == 1
-    # an exception line twice: refused twice, the frame's charge then leads with every element open
+    # an exception line twice: refused twice -- v79.19.1 (item 1): a charge the step rejected never leads as the
+    # frame's line; the only fitted norm, it leads as the norm applicable to the facts, every element open
     model = _Model(first, first)
     res = A.analyse(_appalto(), call=model)
     assert res["counters"]["analysis_line_exception"] == 2 and res["analysis"]["linea_principale"]["stato"] == \
-        "addebito_del_quadro"
+        A.FIT_LINE and res["analysis"]["linea_principale"]["articolo"] == "1667 c.c."
+    assert res["counters"]["analysis_frame_charge_overridden"] == 1
+    assert res["counters"]["analysis_fallback_skipped_reason"] == A.SKIP_FRAME_CHARGE_REJECTED
     assert [(o["fonte"], o["eid"]) for o in res["analysis"]["obiezioni"]] == [("eccezione", "A1667cc:E2")]
     assert res["counters"]["objections_from_exceptions"] == 1
 

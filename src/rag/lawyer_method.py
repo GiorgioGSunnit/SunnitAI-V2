@@ -6015,6 +6015,66 @@ def objections_section(plan: Dict[str, Any], fallback: Sequence[Dict[str, str]] 
 
 
 OBJECTION_HEAD, ANSWER_HEAD = "**Obiezione {n}.**", "**Risposta.**"
+
+# --- v79.19.1 (items 6b, 6c): nothing the fit accepted goes unprinted; the rulings printed, counted -------------------
+UNPRINTED_HEAD = "Altre norme applicabili ai fatti"       # my draft: the one-line home of a fitted record no block named
+
+
+def fit_accepted(state: Dict[str, Any]) -> List[str]:
+    """v79.19.1 (item 6b): the articles the applicability judgment accepted -- a verified «si» or «dipende»
+    (state["applicability"]["judgments"]); [] without the judgment."""
+    fit = (state or {}).get("applicability") if isinstance(state, dict) else None
+    out: List[str] = []
+    for j in (fit or {}).get("judgments") or []:
+        if isinstance(j, dict) and j.get("verified") and j.get("article") and str(j.get("fit")) in ("si", "dipende"):
+            label = str(j["article"])
+            if label not in out:
+                out.append(label)
+    return out
+
+
+def _names_article(text: str, label: str) -> bool:
+    """The text names the article -- «art. 1218 c.c.», «Art. 1218 c.c.», «artt. 1218 e 1223 c.c.» (its number with the
+    code), «**Art. 1218 c.c.**»; the label's spaces any whitespace."""
+    if not text or not label:
+        return False
+    number, _, code = str(label).partition(" ")
+    sep = r"\s*(?:,|\be\b|\bed\b|\bo\b)\s*"
+    others = r"(?:\d+(?:-\w+)?" + sep + ")*"           # «artt. 1218 e 1223 c.c.» names both
+    pattern = others + re.escape(number) + r"(?![\w-])" + (
+        r"(?:" + sep + r"\d+(?:-\w+)?)*\s+" + re.escape(code).replace(r"\ ", r"\s+") if code else "")
+    return re.search(r"(?i)\bartt?(?:\.|icol[oi])?\s*" + pattern + r"(?![\w-])", text) is not None
+
+
+def unprinted_records(ctx: Dict[str, Any], records: Dict[str, Dict[str, Any]], text: str,
+                      excluded: Sequence[str] = ()) -> List[str]:
+    """v79.19.1 (item 6b): the fit-accepted articles (ctx["fit_accepted"]) that are a printed record (records: the
+    answer's, not excluded, not removed by the fit) and that the §4 text does not name -- each as «art. X (rubrica)»."""
+    out: List[str] = []
+    for label in ctx.get("fit_accepted") or []:
+        rec = next((r for x, r in (records or {}).items() if _same_label(x, label)), None)
+        if not isinstance(rec, dict) or rec.get("dropped") or rec.get("ranked_candidate") or rec.get("unprinted"):
+            continue
+        if any(_same_label(x, label) for x in excluded or ()) or frame_excluded(rec):
+            continue
+        if _names_article(text or "", label):
+            continue
+        rubrica = _short(str(rec.get("rubrica") or ""), 80).rstrip(".")
+        out.append(f"art. {label}" + (f" ({rubrica})" if rubrica else ""))
+    return out
+
+
+def rulings_printed(ctx: Dict[str, Any], rulings: Sequence[Any], excluded: Sequence[str] = ()) -> int:
+    """v79.19.1 (item 6c): how many rulings §5 prints -- the registry record's kept ones (RULINGS_RECORD), else the
+    retrieved rulings with an id and a massima; those on an excluded article left out, as orientations_text does."""
+    def gone(label: Any) -> bool:
+        return any(_same_label(x, str(label or "")) for x in excluded or ())
+    rec = ctx.get("rulings_record")
+    if rec:
+        return sum(1 for r in rec.get("kept") or [] if isinstance(r, dict) and not gone(r.get("article")))
+    return sum(1 for r in rulings or [] if isinstance(r, dict) and r.get("id") and r.get("massima")
+               and not gone(r.get("article")))
+
 NO_ANSWER = "Va costruita sui fatti che le indagini difensive o l'istruttoria porteranno."
 OBJ_PROVEN = {"penale": ("L'accusa sosterrà che è provato l'elemento «{el}»: {fact}",
                          "I fatti narrati lo sostengono: la difesa non lo nega, ma ne trae le conseguenze sulla "
@@ -7102,6 +7162,18 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     if profiles:
         from . import interaction_copy as C
         norms_parts.append(f"**{C.OTHER_PROFILES_SECTION}**\n\n" + "\n".join(profiles))
+    # v79.19.1 (item 6b): every article the fit accepted («si» / «dipende») that is a record at the end is printed --
+    # in §4 with its scheda (the tables, the writer's blocks) or at least here with one line, never silently absent;
+    # records_unprinted counts what is still absent after that (must be 0), logged
+    late = unprinted_records(ctx, records, "\n\n".join(norms_parts), excluded)
+    if late:
+        norms_parts.append(f"**{UNPRINTED_HEAD}**: " + "; ".join(late) + ".")
+        _log("records_printed_late", {"articles": late})
+    still = unprinted_records(ctx, records, "\n\n".join(norms_parts), excluded)
+    ctx["records_unprinted"] = len(still)
+    log["records_unprinted"] = still
+    if still:
+        _log("records_unprinted", {"articles": still})
     procedure = next((by_title[t] for t in PROCEDURE_FROM if by_title.get(t)), "")
     extra = [x for x in [ctx.get("temporal")] + [f"Litisconsorzio: {x}" for x in ctx.get("litisconsorzio") or []] if x]
     precluded = precluded_block(ctx.get("riti_precluded") or [], procedure)       # v79.10.3 (C1): §8 says them
@@ -7209,6 +7281,23 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     verified_objections = analysis_step.objection_items(verified) if verified is not None else []
     log["objections_from"] = {"verified": len(verified_objections), "model": len(plan.get("obiezioni") or []),
                               "fallback": 0 if strong else max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
+    # v79.19.1 (item 3): the verified analysis carries no objection and the model wrote none -- 79.15.3's objections
+    # path (the code's, built on the record and the thesis: ctx["objections_fallback"] + thesis_objections, the one
+    # that printed before the verified analysis took §7), never the empty line; counted objections_fallback_legacy
+    ctx["objections_fallback_legacy"] = 0
+    if verified is not None and not kind and not strong and not verified_objections and not plan.get("obiezioni"):
+        try:
+            legacy = list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
+        except Exception as exc:          # noqa: BLE001 -- the legacy path failing leaves §7 the record's objections
+            _log("objections_fallback_legacy_failed", {"error": f"{type(exc).__name__}: {exc}"[:200]})
+            legacy = list(ctx.get("objections_fallback") or [])
+        legacy = [o for o in legacy if o.get("obiezione") and not cites_excluded(
+            f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", excluded)]
+        if legacy:
+            fallback_objections = legacy
+            ctx["objections_fallback_legacy"] = 1
+            log["objections_from"]["fallback_legacy"] = len(legacy)
+            _log("objections_fallback_legacy", {"n": len(legacy), "first": str(legacy[0].get("obiezione"))[:120]})
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
     # v79.12.5 (item 2): the corpus line in §1 -- with no admitted claim (no_claim_summary), else wherever the first
@@ -7254,6 +7343,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("conclusioni", "\n\n".join(conclusions) if verified is not None else
          _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
     ]
+    # v79.19.1 (item 6c): the rulings §5 prints (every printed article's, as 79.15.3 did: no filter of 79.16-79.18 on
+    # this branch), counted per answer for the harness row
+    ctx["rulings_printed"] = rulings_printed(ctx, rulings, excluded)
+    log["rulings_printed"] = ctx["rulings_printed"]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
     residue: Dict[str, List[str]] = {}          # v79.12.7 (item 7): the stance marks, §5's codes, the answers' residue
@@ -7655,6 +7748,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "notes": notes,
            "posture_text": posture_text(posture or {}), "records": every, "circumstances": circ,
            "objection_party": objection_party(state, client, posture),   # v79.14.1 (item 6): the frame's under CASE_FRAME
+           "fit_accepted": fit_accepted(state) if fit else [],            # v79.19.1 (item 6b): printed, never silent
            "facts": facts, "assessment": a, "riti": riti,
            "rites": rites, "riti_precluded": riti_out,                        # v79.10.3 (C1)
            "subsumption": subsumption_section(shown, order, by_id, circ, note),       # v79.14.3 (item 4): shown

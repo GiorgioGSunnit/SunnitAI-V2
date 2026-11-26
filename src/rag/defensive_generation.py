@@ -5010,6 +5010,9 @@ def _graded_max_checked() -> int:
     except ValueError:
         value = 0
     return value if value > 0 else _GRADED_MAX_CHECKED
+# v79.19.1 (item 5): the graded reply's keys in full («voto», «questione», «perche»; «a» the id echoed back) and one
+# sentence on the grade's type -- a 32B model wrote «g» as a word or a float; _graded_reply reads the old keys too
+_GRADED_VOTO_SENTENCE = ' "voto" è un numero intero da 0 a 3.'
 _GRADED_SYSTEM = (
     "Sei un giurista. Ricevi i fatti di un caso, i suoi quesiti e le sue questioni, e alcuni articoli di legge "
     "candidati, ciascuno con un identificativo tra parentesi quadre ([A1], [A2], ...), la sua rubrica e "
@@ -5026,8 +5029,9 @@ _GRADED_SYSTEM = (
     "indipendenti, o le sentenze su fatti simili, lo hanno trovato), nel dubbio tra 1 e 2 scegli 2.\n"
     "Rispondi SOLO con un array JSON compatto, esattamente un oggetto per ogni identificativo ricevuto, "
     "nell'ordine dato, nessuno escluso (anche quelli con voto 0): "
-    '[{"a": "A1", "g": 0, "q": "<la questione che serve, in poche parole>", '
-    '"r": "<perché, in al massimo 15 parole>"}]'
+    '[{"a": "A1", "voto": 0, "questione": "<la questione che serve, in poche parole>", '
+    '"perche": "<perché, in al massimo 15 parole>"}]'
+    + _GRADED_VOTO_SENTENCE
 )
 
 
@@ -5069,15 +5073,24 @@ def _graded_reply(raw: str, ids: Dict[str, str], issues: Optional[List[str]] = N
         ref = str(item.get("a") or item.get("article") or item.get("id") or "").strip()
         short = re.match(r"\[?\s*(A\d+)\b", ref, re.IGNORECASE)
         label = ids.get(short.group(1).upper()) if short else by_key.get(_applicability_key(ref.strip("[] ")))
-        grade = _grade({"grade": item.get("g", item.get("grade"))})
+        # v79.19.1 (item 5): the full key names first («voto», «questione», «perche»), the old ones still read
+        grade = _grade({"grade": _first_key(item, "voto", "g", "grade")})
         if label and grade is not None and label not in read:
-            issue = item.get("q") or item.get("issue") or ""
+            issue = _first_key(item, "questione", "q", "issue") or ""
             number = re.match(r"\s*Q\s*(\d+)\b", str(issue or ""), re.IGNORECASE) if issues else None
             if number and 1 <= int(number.group(1)) <= len(issues):
                 issue = issues[int(number.group(1)) - 1]
             read[label] = {"article": label, "grade": grade, "issue": issue,
-                           "reason": item.get("r") or item.get("reason")}
+                           "reason": _first_key(item, "perche", "perché", "r", "reason")}
     return read
+
+
+def _first_key(item: Dict[str, Any], *keys: str) -> Any:
+    """v79.19.1 (item 5): the first of keys the object holds (its value, None too), None when none is present."""
+    for k in keys:
+        if k in item:
+            return item.get(k)
+    return None
 
 
 def _json_objects(raw: str) -> List[Dict[str, Any]]:
@@ -5440,9 +5453,10 @@ def _graded_system(evidence: bool = False, issues: bool = False, examples: bool 
                  "fonti\", nel dubbio tra 1 e 2 scegli 2.\n")
     output = ("Rispondi SOLO con un array JSON compatto, esattamente un oggetto per ogni identificativo ricevuto, "
               "nell'ordine dato, nessuno escluso (anche quelli con voto 0): "
-              + ('[{"a": "A1", "g": 0, "q": "Q2", "r": "<perché, in al massimo 15 parole>"}]' if issues else
-                 '[{"a": "A1", "g": 0, "q": "<la questione che serve, in poche parole>", '
-                 '"r": "<perché, in al massimo 15 parole>"}]'))
+              + ('[{"a": "A1", "voto": 0, "questione": "Q2", "perche": "<perché, in al massimo 15 parole>"}]'
+                 if issues else
+                 '[{"a": "A1", "voto": 0, "questione": "<la questione che serve, in poche parole>", '
+                 '"perche": "<perché, in al massimo 15 parole>"}]') + _GRADED_VOTO_SENTENCE)
     return head + scale + judge + doubt + (_GRADED_EXAMPLES if examples else "") + output
 
 

@@ -109,7 +109,8 @@ VALUE_FIELDS = {"ruolo": "ruoli", "rito": "riti", "stadio": "stadi"}
 PENAL_RITI = ("penale", "penale_gdp")
 COUNTERS = ("frame_fields_verified",) + tuple(f"frame_unverified.{f}" for f in FIELDS) + \
     tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds") + \
-    ("frame_corrections_applied", "frame_pretese_count", "frame_article_disputed", "frame_role_deduced")   # v79.19.0
+    ("frame_corrections_applied", "frame_pretese_count", "frame_article_disputed", "frame_role_deduced") + \
+    ("frame_hypothesis_confirmed", "frame_hypothesis_dropped")      # v79.19.0; v79.19.1 (item 1)
 OK, FAILED, MALFORMED, TIMEOUT, NO_TEXT = "ok", "failed", "malformed", "timeout", "no_text"
 # v79.19.0 (item 3): the frame may read several charges / claims (addebito_o_domanda a list of 1..MAX_PRETESE); the
 # first is the charge the principale line is built on (frame «addebito_o_domanda»), every verified one is in frame
@@ -298,8 +299,34 @@ def parse_article(raw: Any) -> Dict[str, str]:
     rest = re.sub(r"^\s*[,;]?\s*(?:(?:comm[ai]|co\.|lett(?:era|\.)?|n\.|numero)\s*[\w\-]+\)?\s*,?\s*)*", "", rest,
                   flags=re.IGNORECASE)
     rest = re.sub(r"^\s*(?:del|della|dello|dei|delle|di|ex)\s+", "", rest, flags=re.IGNORECASE).strip(" ,;:-")
-    rest = _CODE_END_RE.match(rest).group(1).strip(" ,;:-")        # the code alone: «c.c. e il resto» -> «c.c.»
+    rest = code_or_law(rest)        # v79.19.1 (item 4): the code or the law alone -- «c.c. inadempimento» -> «c.c.»
     return {"number": number, "base": m.group(1), "code": _ap()._code_key(rest) if rest else "", "rest": rest}
+
+
+# v79.19.1 (item 4): where a law's name ends -- its kind («d.P.R.», «d.lgs.», «l.», «legge», «r.d.», «d.l.», «t.u.»)
+# with its number and year («309/1990», «n. 300 del 1970»); the words after it are the charge's description, never the
+# law's name
+_LAW_RE = re.compile(
+    r"^(?:d\.?\s?p\.?\s?r\.?|d\.?\s?lgs?\.?|d\.?\s?l\.?|d\.?\s?m\.?|r\.?\s?d\.?|l\.?|legge|decreto[\s-]legge|"
+    r"decreto\s+legislativo|decreto\s+del\s+presidente\s+della\s+repubblica|regio\s+decreto|t\.?\s?u\.?[a-z.]*|"
+    r"testo\s+unico(?:\s+[a-zà-ü]+){0,3}?)\s*(?:n\.?\s*)?\d+(?:[/-]\d{2,4}|\s+del\s+\d{4}|\s*\(\d{4}\))?", re.IGNORECASE)
+
+
+def code_or_law(rest: Any) -> str:
+    """v79.19.1 (item 4): an article's code or law alone, the words after it cut -- a code the lead-code table names
+    («c.c.», «c.p.p.», «codice civile»: _LEAD_CODE_RE), else a law's kind, number and year (_LAW_RE), else the older
+    cut at a sentence word or a punctuation mark (_CODE_END_RE). «c.c. inadempimento del contratto» -> «c.c.»,
+    «d.P.R. 309/1990 detenzione» -> «d.P.R. 309/1990», «l. 300/1970 reintegrazione» -> «l. 300/1970»."""
+    text = _flat(rest).strip(" ,;:-")
+    if not text:
+        return ""
+    m = _LEAD_CODE_RE.match(text)
+    if m:
+        return m.group(0).strip(" ,;:-")
+    m = _LAW_RE.match(text)
+    if m and not re.match(r"[A-Za-zÀ-ü]", text[m.end():m.end() + 1] or ""):
+        return m.group(0).strip(" ,;:-")
+    return _CODE_END_RE.match(text).group(1).strip(" ,;:-")
 
 
 # a code written first in the article's code («c.c.», «c.p.p.», «codice civile» ...): that code is the article's, whatever
@@ -762,8 +789,11 @@ def _verify_one_addebito(rep: _Report, raw: Any, rito: str) -> Optional[Dict[str
         if facts and art and facts["number"] == art["number"] and (facts["code"] == art["code"] or not facts["code"]):
             facts = None                    # the same article: nothing disputed
         if facts and not art:
-            out.update({"articolo": _article_text(facts), "numero": facts["number"], "codice": facts["code"],
-                        "da_fatti": True})
+            # v79.19.1 (item 1): an article read from the facts alone is a hypothesis, never the verified charge -- it
+            # goes to the fit as a candidate (alternative_charges) and becomes the charge only on a «si» / «dipende»
+            # (apply_fit: frame_hypothesis_confirmed, else frame_hypothesis_dropped); «articolo» stays null
+            out.update({"ipotesi": _article_text(facts), "da_fatti": True})
+            _log("frame_article_hypothesis", {"ipotesi": out["ipotesi"], "frase": out["frase"][:160]})
         elif facts:
             out["articolo_fatti"] = _article_text(facts)
             out["disputed"] = True
@@ -1126,6 +1156,8 @@ def settle(holder: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if a.get("articolo_fatti"):
             got_f = _ap_label(a["articolo_fatti"])
             a["label_fatti"] = got_f
+        if a.get("ipotesi"):            # v79.19.1 (item 1): the facts' hypothesis, a fit candidate
+            a["label_ipotesi"] = _ap_label(a["ipotesi"])
     holder["frame"] = out
     _log("frame_settled", {"corrections": out["corrections"], "addebiti": [a.get("label") for a in _addebiti(f)],
                            "disputed": [a.get("label_fatti") for a in _addebiti(f) if a.get("disputed")]})
@@ -1169,14 +1201,18 @@ def settle_posture(holder: Dict[str, Any], posture: Optional[Dict[str, Any]]) ->
     if not _penal_posture(posture if posture is not None else holder.get("posture")):
         return made
     for a in _addebiti(out["frame"]):
-        for key, label_key in (("articolo", "label"), ("articolo_fatti", "label_fatti")):
+        for key, label_key in (("articolo", "label"), ("articolo_fatti", "label_fatti"), ("ipotesi", "label_ipotesi")):
             label = a.get(label_key) or ""
             if label and not is_penal(parse_article(label)):
                 made.append(_settle_correction(out, f"addebito_o_domanda.{key}", label, "",
                                                "in una posizione penale non è una norma penale", "posture"))
                 a[f"refused_{key}"] = label
                 a[key], a[label_key] = None, ""
-                if key == "articolo":
+                if key == "ipotesi":            # v79.19.1 (item 1): a non-penal hypothesis in a penal posture: dropped
+                    a["ipotesi_resolved"] = "scartata"
+                    counters = out.setdefault("counters", {})
+                    counters["frame_hypothesis_dropped"] = int(counters.get("frame_hypothesis_dropped") or 0) + 1
+                elif key == "articolo":
                     a["numero"], a["codice"] = "", ""
                     if holder.get("frame_charge_refused") != label:     # the audit counts it charge_rito_dropped
                         holder["frame_charge_refused"] = label
@@ -1218,6 +1254,28 @@ def apply_fit(holder: Dict[str, Any], judgments: Sequence[Dict[str, Any]]) -> Li
             a["disputed_resolved"] = "testo"
             _log("frame_article_disputed_kept", {"articolo": a.get("label"), "articolo_fatti": a["label_fatti"],
                                                  "fit_testo": text_v, "fit_fatti": facts_v})
+    # v79.19.1 (item 1): a hypothesis (an article read from the facts, none named by the text) becomes the charge
+    # only on a verified «si» / «dipende» (a correction "" -> the article, frame_hypothesis_confirmed); anything else
+    # -- «no», unverified, not judged -- drops it (frame_hypothesis_dropped): never the charge from memory
+    counters = out.setdefault("counters", {})
+    for a in _addebiti(out["frame"]):
+        if not a.get("ipotesi") or not a.get("label_ipotesi") or a.get("ipotesi_resolved"):
+            continue
+        hyp_v = verdict.get(_norm(a["label_ipotesi"]))
+        if hyp_v in ("si", "dipende"):
+            made.append(_settle_correction(out, "addebito_o_domanda.articolo", "", a["label_ipotesi"],
+                                           f"giudizio di applicabilità: nessun articolo nel testo, quello letto dai "
+                                           f"fatti «{hyp_v}»", "fit"))
+            a["ipotesi_resolved"] = "confermata"
+            a["articolo"], a["label"] = a["ipotesi"], a["label_ipotesi"]
+            parsed = parse_article(a["articolo"])
+            a["numero"], a["codice"] = parsed["number"], parsed["code"]
+            counters["frame_hypothesis_confirmed"] = int(counters.get("frame_hypothesis_confirmed") or 0) + 1
+        else:
+            a["ipotesi_resolved"] = "scartata"
+            counters["frame_hypothesis_dropped"] = int(counters.get("frame_hypothesis_dropped") or 0) + 1
+            _log("frame_hypothesis_dropped", {"ipotesi": a.get("label_ipotesi"), "fit": hyp_v,
+                                              "frase": str(a.get("frase") or "")[:160]})
     return made
 
 
@@ -1259,7 +1317,21 @@ def alternative_charges(holder: Optional[Dict[str, Any]]) -> List[str]:
         other = a.get("label_testo") if a.get("disputed_resolved") == "fatti" else a.get("label_fatti")
         if a.get("disputed") and other and other not in first and other not in out:
             out.append(other)
+        hyp = a.get("label_ipotesi") or ""          # v79.19.1 (item 1): the facts' hypothesis, a fit candidate until
+        if hyp and not a.get("ipotesi_resolved") and hyp not in first and hyp not in out:      # the judgment decides
+            out.append(hyp)
     return out
+
+
+def hypotheses(holder: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """v79.19.1 (item 1): the frame's articles read from the facts alone -- [{label, stato: aperta | confermata |
+    scartata}]; [] with no frame or none."""
+    got = held(holder)
+    if got is None:
+        return []
+    return [{"label": a.get("label_ipotesi") or _ap_label(a.get("ipotesi") or a.get("refused_ipotesi")),
+             "stato": a.get("ipotesi_resolved") or "aperta"}
+            for a in _addebiti(got["frame"]) if a.get("ipotesi") or a.get("refused_ipotesi")]
 
 
 def disputed(holder: Optional[Dict[str, Any]]) -> bool:

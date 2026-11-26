@@ -768,7 +768,7 @@ def test_the_grader_versions_build_on_the_live_prompt():
     assert dg._graded_system() == dg._GRADED_SYSTEM
     full = dg._graded_system(evidence=True, issues=True, examples=True)
     assert "3 o più sentenze simili e della materia del caso vale almeno 2" in full and "ESEMPI" in full
-    assert '"q": "Q2"' in full and "quanto direttamente la disciplina" in full
+    assert '"questione": "Q2"' in full and "quanto direttamente la disciplina" in full      # v79.19.1 (item 5)
     assert "ESEMPI" not in dg._graded_system(evidence=True) and "voto di pertinenza" in dg._graded_system(evidence=True)
 
 

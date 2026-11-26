@@ -24,7 +24,8 @@ The input (make_input; inputs(state) reads it from the flow's state):
   - the user's questions (the frame's quesiti, else interactive_flow.asked_questions).
 
 The call (call_once): thinking off, temperature 0, a JSON reply (applicability.request_kwargs' body, this step's
-max_tokens), on a worker thread waited at most the step's remaining budget -- «deadline_s» (40 s) from the step's
+max_tokens), on a worker thread waited at most the step's remaining budget -- «deadline_s» (40 s; v79.19.1: plus
+«deadline_per_article_s» per fitted norm, at most «deadline_max_s» = 60 s, deadline_for) from the step's
 start, the re-ask included (the applicability batching/deadline pattern: a call not back in time is abandoned, its
 pool shut down without waiting). At most 2 calls: the first, and one re-ask when the first's verification rejects a
 line (any reason below), leaves out the leading line, or misses the frame's charge -- the one re-ask carries every
@@ -192,6 +193,9 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             "analysis_line_fallback_fit")
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
+# v79.19.1: (item 1) the frame's charge the step rejected, or missing while a verified line exists, never leads;
+# (item 2) the article block sent with its periods omitted (over «max_block_chars»)
+COUNTERS = COUNTERS + ("analysis_frame_charge_overridden", "analysis_block_reduced")
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 LINE_KINDS = ("linea_principale", "linea_subordinata")
 VERIFIED, FRAME_LINE, UNDETERMINED = "verificata", "addebito_del_quadro", "da_determinare"     # a line's «stato»
@@ -213,7 +217,8 @@ SKIP_NO_NAMED_CHARGE = "no_named_charge"        # no verified leading line, and 
 SKIP_NO_RUBRICA_MATCH = "no_rubrica_match"      # a named charge / claim, but no fitted rubrica equal to it
 SKIP_STEP_FAILED = "step_failed"                # the first call failed, timed out or answered no JSON; the input unread
 SKIP_NO_INPUT = "no_input"                      # no fitted norm or no sentence: nothing called
-STRING_COUNTERS = (SKIPPED_REASON,)
+SKIP_FRAME_CHARGE_REJECTED = "frame_charge_rejected"    # v79.19.1 (item 1): the frame's charge the step rejected as a
+STRING_COUNTERS = (SKIPPED_REASON,)                     # line never leads as the unverified frame line
 
 
 def enabled() -> bool:
@@ -645,7 +650,13 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
     (client_side: attore | difesa | neutro, from the verified frame only); «claimant» is side == attore."""
     f = dict(frame or {})
     contractual = is_contractual(f)
-    charge = _cf().charge_label({"frame": f}) if (f.get("addebito_o_domanda") or {}).get("articolo") else ""
+    addebito = f.get("addebito_o_domanda") or {}
+    # v79.19.1 (item 1): «charge» is the article the TEXT names -- the frame-charge rule (the leading line when the
+    # model leaves it out) applies to it alone; an article read from the facts («da_fatti»: a hypothesis the fit
+    # confirmed) is «charge_hypothesis», a fitted norm like any other, never forced to lead
+    named_label = _cf().charge_label({"frame": f}) if addebito.get("articolo") else ""
+    charge = named_label if not addebito.get("da_fatti") else ""
+    charge_hyp = named_label if addebito.get("da_fatti") else ""
     out_norms = []
     for n in norms or []:
         label = str(n.get("article") or "").strip()
@@ -665,7 +676,8 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
             elements.append(el)
         out_norms.append({"article": label, "rubrica": _flat(n.get("rubrica")), "text": str(n.get("text") or ""),
                           "elements": elements, "periods": periods, "fit": str(n.get("fit") or ""),  # v79.19.0 (6)
-                          "remedy": is_remedy(label, contractual) and not (charge and same_article(label, charge))})
+                          "remedy": is_remedy(label, contractual) and not any(
+                              c and same_article(label, c) for c in (charge, charge_hyp))})
     sents = [{"id": str(s.get("id")), "text": _flat(s.get("text")), "certainty": s.get("certainty"),
               "source": s.get("source"), "alleged_by": str(s.get("alleged_by") or "")}
              for s in sentences or [] if isinstance(s, dict) and s.get("id") and _flat(s.get("text"))
@@ -675,7 +687,8 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
     return {"frame": f, "norms": out_norms, "sentences": sents, "questions": [_flat(q) for q in questions or [] if
                                                                               _flat(q)],
             "client": client, "client_roles": [str(r) for r in client_roles or [] if str(r or "").strip()],
-            "charge": charge, "contractual": contractual, "claimant": side == SIDE_CLAIMANT,
+            "charge": charge, "charge_hypothesis": charge_hyp, "contractual": contractual,
+            "claimant": side == SIDE_CLAIMANT,
             "side": side, "side_why": side_why, "issues": named_issues(f, older_issues)}
 
 
@@ -732,20 +745,27 @@ def fit_verdicts(state: Dict[str, Any]) -> Dict[Any, str]:
     return out
 
 
-def fitted_fallback(inp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def fitted_fallback(inp: Dict[str, Any], skip: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
     """v79.19.0 (item 6): «da determinare» never prints when a fitted article exists -- the best-tier fitted norm (a
     verified «si» first, then «dipende», then the unjudged; the input's order within a tier; the remedy set left out)
     leads with its elements da provare: stato FIT_LINE, no element in play, no id cited, tesi FALLBACK_TESI on the
-    norm's rubrica (its article when it has none); None with no such norm."""
+    norm's rubrica (its article when it has none); None with no such norm. v79.19.1 (item 1): skip -- the articles
+    the step rejected as a line never lead this way either."""
     best: Optional[Tuple[int, int, Dict[str, Any]]] = None
     for i, n in enumerate(inp.get("norms") or []):
         if n.get("remedy") or not n.get("article"):
+            continue
+        if any(same_article(n["article"], x) for x in skip or ()):
             continue
         tier = FIT_TIERS.get(str(n.get("fit") or ""), FIT_TIERS[""])
         if str(n.get("fit") or "") == "no":
             continue
         if best is None or (tier, i) < best[:2]:
             best = (tier, i, n)
+    if best is None and skip:
+        # the rejected article the only fitted norm: still a fitted norm applicable to the facts -- «da determinare»
+        # stays reserved for no fitted article at all (v79.19.0 item 6); it leads as such, never as the frame's charge
+        return fitted_fallback(inp)
     if best is None:
         return None
     n = best[2]
@@ -798,11 +818,14 @@ def _frame_lines(f: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _norm_block(n: Dict[str, Any]) -> str:
+def _norm_block(n: Dict[str, Any], elements_only: bool = False) -> str:
     labels = config()["labels"]
     head = [f"ARTICOLO: {n['article']}" + (f" ({config()['remedy_mark']})" if n.get("remedy") else ""),
             f"Rubrica: {n.get('rubrica') or labels['none']}", f"{labels['elements']}:"]
     head += [f"- [{e['eid']}] {e['testo']}" for e in n.get("elements") or []] or [f"- {labels['none']}"]
+    if elements_only:           # v79.19.1 (item 2): the schede's text dropped, the elements kept (block_sizes)
+        head.append(f"{labels['periods']}: {labels.get('periods_omitted') or '(omesso)'}")
+        return "\n".join(head)
     head.append(f"{labels['periods']}:")
     body = "\n".join(f"[{p['id']}] {p['text']}" for p in n.get("periods") or [])
     cap = int(config().get("max_article_chars") or 6000)
@@ -824,10 +847,36 @@ def build_messages(inp: Dict[str, Any]) -> List[Any]:
         parts.append("\n".join([labels["frame"] + ":"] + frame))
     parts.append(f"{labels['facts']}:\n" + "\n".join(f"{s['id']} [{ap.fact_label(s)}] {s['text']}"
                                                       for s in inp.get("sentences") or []))
-    parts.append(f"{labels['norms']}:\n\n" + "\n\n".join(_norm_block(n) for n in inp.get("norms") or []))
+    sizes = block_sizes(inp)
+    parts.append(f"{labels['norms']}:\n\n" + "\n\n".join(_norm_block(n, elements_only=sizes["reduced"])
+                                                          for n in inp.get("norms") or []))
     qs = inp.get("questions") or []
     parts.append(f"{labels['questions']}:\n" + ("\n".join(f"- {q}" for q in qs) if qs else labels["none"]))
     return [SystemMessage(content=prompt_system()), HumanMessage(content="\n\n".join(parts))]
+
+
+def block_sizes(inp: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.19.1 (item 2): the article block's size -- {"chars_full": the block with every norm's periods,
+    "chars_sent": what the prompt carries, "reduced": the periods omitted (elements only), "norms": n, "cap"}. The
+    block is reduced when its full size exceeds data «max_block_chars» (the 79.15.3 bound: the per-article cap times
+    the fitted norms a 79.15.3 input carried -- this branch adds the alternative lines' schede, so a block can grow
+    past what the step's deadline allows); 0 or missing: never reduced."""
+    norms = inp.get("norms") or []
+    full = sum(len(_norm_block(n)) for n in norms) + 2 * max(0, len(norms) - 1)
+    cap = int(config().get("max_block_chars") or 0)
+    reduced = bool(cap) and full > cap
+    sent = sum(len(_norm_block(n, elements_only=True)) for n in norms) + 2 * max(0, len(norms) - 1) if reduced else full
+    return {"chars_full": full, "chars_sent": sent, "reduced": reduced, "norms": len(norms), "cap": cap}
+
+
+def deadline_for(inp: Dict[str, Any]) -> float:
+    """v79.19.1 (item 2): the step's deadline scales with the article block -- data «deadline_s» (40) plus
+    «deadline_per_article_s» (1) per fitted norm, at most «deadline_max_s» (60)."""
+    cfg = config()
+    base = float(cfg.get("deadline_s") or 40)
+    per = float(cfg.get("deadline_per_article_s") or 0)
+    cap = float(cfg.get("deadline_max_s") or base)
+    return min(cap, base + per * len(inp.get("norms") or []))
 
 
 def line_elements(norm: Dict[str, Any], inp: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -875,15 +924,37 @@ def request_kwargs() -> Dict[str, Any]:
     return out
 
 
+# v79.19.1 (item 2): the reply's text as it streams in, read by call_once when the call is not back in time
+_PARTIAL: "contextvars.ContextVar[Optional[List[str]]]" = contextvars.ContextVar("analysis_step_partial", default=None)
+
+
 def _default_call(messages: List[Any], kwargs: Dict[str, Any]) -> str:
     """The repo's chat model (ai_chat.chat_model) bound to the kwargs; the reply without its reasoning, the call on the
-    request's stage meter -- as applicability._default_call."""
+    request's stage meter -- as applicability._default_call. v79.19.1 (item 2): streamed when call_once set a buffer
+    (_PARTIAL), each chunk's text appended to it -- a call abandoned at the deadline leaves its partial reply there;
+    the chunks summed are the reply (its finish_reason the last chunk's)."""
     from . import ai_chat
     ai_chat._stage_count()
     started = time.time()
-    response = ai_chat.chat_model.bind(**kwargs).invoke(messages)
+    response = _invoke(ai_chat.chat_model.bind(**kwargs), messages, _PARTIAL.get())
     ai_chat._stage_call("analysis_step", started, response)
     return ai_chat._reply_text(response, kwargs.get("max_tokens"))
+
+
+def _invoke(model: Any, messages: List[Any], buf: Optional[List[str]]) -> Any:
+    """v79.19.1 (item 2): the model's reply -- streamed into buf (each chunk's text appended, the chunks summed into
+    the reply) when a buffer is given and the model streams; else one invoke."""
+    if buf is None or not hasattr(model, "stream"):
+        return model.invoke(messages)
+    response = None
+    for chunk in model.stream(messages):
+        response = chunk if response is None else response + chunk
+        text = chunk.content if isinstance(getattr(chunk, "content", None), str) else ""
+        if text:
+            buf.append(text)
+    if response is None:
+        raise RuntimeError("the stream returned no chunk")
+    return response
 
 
 def parse_reply(raw: Any) -> Dict[str, Any]:
@@ -895,21 +966,46 @@ def parse_reply(raw: Any) -> Dict[str, Any]:
     return data
 
 
+def _prompt_log(messages: Sequence[Any]) -> List[Dict[str, str]]:
+    """v79.19.1 (item 2): the call's messages for the calls log -- role and content."""
+    out = []
+    for m in messages or []:
+        kind = type(m).__name__.lower()
+        role = "system" if "system" in kind else "assistant" if kind.startswith("ai") else "user"
+        out.append({"role": role, "content": str(getattr(m, "content", m))})
+    return out
+
+
 def call_once(messages: List[Any], call: Optional[Callable[[List[Any], Dict[str, Any]], str]],
-              budget: float) -> Dict[str, Any]:
+              budget: float, attempt: int = 0) -> Dict[str, Any]:
     """One call on a worker thread, waited at most budget seconds: {"status": ok | failed | timeout | malformed,
     "reply" (the text), "data" (the parsed object), "seconds", "error"}. A call not back in time is abandoned (its pool
-    shut down without waiting); never raises."""
+    shut down without waiting); never raises. v79.19.1 (item 2): a timed-out call's entry carries «prompt» (the
+    messages) and «partial_reply» (what the stream had returned: _PARTIAL); its late reply, if it ever lands, is
+    logged «analysis_step_late_reply» (nothing reads it)."""
     started = time.time()
     if budget <= 0:
-        return {"status": TIMEOUT, "reply": "", "data": None, "seconds": 0.0, "error": "nessun tempo residuo"}
+        return {"status": TIMEOUT, "reply": "", "data": None, "seconds": 0.0, "error": "nessun tempo residuo",
+                "prompt": _prompt_log(messages), "partial_reply": ""}
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis_step")
+    partial: List[str] = []
+    ctx = contextvars.copy_context()
+    ctx.run(_PARTIAL.set, partial)
     try:
-        fut = pool.submit(contextvars.copy_context().run, call or _default_call, messages, request_kwargs())
+        fut = pool.submit(ctx.run, call or _default_call, messages, request_kwargs())
         done, _ = _wait([fut], timeout=budget)
         if fut not in done:
+            def late(f, t0=started, n=attempt):
+                try:
+                    reply = f.result()
+                except Exception as exc:        # noqa: BLE001 -- logged, nothing else
+                    reply = f"({type(exc).__name__}: {exc})"
+                _log("analysis_step_late_reply", {"attempt": n, "seconds": round(time.time() - t0, 3),
+                                                  "chars": len(str(reply or "")), "late_reply": str(reply or "")[:4000]})
+            fut.add_done_callback(late)
             return {"status": TIMEOUT, "reply": "", "data": None, "seconds": round(time.time() - started, 3),
-                    "error": f"oltre {round(budget, 1)} s"}
+                    "error": f"oltre {round(budget, 1)} s", "prompt": _prompt_log(messages),
+                    "partial_reply": "".join(partial)}
         try:
             reply = fut.result()
         except Exception as exc:    # noqa: BLE001 -- nothing from the step
@@ -1560,7 +1656,26 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
     principale, subordinata = lines.get("linea_principale"), lines.get("linea_subordinata")
     charge = inp.get("charge") or ""
     frame_label = ""
-    if checked.get("charge_missing") and charge:
+    # v79.19.1 (item 1): the frame's charge (the text's article) in the step's rejected list -- the model put it as a
+    # line and the verification refused it -- or missing while a verified line exists: it never leads; the step's
+    # first verified line leads (analysis_frame_charge_overridden); the fallbacks never put a rejected article first.
+    # SKIP_FRAME_CHARGE (the frame's article as the unverified leading line) only for a charge the text names, not
+    # rejected, with no verified line at all.
+    rejected_labels = [r.get("articolo") for r in checked.get("rejected") or [] if r.get("articolo")]
+    charge_rejected = bool(charge) and any(same_article(x, charge) for x in rejected_labels)
+    overridden = bool(checked.get("charge_missing") and charge and (charge_rejected or principale is not None))
+    if overridden:
+        counters["analysis_frame_charge_missing"] = 1
+        counters["analysis_frame_charge_overridden"] = 1
+        _log("analysis_frame_charge_overridden", {"charge": charge, "rejected": charge_rejected,
+                                                  "leading": (principale or {}).get("articolo")})
+        if principale is not None and not charge_rejected and subordinata is None:
+            # the text's charge, not refused, beside the verified leading line: the subordinate, its elements da provare
+            frame_sub = resolve(charge, m["labels"]) or charge
+            subordinata = {"articolo": frame_sub, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
+                           "tesi": "", "cita_fatti": [], "cita_norma": [], "stato": FRAME_LINE,
+                           "posizione": "subordinata"}
+    if checked.get("charge_missing") and charge and not overridden:
         counters["analysis_frame_charge_missing"] = 1
         counters[SKIPPED_REASON] = SKIP_FRAME_CHARGE        # v79.15.2: the frame's article leads, no rubrica read
         frame_label = resolve(charge, m["labels"]) or charge
@@ -1569,12 +1684,14 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
                       "tesi": "", "cita_fatti": [], "cita_norma": [], "stato": FRAME_LINE}
     elif principale is None:
         principale = rubrica_fallback(inp)
+        if principale is not None and charge_rejected and same_article(principale["articolo"], charge):
+            principale = None                               # v79.19.1 (item 1): the rejected charge never leads
         if principale is not None:
             counters["analysis_line_fallback_rubrica"] = 1
             counters[SKIPPED_REASON] = ""
         else:
-            counters[SKIPPED_REASON] = fallback_miss(inp)  # v79.15.2: no named charge / no exact rubrica
-            principale = fitted_fallback(inp)               # v79.19.0 (item 6): a fitted article leads
+            counters[SKIPPED_REASON] = SKIP_FRAME_CHARGE_REJECTED if charge_rejected else fallback_miss(inp)
+            principale = fitted_fallback(inp, skip=rejected_labels if charge_rejected else ())   # v79.19.0 (item 6)
             if principale is not None:
                 counters["analysis_line_fallback_fit"] = 1
             else:
@@ -1607,6 +1724,7 @@ def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
             "affermazioni_di_diritto": _law_statements(checked.get("reply") or {}, m, counters),
             "rimedi": [n["article"] for n in inp.get("norms") or [] if n.get("remedy")],
             "frame_charge": charge, "frame_charge_missing": bool(frame_label), "contractual": inp.get("contractual"),
+            "frame_charge_overridden": overridden, "charge_hypothesis": inp.get("charge_hypothesis") or "",
             "claimant": bool(inp.get("claimant")), "side": inp.get("side") or SIDE_NEUTRAL, "obiezioni": objections,
             "eccezioni": [{"articolo": label, "eid": e.get("eid"), "fonte": e.get("eccezione_fonte")}
                           for label, els in elements.items() for e in els if e.get("eccezione")],
@@ -1662,14 +1780,26 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
     {"status", "error", "analysis" (None unless ok), "counters", "prompt_hash", "seconds", "calls", "reasons",
     "rejected"}; logged «analysis_step»."""
     t0 = started if started is not None else time.time()
-    deadline = float(config().get("deadline_s") or 40)
+    deadline = deadline_for(inp)            # v79.19.1 (item 2): 40 s + 1 s per fitted norm, at most 60 s
     counters = empty_counters()
     calls: List[Dict[str, Any]] = []
     status, error, analysis, reasons, rejected = NO_INPUT, "", None, [], []
+    block = block_sizes(inp) if inp.get("norms") else {"chars_full": 0, "chars_sent": 0, "reduced": False, "norms": 0}
+
+    def logged(attempt: int, got: Dict[str, Any]) -> Dict[str, Any]:     # v79.19.1 (item 2): the calls log entry
+        entry = {"attempt": attempt, "status": got["status"], "seconds": got["seconds"], "error": got["error"]}
+        if got["status"] == TIMEOUT:            # the timed-out call's prompt and partial reply, kept in full
+            entry["prompt"] = got.get("prompt") or []
+            entry["partial_reply"] = got.get("partial_reply") or ""
+            _log("analysis_step_timeout", {"attempt": attempt, "budget_s": round(deadline, 1), "seconds": got["seconds"],
+                                           "partial_chars": len(entry["partial_reply"]), "block": block,
+                                           "prompt": entry["prompt"], "partial_reply": entry["partial_reply"]})
+        return entry
     if inp.get("norms") and inp.get("sentences"):
+        counters["analysis_block_reduced"] = int(bool(block["reduced"]))
         messages = build_messages(inp)
-        first = call_once(messages, call, deadline - (time.time() - t0))
-        calls.append({"attempt": 1, "status": first["status"], "seconds": first["seconds"], "error": first["error"]})
+        first = call_once(messages, call, deadline - (time.time() - t0), attempt=1)
+        calls.append(logged(1, first))
         status, error = first["status"], first["error"]
         if first["status"] == OK:
             checked = verify(first["data"], inp)
@@ -1679,9 +1809,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                 resolve(inp.get("charge"), [n["article"] for n in inp["norms"]]) is None
             if checked["reasons"] and not futile:
                 second = call_once(reask_messages(messages, first["reply"], checked["reasons"], inp), call,
-                                   deadline - (time.time() - t0))
-                calls.append({"attempt": 2, "status": second["status"], "seconds": second["seconds"],
-                              "error": second["error"]})
+                                   deadline - (time.time() - t0), attempt=2)
+                calls.append(logged(2, second))
                 counters["analysis_reasked"] = 1
                 if second["status"] == OK:
                     again = verify(second["data"], inp)
@@ -1711,10 +1840,11 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
     counters["analysis_seconds"] = seconds
     result = {"status": status, "error": error, "analysis": analysis if status == OK else None, "counters": counters,
               "prompt_hash": prompt_hash(), "seconds": seconds, "calls": calls, "reasons": reasons,
-              "rejected": rejected}
+              "rejected": rejected, "deadline_s": round(deadline, 1), "block": block}       # v79.19.1 (item 2)
     _log("analysis_step", {"prompt_hash": result["prompt_hash"], "status": status,
                            "fallback_skipped_reason": counters.get(SKIPPED_REASON) or "",     # v79.15.2 (item 2)
                            "error": error,
+                           "deadline_s": result["deadline_s"], "block": block,                # v79.19.1 (item 2)
                            "seconds": seconds, "calls": calls, "counters": counters,
                            "lines": _line_log(result["analysis"]), "rejected": rejected,
                            "claimant": bool(inp.get("claimant")),                        # v79.15.1 (item 3)
@@ -1766,6 +1896,8 @@ LABEL_MAIN = "Linea principale"
 LABEL_SUB = "Linea subordinata"
 LABEL_ELEMENT = "elemento in gioco"
 LABEL_FRAME_LINE = "addebito del quadro, linea non verificata"
+LABEL_FRAME_SUB = "addebito del quadro, elementi da provare"      # v79.19.1 (item 1): the frame's charge as the
+# subordinate line beside a verified leading one -- «linea non verificata» prints only when no verified line exists
 LABEL_FIT_LINE = "norma applicabile ai fatti, linea non verificata"       # v79.19.0 (item 6)
 LABEL_REMEDIES = "Rimedi e parte generale collegati alla linea"
 LABEL_ESITI = "Esiti dell'art. {art}"
@@ -1783,7 +1915,8 @@ SOLUTIONS_HEAD = ("| Linea | Articolo | Elemento in gioco | Tesi | Fatti citati 
 PROSE_COUNTERS = ("qa_sentences_replaced", "qa_sentences_dropped_dependent", "prose_excluded_article_dropped",
                   "prose_unfitted_article_dropped", "objections_sentences_dropped")
 RENDER_COUNTERS = ("qa_sentences_dropped", "norms_sentences_dropped", "legacy_disagrees_line",
-                   "legacy_disagrees_esito") + PROSE_COUNTERS
+                   "legacy_disagrees_esito") + PROSE_COUNTERS + \
+    ("objections_fallback_legacy", "records_unprinted", "rulings_printed")     # v79.19.1 (items 3, 6b, 6c)
 
 
 def undetermined_line() -> Dict[str, Any]:
@@ -1834,6 +1967,8 @@ def line_text(line: Optional[Dict[str, Any]]) -> str:
     if x.get("stato") == UNDETERMINED or not x.get("articolo"):
         return f"{LINE_UNDETERMINED} ({LINE_UNVERIFIED_LABEL})"
     if x.get("stato") == FRAME_LINE:
+        if x.get("posizione") == "subordinata":     # v79.19.1 (item 1): beside a verified leading line
+            return f"art. {x['articolo']} ({LABEL_FRAME_SUB})"
         return f"art. {x['articolo']} ({LABEL_FRAME_LINE})"
     if x.get("stato") == FIT_LINE:          # v79.19.0 (item 6)
         return f"art. {x['articolo']} — {_stop(x.get('tesi'))} ({LABEL_FIT_LINE})"

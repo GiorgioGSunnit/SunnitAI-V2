@@ -15,6 +15,7 @@
 #
 #   bash /root/v38/scripts/promote.sh
 #   bash /root/v38/scripts/promote.sh --rollback /root/snapshots/<dir>    the snapshot back, then the restart
+# v79.19.1 (item 0): refused (exit 1, nothing changed) when /root/v38/data or /opt/chatbot/data is a symlink.
 #
 # SRC, DST, SERVICE (chatbot), CHATBOT_URL (http://127.0.0.1:8000), SNAPSHOTS (/root/snapshots) override.
 set -euo pipefail
@@ -69,6 +70,14 @@ if [ "${1:-}" = "--rollback" ]; then
 fi
 
 [ -d "$SRC/src" ] && [ -f "$SRC/VERSION" ] || { echo "$SRC has no src/ or VERSION: scripts/deploy.sh first"; exit 1; }
+# v79.19.1 (item 0): a symlinked data/ on either side -- rsync would write through the link into another tree (the
+# snapshot and the restore likewise): refused before the snapshot, nothing changed
+for side in "$SRC" "$DST"; do
+    if [ -L "$side/data" ]; then
+        echo "refused: $side/data is a symlink ($(readlink "$side/data")): replace it with a directory before promoting"
+        exit 1
+    fi
+done
 [ -d "$DST" ] && [ -x "$PY" ] || { echo "no $DST or no $PY"; exit 1; }
 [ -f "$EXCLUDE" ] || { echo "no $EXCLUDE"; exit 1; }
 old="$(cat "$DST/VERSION" 2>/dev/null || echo unversioned)"

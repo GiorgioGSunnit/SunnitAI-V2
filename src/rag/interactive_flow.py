@@ -945,7 +945,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             code_log = _isolated("code_scope", lambda: code_scope(article_rows, case, first_read,           # the case's
                                                                   anchor_keep), None)                    # institutions
             if code_log is not None:
-                article_rows = code_log.pop("_rows")
+                article_rows = demote_instead("code_scope_gate", article_rows, code_log.pop("_rows"), out)   # v79.19.1
                 track_gate(top, gates, "code_scope_gate", article_rows)
                 gone = {x["article"] for x in code_log.get("dropped") or []}
                 must = [a for a in must if a not in gone]
@@ -955,8 +955,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             from . import topic_groups
             matter_log: Dict[str, Any] = {}
             named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
-            article_rows = _isolated("matter_gate", lambda: topic_groups.matter_gate(
-                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True), article_rows)
+            article_rows = demote_instead("matter_gate", article_rows, _isolated("matter_gate", lambda: topic_groups.matter_gate(
+                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True), article_rows), out)
             track_gate(top, gates, "matter_gate", article_rows)
             if matter_log.get("dropped"):
                 gone = {x["article"] for x in matter_log["dropped"]}
@@ -968,9 +968,11 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
             named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
             out["defence_gate"] = defence_ranked(article_rows, top)  # v79 (D1): before the gate drops them
-            article_rows, general_out = cenni.general_part_gate(article_rows, named_keys)
+            kept_general, general_out = cenni.general_part_gate(article_rows, named_keys)
+            article_rows = demote_instead("general_part_gate", article_rows, kept_general, out)      # v79.19.1 (6a)
             track_gate(top, gates, "general_part_gate", article_rows)
-            regime_rows, regime_out = cenni.general_part_gate(regime_rows, named_keys)
+            kept_regime, regime_out = cenni.general_part_gate(regime_rows, named_keys)
+            regime_rows = demote_instead("general_part_gate", regime_rows, kept_regime, out)
             if general_out or regime_out:
                 gone = {_key(_parse_label(x)) for x in general_out + regime_out}
                 anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
@@ -1065,7 +1067,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             keep_now = grading_keep(article_rows, case, anchor_keep, must)       # read's always, then by retrieval rank
             hits_n = len({_key(r["_article"]) for r in article_rows if r.get("_article")})
             held = _isolated("cap_anchors", lambda: cap_anchors(article_rows, pre, anchor_keep), []) or []   # v79.10.4
-            article_rows, cap_log = grade_cap(article_rows, keep_now, anchors=held)                        # (D2)
+            capped_rows, cap_log = grade_cap(article_rows, keep_now, anchors=held)                        # (D2)
+            article_rows = demote_instead("grade_funnel", article_rows, capped_rows, out)        # v79.19.1 (item 6a)
             track_gate(top, gates, "grade_cap", article_rows)
             out["grade_funnel"] = {"retrieved": len({_key(r["_article"]) for r in picked["article_rows"]
                                                      if r.get("_article")}),
@@ -1125,6 +1128,12 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         fam["alarm"] = _isolated("family_alarm", lambda: family_gate.alarm(fam["dropped_graded"]), []) or []
         if fam["alarm"]:
             _log("family_alarm", fam["alarm"])
+            # v79.19.1 (item 6a, GATES_DEMOTE): the alarm's articles back as demoted candidates, with their shadow grade
+            back = _isolated("family_alarm_readmit", lambda: readmit_alarm_rows(fam, fam_dropped_rows, article_rows,
+                                                                                 out), []) or []
+            if back:
+                article_rows = list(article_rows) + back
+                fam["readmitted"] = [_label(_key(r["_article"])) for r in back]
         if case_first and graded is not None:   # v60g (1), v60m: an article whose distinctive element the case
             from . import issue_records        # contradicts or the facts exclude: grade 1 (never one the case is silent on)
             stage_meter.mark("distinctive_link")
@@ -1280,6 +1289,7 @@ def family_shadow_grade(text: str, request: str, rows: Sequence[Dict[str, Any]],
         if label not in x["articles"]:
             x["articles"].append(label)
             x["graded_relevant"] = len(x["articles"])
+            x.setdefault("grades", {})[label] = int(g["_grade"])      # v79.19.1 (item 6a): read by readmit_alarm_rows
     return out
 
 
@@ -1670,7 +1680,9 @@ def analyse_case(text: str, request: str = "", lang: str = "it", frame: Optional
                     "round1_stages": {k: v for k, v in round1_stages.items() if k.endswith("_s")},
                     "round1_llm": round1_stages.get("total_llm"),                   # v79.8 (A5)
                     "graded_round1": (found.get("grading") or {}).get("graded")},
-        "grade_funnel": _jsonable(found.get("grade_funnel") or {})}
+        "grade_funnel": _jsonable(found.get("grade_funnel") or {}),
+        "gate_demoted_by": dict(found.get("gate_demoted_by") or {}),              # v79.19.1 (item 6a, GATES_DEMOTE)
+        "gate_demoted": _jsonable(found.get("gate_demoted") or {})}
     if pending is not None:     # v60: the first read, the hypotheses no topic anchors, the rows for the answer step
         state.update(read=_jsonable(read), unanchored=_jsonable(unanchored), read_side=read_side,
                      procedural=list((found.get("first_read_search") or {}).get("procedural") or []),   # v60n
@@ -7698,7 +7710,8 @@ DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativ
                  "claim": "domanda (ipotesi principale della prima lettura)",
                  "hypothesis": "addebito (ipotesi di reato della prima lettura)",      # v79 (C4)
                  "remedy": "rimedio civile della persona offesa",                     # v79.12.4 (item 1)
-                 "frame_alternative": "altro addebito o articolo letto dal quadro"}    # v79.19.0 (items 3, 5)
+                 "frame_alternative": "altro addebito o articolo letto dal quadro",    # v79.19.0 (items 3, 5)
+                 "posture_demoted": "ipotesi della lettura respinta dall'evento, retrocessa"}  # v79.19.1 (item 6a)
 
 
 def fit_removed_keys(state: Dict[str, Any]) -> set:
@@ -8051,10 +8064,16 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             # v79.12.4 (item 3): every hypothesis of the first read split too, so the charge rule scores each
             # (posture.choose_charge) -- never one the certain facts' event does not fit
             event = posture_mod.certain_event(state, case)
+            demoted_posture: List[str] = []
             for h, labels in posture_mod.read_hypotheses(state, posture, rows):
                 for x in labels:
                     if not posture_mod.event_refuses(x, event, h):     # (review) an attempt's never refused
                         wanted.setdefault(x, posture_mod.READ_CANDIDATE_WHY)
+                    elif gates_demote() and x not in wanted:   # v79.19.1 (item 6a): refused by the event -- demoted,
+                        wanted[x] = DECOMPOSE_WHY["posture_demoted"]    # still decomposed, graded by the fit; never the charge
+                        demoted_posture.append(x)
+            if demoted_posture:
+                count_demoted(state, "posture", len(dict.fromkeys(demoted_posture)), list(dict.fromkeys(demoted_posture)))
     charged = any(why != DECOMPOSE_WHY["remedy"] for why in wanted.values())
     for x in posture_mod.alternative_labels(state, rows):
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
@@ -8183,7 +8202,10 @@ RANKED_TOP = 10          # v79 (D1, D2): the retrieval step's top-ranked article
 
 def _rank_of(row: Dict[str, Any], position: int) -> tuple:
     fused = row.get("_fused_rank")
-    return (fused if isinstance(fused, (int, float)) else 10 ** 6, position)
+    rank = fused if isinstance(fused, (int, float)) else 10 ** 6
+    if row.get("_demoted"):         # v79.19.1 (item 6a, GATES_DEMOTE): a demoted row after every undemoted one
+        rank += 10 ** 7
+    return (rank, position)
 
 
 def retrieval_top(rows: Sequence[Dict[str, Any]], n: int = RANKED_TOP) -> List[Dict[str, Any]]:
@@ -8198,6 +8220,75 @@ def retrieval_top(rows: Sequence[Dict[str, Any]], n: int = RANKED_TOP) -> List[D
         if len(out) >= n:
             break
     return out
+
+
+# v79.19.1 (item 6a, GATES_DEMOTE, default off; .env.v45 true): the retrieval gates demote, never drop -- an article
+# the matter gate, the Capo-scope gate, the general-part gate, the grade cap (the grade funnel), the family alarm (the
+# family gate's dropped documents the shadow grading found relevant) or the posture (a read hypothesis the certain
+# event refuses) would drop is kept with a demotion mark (`_demoted`: the gates' names) and ranked after the undemoted
+# (_rank_of); it still goes to grading and to the fit; the fit's «no» is the only removal. gate_demoted_by[name].
+GATES_DEMOTE_FLAG = "GATES_DEMOTE"
+
+
+def gates_demote() -> bool:
+    return feature_flags.enabled(GATES_DEMOTE_FLAG)
+
+
+def demote_instead(name: str, before: Sequence[Dict[str, Any]], kept: Sequence[Dict[str, Any]],
+                   out: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """The rows a gate would drop (before minus kept, by identity) appended after the kept ones with `_demoted` += name
+    and counted out["gate_demoted_by"][name]; the flag off: kept as it is."""
+    if not gates_demote():
+        return list(kept)
+    kept_ids = {id(r) for r in kept}
+    gone = [r for r in before or [] if id(r) not in kept_ids]
+    for r in gone:
+        r["_demoted"] = list(dict.fromkeys(list(r.get("_demoted") or []) + [name]))
+    if gone:
+        count_demoted(out, name, len(gone), [_label(_key(r["_article"])) for r in gone if r.get("_article")])
+    return list(kept) + gone
+
+
+def count_demoted(out: Optional[Dict[str, Any]], name: str, n: int, labels: Sequence[str] = ()) -> None:
+    if out is None or not n:
+        return
+    by = out.setdefault("gate_demoted_by", {})
+    by[name] = int(by.get(name) or 0) + int(n)
+    names = out.setdefault("gate_demoted", {})
+    names[name] = list(dict.fromkeys(list(names.get(name) or []) + list(labels)))
+    _log("gate_demoted", {"gate": name, "n": n, "articles": list(labels)})
+
+
+def readmit_alarm_rows(fam: Dict[str, Any], dropped_rows: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]],
+                       out: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """v79.19.1 (item 6a): the family alarm's articles (family_gate.alarm: the dropped documents holding graded-relevant
+    articles) back among the candidates, demoted «family_alarm», each with the grade the shadow grading gave it
+    (family_shadow_grade «grades»); a proxy alarm (no shadow grade) re-admits nothing: no grade is invented."""
+    if not gates_demote():
+        return []
+    grades: Dict[str, int] = {}
+    for entry in fam.get("alarm") or []:
+        doc = (fam.get("dropped_graded") or {}).get(entry.get("doc")) or {}
+        if entry.get("proxy") or not isinstance(doc.get("grades"), dict):
+            continue
+        for label in entry.get("articles") or []:
+            if isinstance(doc["grades"].get(label), int):
+                grades[label] = doc["grades"][label]
+    have = {_key(r["_article"]) for r in rows or [] if r.get("_article")}
+    back: List[Dict[str, Any]] = []
+    for r in dropped_rows or []:
+        if not r.get("_article"):
+            continue
+        label = _label(_key(r["_article"]))
+        if label not in grades or _key(r["_article"]) in have:
+            continue
+        r["_grade"] = grades[label]
+        r["_demoted"] = list(dict.fromkeys(list(r.get("_demoted") or []) + ["family_alarm"]))
+        back.append(r)
+    if back:
+        count_demoted(out, "family_alarm", len({_key(r["_article"]) for r in back}),
+                      list(dict.fromkeys(_label(_key(r["_article"])) for r in back)))
+    return back
 
 
 def track_gate(top: Sequence[Dict[str, Any]], gates: Dict[str, str], stage: str, rows: Sequence[Dict[str, Any]]
@@ -10192,6 +10283,9 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
         out["total_s"] = round(max(0.0, out["total_s"] - out["family_shadow_s"]), 1)
     out["family_alarm"] = len(fam["alarm"]) if isinstance(fam.get("alarm"), list) else len(
         _family_alarm(fam.get("dropped_graded") or {}))
+    # v79.19.1 (item 6a, GATES_DEMOTE): the articles each gate demoted instead of dropping (the retrieval's, the posture's)
+    out["gate_demoted_by"] = {k: int(v) for k, v in (state.get("gate_demoted_by") or {}).items()}
+    out["gate_demoted"] = sum(out["gate_demoted_by"].values())
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out["cap_anchors_kept"] = len(funnel.get("anchors_kept") or [])                                 # v79.10.4 (D2)
     out.update(shadow_counters(counts))                                                             # v79.11 (6)

@@ -233,7 +233,9 @@ def test_a_disputed_article_carries_both_to_the_fit_and_the_judgment_decides(mon
     same = _read(DISPUTE, _penal_reply("582 c.p.", "582 c.p.", frase=frase))["frame"]["addebito_o_domanda"]
     assert "disputed" not in same and same["articolo"] == "582 c.p."
     facts_only = _read(DISPUTE, _penal_reply(None, "584 c.p.", frase=frase))["frame"]["addebito_o_domanda"]
-    assert facts_only["articolo"] == "584 c.p." and facts_only["da_fatti"] is True and "disputed" not in facts_only
+    # v79.19.1 (item 1): no article in the text -- the facts' one is a hypothesis («ipotesi»), never the verified charge
+    assert facts_only["articolo"] is None and facts_only["ipotesi"] == "584 c.p." and facts_only["da_fatti"] is True
+    assert "disputed" not in facts_only
     # a civil article as the facts' one in a penal rito: dropped, the charge not disputed
     civil = _read(DISPUTE, _penal_reply("582 c.p.", "2043 c.c.", frase=frase))
     assert "disputed" not in civil["frame"]["addebito_o_domanda"] and civil["counters"]["charge_rito_dropped"] == 1

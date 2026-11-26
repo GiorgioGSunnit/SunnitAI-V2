@@ -470,12 +470,17 @@ def test_the_frames_charge_missing_is_re_asked_once_then_its_article_leads_with_
         model.seen[1]["messages"][3].content
     an = res["analysis"]
     lp, ls = an["linea_principale"], an["linea_subordinata"]
-    assert lp["articolo"] == "640 c.p." and lp["stato"] == "addebito_del_quadro" and lp["tesi"] == ""
-    assert ls["articolo"] == "641 c.p." and ls["stato"] == "verificata"           # the model's line, subordinate
+    # v79.19.1 (item 1): the step's verified line leads; the frame's charge, missing but not refused, is the subordinate
+    # with every element da provare (the «linea non verificata» label never beside a verified line)
+    assert lp["articolo"] == "641 c.p." and lp["stato"] == "verificata"
+    assert ls["articolo"] == "640 c.p." and ls["stato"] == "addebito_del_quadro" and ls["tesi"] == "" \
+        and ls["posizione"] == "subordinata"
     assert [(e["esito"], e["origine"]) for e in an["elementi"]["640 c.p."]] == [("da_provare", "quadro")] * 3
     assert [e["esito"] for e in an["elementi"]["641 c.p."]] == ["escluso", "da_provare"]
-    assert an["frame_charge_missing"] and res["counters"]["analysis_frame_charge_missing"] == 1
+    assert an["frame_charge_overridden"] and not an["frame_charge_missing"]
+    assert res["counters"]["analysis_frame_charge_missing"] == 1 == res["counters"]["analysis_frame_charge_overridden"]
     assert res["counters"]["analysis_line_undetermined"] == 0
+    assert A.LINE_UNVERIFIED_LABEL not in A.summary_text(A.view(res, _penal()))
     # the re-ask carrying both reasons at once -- still one re-ask, at most two calls
     both = _reply(_line("62-bis c.p.", "x", "Attenuanti.", ["S5"]))
     model = _Model(both, both, both)
@@ -492,12 +497,20 @@ def test_the_frames_charge_missing_is_re_asked_once_then_its_article_leads_with_
     assert len(model.seen) == 1 and not res["analysis"]["frame_charge_missing"]
 
 
-def test_a_charge_that_is_no_fitted_norm_is_not_re_asked_and_still_leads():
+def test_a_charge_that_is_no_fitted_norm_is_not_re_asked_the_verified_line_leads_the_charge_is_the_subordinate():
     norms = [n for n in PENAL_NORMS if n["article"] != "640 c.p."]
     model = _Model(_reply(_line("641 c.p.", E641[0], "Tesi.", ["S2"], ["A641cp.1"])))
     res = A.analyse(_penal(norms=norms), call=model)
-    assert len(model.seen) == 1 and res["analysis"]["linea_principale"]["articolo"] == "640 c.p."
-    assert res["analysis"]["elementi"]["640 c.p."] == [] and res["counters"]["analysis_frame_charge_missing"] == 1
+    an = res["analysis"]
+    assert len(model.seen) == 1 and an["linea_principale"]["articolo"] == "641 c.p."     # v79.19.1 (item 1)
+    assert an["linea_subordinata"]["articolo"] == "640 c.p." and an["linea_subordinata"]["stato"] == A.FRAME_LINE
+    assert an["elementi"]["640 c.p."] == [] and res["counters"]["analysis_frame_charge_missing"] == 1
+    assert res["counters"]["analysis_frame_charge_overridden"] == 1
+    # no verified line at all: the text's charge leads as the frame's unverified line (79.15.2)
+    model = _Model(_reply(_line("62-bis c.p.", "x", "Attenuanti.", ["S5"])))
+    res = A.analyse(_penal(norms=norms), call=model)
+    assert res["analysis"]["linea_principale"]["articolo"] == "640 c.p."
+    assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE
 
 
 # --- 3. nothing from a failed step ------------------------------------------------------------------------------------
@@ -512,7 +525,7 @@ def test_a_failed_call_or_no_json_object_gives_nothing(reply, status):
 
 
 def test_the_deadline_cuts_the_call_and_nothing_is_printed(monkeypatch):
-    cfg = dict(A.config(), deadline_s=0.3)
+    cfg = dict(A.config(), deadline_s=0.3, deadline_per_article_s=0)      # v79.19.1 (item 2): the scaling off
     monkeypatch.setattr(A, "config", lambda: cfg)
     model = _Model(1.0, GOOD_PENAL)
     t0 = time.time()

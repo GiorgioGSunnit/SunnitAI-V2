@@ -50,3 +50,6 @@ tenant_logos/
 system_templates/
 system_templates_*/
 new_templates/
+# v79.19.1: the server's own replay harness (scripts/replay_cases.py, never in this repository): scripts/ is mirrored
+# with --delete, so without this line a deploy deletes it (the 79.19.0 deploy did; restored from a snapshot)
+/replay_cases.py

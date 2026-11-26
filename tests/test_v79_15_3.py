@@ -143,14 +143,21 @@ def test_section_1_6_9_print_the_codes_tesi_and_the_model_tesi_goes_to_the_log(m
 
 
 def test_the_frame_charge_and_the_rubrica_fallback_lines_are_unchanged():
-    # the frame's charge leads (the model's line on 641): «art. X (addebito del quadro, linea non verificata)»
+    # v79.19.1 (item 1): the model's verified line on 641 leads; the frame's charge, missing, is the subordinate «art. X
+    # (addebito del quadro, elementi da provare)» -- no «linea non verificata» beside a verified line
     reply = _reply(_line("641 c.p.", T.E641[0], "Tesi.", ["S1"], ["A641cp.1"]))
     inp = T._penal()
     res = A.analyse(inp, call=_Model(reply, reply))
     v = A.view(res, inp)
-    assert A.summary_text(v).startswith("Linea principale: art. 640 c.p. (addebito del quadro, linea non verificata).")
-    assert "tesi_modello" not in res["analysis"]["linea_principale"]
-    assert res["analysis"]["linea_subordinata"]["tesi_modello"] == "Tesi."      # the model's line, now subordinate
+    assert A.summary_text(v).endswith("Linea subordinata: art. 640 c.p. (addebito del quadro, elementi da provare).")
+    assert A.summary_text(v).startswith("Linea principale: art. 641 c.p. — ")
+    assert "tesi_modello" not in res["analysis"]["linea_subordinata"]
+    assert res["analysis"]["linea_principale"]["tesi_modello"] == "Tesi."      # the model's line leads
+    # no verified line at all: the frame's charge leads «art. X (addebito del quadro, linea non verificata)»
+    none = _reply(_line("62-bis c.p.", "x", "Attenuanti.", ["S1"]))
+    res = A.analyse(inp, call=_Model(none, none))
+    assert A.summary_text(A.view(res, inp)).startswith("Linea principale: art. 640 c.p. (addebito del quadro, linea non "
+                                                       "verificata).")
     # the rubrica fallback: its own code-written «<rubrica>: elementi da provare dall'accusa», no element in play
     bad = _reply({"articolo": "640 c.p.", "elemento_in_gioco": "un testo", "tesi": "t", "cita_fatti": ["S1"],
                   "cita_norma": []})

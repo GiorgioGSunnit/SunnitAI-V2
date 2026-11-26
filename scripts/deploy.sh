@@ -6,6 +6,7 @@
 # VERSION. /opt/chatbot is not touched: scripts/promote.sh, on the server, does that.
 #
 #   SSH_HOST=1.2.3.4 scripts/deploy.sh                 (SSH_USER root, SSH_PORT 22, SSH_KEY_PATH optional)
+# v79.19.1 (item 0): refused (exit 1, nothing synced) when the target's data/ is a symlink.
 #   DRY_RUN=1 ...    list what would change, change nothing
 #   ALLOW_DIRTY=1 ...  deploy a tree with uncommitted changes (its VERSION then names an older commit)
 set -euo pipefail
@@ -41,6 +42,12 @@ sync_dir() {
 }
 echo "== deploy $version -> $remote:$TARGET ${DRY_RUN:+(dry run)}"
 ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$TARGET'"
+# v79.19.1 (item 0): the target's data/ a symlink -> rsync into it would write through the link into another tree
+# (and the mirrored directories' --delete could follow it): refused, nothing synced
+if ssh "${ssh_opts[@]}" "$remote" "[ -L '$TARGET/data' ]"; then
+    echo "refused: $remote:$TARGET/data is a symlink ($(ssh "${ssh_opts[@]}" "$remote" "readlink '$TARGET/data'")): replace it with a directory before deploying"
+    exit 1
+fi
 for d in $DIRS_MIRRORED; do
     echo "-- $d/ (mirrored)"
     sync_dir --delete --exclude-from="$EXCLUDE" -e "$rsh" "$d/" "$remote:$TARGET/$d/"

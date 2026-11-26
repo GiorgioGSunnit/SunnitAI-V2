@@ -276,7 +276,7 @@ def _events(monkeypatch):
 
 @pytest.mark.parametrize("case,reason,fired", [
     ("verified", A.SKIP_LINE_VERIFIED, 0),
-    ("frame_charge", A.SKIP_FRAME_CHARGE, 0),
+    ("frame_charge", A.SKIP_FRAME_CHARGE_REJECTED, 0),     # v79.19.1 (item 1): the charge line rejected twice
     ("no_named_charge", A.SKIP_NO_NAMED_CHARGE, 0),
     ("no_rubrica_match", A.SKIP_NO_RUBRICA_MATCH, 0),
     ("fired", "", 1),
@@ -303,8 +303,10 @@ def test_the_reason_the_rubrica_fallback_did_not_run(case, reason, fired, monkey
     if res["analysis"]:
         assert res["analysis"]["fallback_skipped_reason"] == reason
     if case == "frame_charge":
-        assert c["analysis_frame_charge_missing"] == 1
-        assert res["analysis"]["linea_principale"]["stato"] == A.FRAME_LINE
+        # v79.19.1 (item 1): the frame's charge the step rejected never leads; another fitted norm leads
+        assert c["analysis_frame_charge_missing"] == 1 and c["analysis_frame_charge_overridden"] == 1
+        assert res["analysis"]["linea_principale"]["stato"] == A.FIT_LINE
+        assert res["analysis"]["linea_principale"]["articolo"] != "640 c.p."
     if case in ("no_named_charge", "no_rubrica_match"):
         # v79.19.0 (item 6): the reason says why the rubrica fallback did not run; the fitted article leads anyway
         assert c["analysis_line_undetermined"] == 0 and c["analysis_line_fallback_fit"] == 1
