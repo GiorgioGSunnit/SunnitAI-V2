@@ -175,7 +175,8 @@ def test_the_whole_frame_verified_mapped_onto_intakes_vocabulary():
     assert f["ruolo"] == {"valore": "convenuto", "intake": "convenuto",
                           "perche": "«Delfino pretende ora il pagamento di una penale»",
                           "citazione": ["Delfino pretende ora il pagamento di una penale"]}
-    assert f["addebito_o_domanda"]["articolo"] == "1382 c.c." and f["addebito_o_domanda"]["codice"] == "cc"
+    # v79.19.2 (item 2): the text names no article -- the reply's 1382 c.c. is a hypothesis, never the verified charge
+    assert f["addebito_o_domanda"]["articolo"] is None and f["addebito_o_domanda"]["ipotesi"] == "1382 c.c."
     assert f["quesiti"] == ["Quali strategie difensive può adottare Orsa?", "La penale è riducibile?"]
     assert res["counters"]["frame_fields_verified"] == 8
     assert all(res["counters"][f"frame_unverified.{x}"] == 0 for x in cf.FIELDS)
@@ -291,7 +292,7 @@ def test_a_charge_description_in_words_not_in_the_text_is_blanked_the_charge_kep
                                               "frase": "«Delfino pretende ora il pagamento di una penale»"})
     res = _read(DEBTOR, reply)
     assert res["frame"]["addebito_o_domanda"]["descrizione"] == ""
-    assert res["frame"]["addebito_o_domanda"]["articolo"] == "1382 c.c."
+    assert res["frame"]["addebito_o_domanda"]["ipotesi"] == "1382 c.c."       # v79.19.2 (item 2): uncited
     assert res["counters"]["frame_unverified.addebito_o_domanda.descrizione"] == 1
 
 
@@ -311,21 +312,24 @@ def test_in_a_penal_rito_the_charge_article_must_be_a_penal_provision(articolo, 
     res = _read(DIRECTOR, _director_reply(articolo))
     charge = res["frame"]["addebito_o_domanda"]
     assert charge is not None and charge["frase"]               # the charge stands; only its article may go
-    assert charge["articolo"] == kept
+    # v79.19.2 (item 2): the text cites no article -- a penal provision the reply names is a hypothesis («ipotesi»),
+    # a non-penal one dropped as before; «articolo» is never set from the reply alone
+    assert charge["articolo"] is None and charge.get("ipotesi") == kept
     assert res["counters"]["charge_rito_dropped"] == mismatch
 
 
 def test_the_penal_rule_reads_the_fallbacks_rito_when_the_frame_has_none():
     reply = _director_reply("1439 c.c.")
     reply["rito"] = None
-    assert _read(DIRECTOR, reply)["frame"]["addebito_o_domanda"]["articolo"] == "1439 c.c."
+    assert _read(DIRECTOR, reply)["frame"]["addebito_o_domanda"]["ipotesi"] == "1439 c.c."    # v79.19.2: uncited
     res = _read(DIRECTOR, reply, rito_hint="penale")
     assert res["frame"]["addebito_o_domanda"]["articolo"] is None and res["counters"]["charge_rito_dropped"] == 1
+    assert "ipotesi" not in res["frame"]["addebito_o_domanda"]
 
 
 def test_a_civil_rito_keeps_a_civil_article():
     res = _read(DIRECTOR, _director_reply("1439 c.c.", rito="civile"))
-    assert res["frame"]["addebito_o_domanda"]["articolo"] == "1439 c.c."
+    assert res["frame"]["addebito_o_domanda"]["ipotesi"] == "1439 c.c."        # v79.19.2 (item 2): uncited
     assert res["counters"]["charge_rito_dropped"] == 0
 
 
@@ -375,7 +379,7 @@ def test_case_2_a_director_under_investigation_is_indagato_charged_with_a_penal_
     view = cf.intake_view(res)
     assert res["frame"]["ruolo"]["valore"] == "imputato/indagato" and view["role"] == "imputato"
     assert view["rito"] == "penale" and view["stage"] == "indagini"
-    assert view["charge"]["articolo"] == "2634 c.c."
+    assert view["charge"]["articolo"] is None and view["charge"]["ipotesi"] == "2634 c.c."    # v79.19.2: uncited
     res = _read(DIRECTOR, _director_reply("1439 c.c."))
     assert cf.intake_view(res)["charge"]["articolo"] is None
     assert res["counters"]["charge_rito_dropped"] == 1
@@ -559,7 +563,7 @@ def test_review_a_verified_rito_sconosciuto_never_skips_the_penal_rule_the_fallb
     assert res["counters"]["charge_rito_dropped"] == 1
     # no rito at all, no hint: nothing to check against here -- the binding checks it against the posture (flow test)
     reply["rito"] = None
-    assert _read(DIRECTOR, reply)["frame"]["addebito_o_domanda"]["articolo"] == "1439 c.c."
+    assert _read(DIRECTOR, reply)["frame"]["addebito_o_domanda"]["ipotesi"] == "1439 c.c."    # v79.19.2: uncited
 
 
 @pytest.mark.parametrize("label,penal", [

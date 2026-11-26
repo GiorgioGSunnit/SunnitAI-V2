@@ -5081,7 +5081,7 @@ def _graded_reply(raw: str, ids: Dict[str, str], issues: Optional[List[str]] = N
             if number and 1 <= int(number.group(1)) <= len(issues):
                 issue = issues[int(number.group(1)) - 1]
             read[label] = {"article": label, "grade": grade, "issue": issue,
-                           "reason": _first_key(item, "perche", "perché", "r", "reason")}
+                           "reason": _first_key(item, "perche", "perché", "perce", "r", "reason")}     # v79.19.2: «perce» too
     return read
 
 

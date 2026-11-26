@@ -6512,10 +6512,16 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         if refusal:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
             state["method_refused"] = refusal["why"]                    # v76: said in the answer
             state["method_refused_lines"] = list(refusal.get("lines") or [])     # v79.10.1 (A1): kept in the prose
+            # v79.19.2 (item 4): the reason in a closed vocabulary (STEP_ASIDE_REASONS) and what the method computed
+            # before stepping aside -- its records, charge, lines and plan -- saved in the state (method_aside), not
+            # lost with the context; no rule changes
+            reason = STEP_ASIDE_NO_ACTION if refusal.get("no_action") else STEP_ASIDE_PLACEHOLDER
+            state["method_refused_reason"] = reason
+            state["method_aside"] = _jsonable(method_aside_record(reason, refusal, items))
+            _log("lawyer_method_aside", state["method_aside"])
             lawyer_method.end()
             method_ctx, method_plan, method_clients = None, {}, None
-            _log("lawyer_method_refused", {"why": "no_action" if refusal.get("no_action") else "placeholder",
-                                           "tesi": refusal["tesi"]})
+            _log("lawyer_method_refused", {"why": reason, "tesi": refusal["tesi"]})
         if method_ctx is not None:      # v79.10.7 (review): the plan's and §8's riti the method's (graded)
             plan, rites, analysis_p = _isolated("method_rites", lambda: method_rites(
                 plan, posture, rites, method_ctx, analysis_p), None) or (plan, rites, analysis_p)
@@ -7494,6 +7500,36 @@ def rulings_record(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], call=Non
 
 
 STEP_ASIDE_NO_CANDIDATE = {"id": "step_aside", "contesta": []}     # v79.12.1: no selection, so no controverted point
+# v79.19.2 (item 4): why the method stepped aside -- a closed vocabulary, the one word both events carry
+STEP_ASIDE_NO_ACTION = "no_action"          # no norm confers an action on the claimant (lawyer_method.client_refusal)
+STEP_ASIDE_PLACEHOLDER = "placeholder"      # the main line is the placeholder thesis (no candidate line)
+STEP_ASIDE_REASONS = (STEP_ASIDE_NO_ACTION, STEP_ASIDE_PLACEHOLDER)
+
+
+def method_aside_record(reason: str, refusal: Dict[str, Any], items: Sequence[Any]) -> Dict[str, Any]:
+    """v79.19.2 (item 4): what the method had computed when it stepped aside, kept in state["method_aside"] -- per
+    client: the records it assessed (label, status counts), the charge it held, the candidate lines (tesi, argued) and
+    the plan's main line; with the refusal's reason, why and tesi."""
+    out: Dict[str, Any] = {"reason": reason if reason in STEP_ASIDE_REASONS else STEP_ASIDE_PLACEHOLDER,
+                           "why": str(refusal.get("why") or ""), "tesi": str(refusal.get("tesi") or ""), "clients": []}
+    for name, ctx, plan in items or []:
+        ctx, plan = ctx or {}, plan or {}
+        records = ctx.get("records") or {}
+        sols = plan.get("soluzioni") or ctx.get("candidates") or []
+        out["clients"].append({
+            "client": str(name or ctx.get("client") or ""),
+            "charge": dict(ctx.get("charge") or {}),
+            "records": {str(x): {"status": {k: sum(1 for r in (rec.get("requisites") or []) if r.get("status") == k)
+                                            for k in ("provato", "da_provare", "escluso", "non_risulta", "contestato")},
+                                 "dropped": bool(rec.get("dropped")), "charged": bool(rec.get("charged"))}
+                        for x, rec in records.items() if isinstance(rec, dict)},
+            "lines": [{"tesi": str(t.get("tesi") or "")[:200], "article": t.get("article") or t.get("articolo"),
+                       "argued": t.get("argued"), "placeholder": bool(t.get("placeholder"))}
+                      for t in sols if isinstance(t, dict)][:12],
+            "main": str((plan.get("principale") or plan.get("linea_principale") or "") if isinstance(plan, dict)
+                        else "")[:200],
+            "no_action": str(ctx.get("no_action") or "")[:200]})
+    return out
 
 
 def _same_spacing(old: str, new: str) -> str:
@@ -7563,7 +7599,9 @@ def step_aside_answer(state: Dict[str, Any], draft: str, rows: Sequence[Dict[str
                                                   else x) for t, x in parts])
         else:
             draft = f"{draft.rstrip()}\n\n{section}"
-    _log("step_aside_answer", {"cited": cited, "own": own, "kept": len((record or {}).get("kept") or []),
+    reason = str(state.get("method_refused_reason") or "")      # v79.19.2 (item 4): the closed vocabulary
+    _log("step_aside_answer", {"reason": reason if reason in STEP_ASIDE_REASONS else STEP_ASIDE_PLACEHOLDER,
+                               "cited": cited, "own": own, "kept": len((record or {}).get("kept") or []),
                                "rule_statements_removed": rules_log})
     return draft
 

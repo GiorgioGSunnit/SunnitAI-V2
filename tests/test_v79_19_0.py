@@ -82,7 +82,9 @@ def test_the_reply_number_is_corrected_to_the_article_the_charge_sentence_cites(
     # the same number: nothing corrected; a sentence citing no article: the reply's number stands
     assert _read(LITE, _penal_reply("584 c.p."))["counters"]["frame_corrections_applied"] == 0
     plain = _read(LITE, _penal_reply("541 c.p.", frase="«Cosa rischia Piero Vinci?»"))
-    assert plain["frame"]["addebito_o_domanda"]["articolo"] == "541 c.p." and plain["corrections"] == []
+    # v79.19.2 (item 2): a sentence citing no article and a number the text cites nowhere: a hypothesis, no correction
+    assert plain["frame"]["addebito_o_domanda"]["articolo"] is None and plain["corrections"] == []
+    assert plain["frame"]["addebito_o_domanda"]["ipotesi"] == "541 c.p."
 
 
 def test_the_corrected_frame_is_written_once_and_every_consumer_reads_it(monkeypatch):
@@ -117,7 +119,9 @@ def test_the_corrected_frame_is_written_once_and_every_consumer_reads_it(monkeyp
 
 def test_the_postures_correction_pass_runs_once_and_is_logged_old_to_new(monkeypatch):
     monkeypatch.setenv("CASE_FRAME", "true")
-    text = "Marco Lince ha ottenuto con raggiri da Pia Merlo la firma di una vendita. Cosa rischia Marco Lince?"
+    # v79.19.2 (item 2): the text names the article (else the reply's 1439 c.c. would be a hypothesis)
+    text = ("Marco Lince ha ottenuto con raggiri da Pia Merlo la firma di una vendita (art. 1439 c.c.). Cosa rischia "
+            "Marco Lince?")
     reply = {"parti": [{"nome": "Marco Lince", "lato": "cliente"}],
              "cliente": {"nome": "Marco Lince", "perche": "«Cosa rischia Marco Lince?»"},
              "addebito_o_domanda": {"articolo": "1439 c.c.", "descrizione": "raggiri",

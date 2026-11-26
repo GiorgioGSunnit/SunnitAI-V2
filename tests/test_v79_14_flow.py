@@ -122,6 +122,10 @@ def test_case_1_flag_off_the_rules_read_the_claimant_the_frame_never_and_a_dropp
     assert out["audit"]["frame_audit"]["filled"]["ruolo"] == out["posture"]["role"] == off["posture"]["role"]
 
 
+# v79.19.2 (item 2): the frame's charge is text-named only when the text cites it -- these cases name the article
+DIRECTOR_NAMED = DIRECTOR.replace("indaga per infedeltà patrimoniale per", "indaga per infedeltà patrimoniale (art. 2634 c.c.) per")
+
+
 def _director_world():
     """The records and the first read the rules would choose a charge from: the read's hypothesis «appropriazione
     indebita» (646 c.p., its rows found by the first-read search), and the frame's 2634 c.c."""
@@ -143,7 +147,7 @@ def _director_world():
 
 
 def test_case_2_the_director_is_indagato_charged_with_a_penal_article_the_frames_charge_held(monkeypatch):
-    out = _run(monkeypatch, DIRECTOR, _director_reply("2634 c.c."), **_director_world())
+    out = _run(monkeypatch, DIRECTOR_NAMED, _director_reply("2634 c.c."), **_director_world())
     p, st = out["posture"], out["state"]
     assert p["role"] == "imputato" and p["rito"] == "penale" and p["stage"] == "indagini"
     assert out["header"] == "POSIZIONE: Marco Lince, rito penale, role imputato, stage indagini"
@@ -422,9 +426,9 @@ def test_the_nightly_prints_each_field_with_its_quote_or_its_fallback_and_fails_
     assert not bad["ok"] and "role_flip 1" in bad["why"]
     lines = "\n".join(nightly_sim.frame_lines([{"id": "cell_d", "case_frame": fr, "counters": counters}]))
     assert "**cell_d**" in lines and "| cell_d | 7 | 0 | 1 | 0 | 0 | 0 | 0 |" in lines
-    framed = _run(monkeypatch, DIRECTOR, _director_reply("2634 c.c."), **_director_world())
+    framed = _run(monkeypatch, DIRECTOR_NAMED, _director_reply("2634 c.c."), **_director_world())
     lines = "\n".join(nightly_sim.frame_lines([{"id": "cell_e", "case_frame": nightly_sim.frame_of(
-        framed["state"], DIRECTOR), "counters": {}}]))
+        framed["state"], DIRECTOR_NAMED), "counters": {}}]))
     assert "- conflitto (posture.choose_charge): addebito_o_domanda «646 c.p.» → quadro «2634 c.c.»" in lines
     # a field the frame left: printed with the value the rules filled it with
     fb = _run(monkeypatch, DEBTOR, _debtor_reply(ruolo={"valore": "attore", "perche": "«Orsa chiede i danni»"}))
@@ -459,25 +463,26 @@ PENAL_NO_RITO = ("Marco Lince ha ottenuto con raggiri da Pia Merlo la firma di u
                  "valore. Cosa rischia Marco Lince?")
 
 
+PENAL_NO_RITO_NAMED = PENAL_NO_RITO.replace("la firma di una vendita", "la firma di una vendita (art. 1439)")   # cited bare: no code, no rito word
 def test_review_a_civil_frame_charge_with_no_rito_to_check_it_is_refused_by_the_penal_posture(monkeypatch):
     monkeypatch.setenv("CASE_FRAME", "true")
-    assert intake.rito_rule(PENAL_NO_RITO, "") == ("", "")             # no rito for the frame's own check
+    assert intake.rito_rule(PENAL_NO_RITO_NAMED, "") == ("", "")             # no rito for the frame's own check
     reply = {"parti": [{"nome": "Marco Lince", "lato": "cliente"}],
              "cliente": {"nome": "Marco Lince", "perche": "«Cosa rischia Marco Lince?»"},
              "addebito_o_domanda": {"articolo": "1439 c.c.", "descrizione": "raggiri",
-                                    "frase": "«ha ottenuto con raggiri da Pia Merlo la firma di una vendita»"},
+                                    "frase": "«ha ottenuto con raggiri da Pia Merlo la firma di una vendita»"},      # v79.19.2: the text cites it
              "quesiti": ["Cosa rischia Marco Lince?"]}
     monkeypatch.setattr(cf, "_default_call", _model(reply))
-    got = intake.request_intake(PENAL_NO_RITO)
+    got = intake.request_intake(PENAL_NO_RITO_NAMED)
     assert got["case_frame"]["frame"]["addebito_o_domanda"]["articolo"] == "1439 c.c."     # verified: no rito here
-    state = _state(PENAL_NO_RITO, records={"1439 c.c.": {"article": "1439 c.c.", "rubrica": "Dolo", "requisites": [
+    state = _state(PENAL_NO_RITO_NAMED, records={"1439 c.c.": {"article": "1439 c.c.", "rubrica": "Dolo", "requisites": [
         _req(1, "raggiri usati da uno dei contraenti", "da provare")]}})
     state["analysis"]["frame"] = {"areas": ["penale"]}
-    flow.take_intake(state, got, PENAL_NO_RITO)
+    flow.take_intake(state, got, PENAL_NO_RITO_NAMED)
     p = posture.of(state, flow._restored_analysis(state["analysis"]))
     state["posture"] = flow._jsonable(p)
     assert p["family"] == "penale"
-    posture.choose_charge(state, p, state["records"], PENAL_NO_RITO)
+    posture.choose_charge(state, p, state["records"], PENAL_NO_RITO_NAMED)
     assert state["charge"]["article"] != "1439 c.c." and state["charge"]["rule"] != posture.FRAME_CHARGE_RULE
     assert cf.bound(state, "addebito_o_domanda", p) is None and state["frame_charge_refused"] == "1439 c.c."
     a = cf.audit(state)
@@ -491,8 +496,8 @@ def test_review_a_civil_frame_charge_with_no_rito_to_check_it_is_refused_by_the_
         [("addebito_o_domanda.articolo", "1439 c.c.", "", "posture")]
     assert a["frame_corrections_applied"] == 1
     # a civil posture on a fresh state keeps the same frame charge
-    fresh = _state(PENAL_NO_RITO, records={})
-    flow.take_intake(fresh, intake.request_intake(PENAL_NO_RITO), PENAL_NO_RITO)
+    fresh = _state(PENAL_NO_RITO_NAMED, records={})
+    flow.take_intake(fresh, intake.request_intake(PENAL_NO_RITO_NAMED), PENAL_NO_RITO_NAMED)
     assert cf.bound(fresh, "addebito_o_domanda", {"rito": "civile", "family": "civile"}) == "1439 c.c."
     assert cf.corrections(fresh) == []
 

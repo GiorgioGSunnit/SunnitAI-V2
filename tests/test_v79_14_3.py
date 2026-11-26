@@ -223,10 +223,13 @@ def _rescue_records(with_640=True):
 
 
 CHARGED = {"articolo": "640 c.p.", "descrizione": "truffa", "frase": "«Il pubblico ministero procede per truffa»"}
+# v79.19.2 (item 2): the frame's charge is text-named only when the text cites the article (else a hypothesis)
+PENAL_TEXT_NAMED = T.PENAL_TEXT.replace("procede per truffa", "procede per truffa (art. 640 c.p.)")
+assert PENAL_TEXT_NAMED != T.PENAL_TEXT
 
 
 def test_an_emptied_charge_set_is_rescued_on_the_frames_verified_charge(monkeypatch):
-    got = T._method(monkeypatch, T.PENAL_TEXT, T._penal_reply(addebito_o_domanda=CHARGED), _rescue_records(),
+    got = T._method(monkeypatch, PENAL_TEXT_NAMED, T._penal_reply(addebito_o_domanda=CHARGED), _rescue_records(),
                     T.IMPUTATO, "Bruno Gelso")
     ctx, answer = got["ctx"], got["answer"]
     b = ctx["frame_binding"]
@@ -247,7 +250,7 @@ def test_an_emptied_charge_set_is_rescued_on_the_frames_verified_charge(monkeypa
 
 
 def test_no_record_of_the_charge_no_rescue_and_still_no_corpus_line_on_a_code_article(monkeypatch):
-    got = T._method(monkeypatch, T.PENAL_TEXT, T._penal_reply(addebito_o_domanda=CHARGED),
+    got = T._method(monkeypatch, PENAL_TEXT_NAMED, T._penal_reply(addebito_o_domanda=CHARGED),
                     _rescue_records(with_640=False), T.IMPUTATO, "Bruno Gelso")
     ctx, answer = got["ctx"], got["answer"]
     b = ctx["frame_binding"]

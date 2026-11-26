@@ -554,7 +554,9 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
     records = records or {}
     is_victim = victim(posture)
     user = [x for x in dict.fromkeys(user or []) if x not in repealed]
-    by_name = [x for x in charged_by_name(case, records, rows) if x not in repealed]
+    # v79.19.2 (item 3, row 72): a procedure article (c.p.p., c.p.c.) named in a charge sentence («arresto ex art. 380
+    # c.p.p.») is never the charge nor the exposure
+    by_name = [x for x in charged_by_name(case, records, rows) if x not in repealed and not procedural_article(x)]
     remedies: List[str] = []
     if is_victim:               # v79.12.4 (item 1): the querela's offence only -- a civil article is its remedy
         remedies = [x for x in dict.fromkeys(user + by_name) if not penal_article(x)]
@@ -600,9 +602,15 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
             article, rule, extra, chosen_h = named[0], "rubrica_match", named, attempt
     from . import case_frame
     framed = case_frame.bound(state, "addebito_o_domanda", posture) if isinstance(state, dict) else None
-    if framed and article != framed and framed not in repealed:     # v79.14.0 (CASE_FRAME): the frame's charge --
-        case_frame.defer(state, "addebito_o_domanda", "posture.choose_charge", article)     # the rule's logged, loses
+    # v79.14.0 (CASE_FRAME): the frame's charge replaces a read hypothesis or a rubrica match (the rule's logged, loses);
+    # v79.19.2 (item 3): never the user's own article (user_article) unless the frame's article is itself among the
+    # user's or the named ones -- the text's article stands over the frame's reading of it
+    if framed and article != framed and framed not in repealed and (rule != "user_article" or framed in user
+                                                                     or framed in by_name):
+        case_frame.defer(state, "addebito_o_domanda", "posture.choose_charge", article)
         article, rule, extra, chosen_h = framed, FRAME_CHARGE_RULE, [], None
+    elif framed and article != framed and rule == "user_article":
+        interactive_flow_log("charge_frame_not_over_user", {"user_article": article, "frame": framed})
     if framed and article == framed:        # v79.19.0 (items 3, 5): the frame's other charges are charged too --
         extra = [x for x in case_frame.alternative_charges(state) if x not in repealed] + list(extra)   # alternative
     order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))                 # lines
@@ -631,6 +639,17 @@ def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], reco
                                           "client": (state.get("client_scope") or {}).get("name", "")
                                           if isinstance(state, dict) else ""})
     return out
+
+
+def procedural_article(label: str) -> bool:
+    """v79.19.2 (item 3): the article belongs to a procedural code (c.p.p., c.p.c., c.p.a.)."""
+    from . import case_frame
+    return case_frame.lead_code(case_frame.parse_article(label).get("rest") or "") in ("cpp", "cpc", "cpa")
+
+
+def interactive_flow_log(event: str, data: Dict[str, Any]) -> None:
+    from . import interactive_flow
+    interactive_flow._log(event, data)
 
 
 def penal_article(label: str) -> bool:

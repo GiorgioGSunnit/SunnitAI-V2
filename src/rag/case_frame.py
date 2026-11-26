@@ -110,7 +110,7 @@ PENAL_RITI = ("penale", "penale_gdp")
 COUNTERS = ("frame_fields_verified",) + tuple(f"frame_unverified.{f}" for f in FIELDS) + \
     tuple(f"frame_fallback.{f}" for f in FIELDS) + ("charge_rito_dropped", "frame_failed", "frame_seconds") + \
     ("frame_corrections_applied", "frame_pretese_count", "frame_article_disputed", "frame_role_deduced") + \
-    ("frame_hypothesis_confirmed", "frame_hypothesis_dropped")      # v79.19.0; v79.19.1 (item 1)
+    ("frame_hypothesis_confirmed", "frame_hypothesis_dropped", "frame_article_uncited")   # v79.19.0; .1 (1); .2 (2)
 OK, FAILED, MALFORMED, TIMEOUT, NO_TEXT = "ok", "failed", "malformed", "timeout", "no_text"
 # v79.19.0 (item 3): the frame may read several charges / claims (addebito_o_domanda a list of 1..MAX_PRETESE); the
 # first is the charge the principale line is built on (frame «addebito_o_domanda»), every verified one is in frame
@@ -749,6 +749,19 @@ def _article_text(art: Dict[str, str]) -> str:
     return f"{art['number']} {art['rest']}".strip()
 
 
+def cited_anywhere(text: str, art: Dict[str, str]) -> bool:
+    """v79.19.2 (item 2): the case text cites the article somewhere -- «art. N» with the same code, or with no code at
+    all (the _cited_code pattern); a citation with another code is not this article."""
+    base = re.escape(str(art.get("base") or art.get("number") or "").split("-")[0])
+    if not base:
+        return False
+    for m in re.finditer(rf"\bart(?:icol[oi]|t)?\.?\s*{base}\b[^\n]{{0,60}}", text or "", re.IGNORECASE):
+        got = parse_article(m.group(0))
+        if got["number"] == art["number"] and (not got["code"] or got["code"] == art["code"]):
+            return True
+    return False
+
+
 def _verify_one_addebito(rep: _Report, raw: Any, rito: str) -> Optional[Dict[str, Any]]:
     """One charge / claim object verified (see _verify_addebito). v79.19.0 (item 2): the reply's article number is
     checked against the article the charge sentence itself cites -- the sentence names one article with its code and
@@ -773,8 +786,16 @@ def _verify_one_addebito(rep: _Report, raw: Any, rito: str) -> Optional[Dict[str
                            "citazione": quoted}
     article_raw = _get(raw, "articolo", "article")
     art = _parse_charge_article(rep, article_raw, rito, "articolo", raw) if not _blank(article_raw) else None
+    hypothesis = None           # v79.19.2 (item 2): the reply's article the text never cites -- a hypothesis
     if art:
         named = _frase_articles(" ".join(quoted))
+        if not named and not cited_anywhere(rep.text, art):
+            # the charge sentence cites no article and the case text cites this number nowhere: the model's article is
+            # read from memory -- the hypothesis path (a fit candidate, the charge only on a verified «si» / «dipende»)
+            hypothesis, art = art, None
+            rep.counters["frame_article_uncited"] = int(rep.counters.get("frame_article_uncited") or 0) + 1
+            _log("frame_article_uncited", {"articolo": _article_text(hypothesis), "frase": out["frase"][:160]})
+    if art:
         if len(named) == 1 and (named[0]["number"] != art["number"] or named[0]["code"] != art["code"]):
             before = _article_text(art)
             art = named[0] if not (rito in PENAL_RITI and not is_penal(named[0])) else art
@@ -784,8 +805,10 @@ def _verify_one_addebito(rep: _Report, raw: Any, rito: str) -> Optional[Dict[str
                 out["corretto_da"] = before
         out.update({"articolo": _article_text(art), "numero": art["number"], "codice": art["code"]})
     facts_raw = _get(raw, "articolo_dai_fatti", "articolo_fatti", "article_from_facts")
-    if not _blank(facts_raw):
-        facts = _parse_charge_article(rep, facts_raw, rito, "articolo_fatti", raw)
+    facts = _parse_charge_article(rep, facts_raw, rito, "articolo_fatti", raw) if not _blank(facts_raw) else None
+    if hypothesis is not None and not facts:
+        facts = hypothesis                  # v79.19.2 (item 2): the uncited article goes the facts' way
+    if facts is not None:
         if facts and art and facts["number"] == art["number"] and (facts["code"] == art["code"] or not facts["code"]):
             facts = None                    # the same article: nothing disputed
         if facts and not art:

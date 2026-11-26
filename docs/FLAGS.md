@@ -493,6 +493,18 @@ Antonelo's review of 26 Nov. Items 0-5 change no flag; item 6 adds `GATES_DEMOTE
 | 6b. every fitted record printed | `lawyer_method.fit_accepted` / `unprinted_records` / `_names_article` (`UNPRINTED_HEAD`), `compose` | Every article the fit accepted («si» / «dipende») that is a record at the end is printed: in §4 with its scheda, or at least in «Norme» under «Altre norme applicabili ai fatti» with one line; `records_unprinted` counts what is still absent (must be 0; logged `records_unprinted`). |
 | 6c. the rulings printed | `lawyer_method.rulings_printed`, `compose` | No filter of 79.16-79.18 on this branch; §5 prints every printed article's rulings as 79.15.3 did. Counter `rulings_printed` per answer (`RENDER_COUNTERS`), for the harness row. |
 
+## 5j. v79.19.2 additions (branch v79.19; no new environment variable)
+
+Antonelo's review of 79.19.1, rows 67-74. `GATES_DEMOTE` unchanged (off by default); no gate changes.
+
+| Item | Where | What it does |
+|---|---|---|
+| 1. row 74 | `defensive_generation._graded_reply` | The graded reply's reason is read from «perce» too (after «perche» / «perché», before «r» / «reason»). |
+| 2. row 67 | `case_frame._verify_one_addebito`, `cited_anywhere` | When the charge sentence cites no article, the case text is searched for «art. N» (the `_cited_code` pattern, with the same code or with none); the reply's article not found there is read from memory and goes the hypothesis path (`ipotesi`, `da_fatti`; counter `frame_article_uncited`): a fit candidate, the charge only on a verified «si» / «dipende». A text-named article is unchanged. |
+| 3. rows 68, 72 | `posture.choose_charge`, `procedural_article` | The frame's bound charge replaces a `read_hypothesis` or `rubrica_match` result as before, but never a `user_article` result unless the frame's article is itself among the user's or the named ones (logged `interactive_charge_frame_not_over_user`). `by_name` never yields a procedure article (c.p.p., c.p.c., c.p.a.) as the charge or the exposure. |
+| 4. row 71 | `interactive_flow.STEP_ASIDE_REASONS` / `method_aside_record` / `step_aside_answer`, `write_answer` | `interactive_step_aside_answer` logs `reason=` from a closed vocabulary (`no_action`, `placeholder`; `lawyer_method_refused` carries the same word); what the method computed before stepping aside -- per client its records' status counts, its charge, its candidate lines, the plan's main line, the no-action sentence -- is saved in `state["method_aside"]` and logged `lawyer_method_aside`. No rule change. |
+| 5. row 70 | (no code change) | The fit's candidates are the records not dropped plus the decomposition's wanted set (the charge, the frame's alternatives, intake's and the text's charges, the first read's claim or hypotheses, the alternatives, the user's articles, the defence routes, the ranked top), minus the dead keys (abrogated or misaligned rows, an earlier answer's `fit_removed`); `applicability.judge` then skips a norm whose row has no `plain_text` («testo dell'articolo mancante», `fit_skipped`) and leaves unjudged a batch not back by `deadline_s` (`fit_timeouts`). A graded, decomposable row that is in no topic and in none of those sets is not a record and never reaches the fit. |
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the
