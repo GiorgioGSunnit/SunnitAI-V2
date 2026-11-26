@@ -236,6 +236,7 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
     texts = dict(rule.get("commi") or [])
     out: List[Dict[str, Any]] = []
     selected = (rule.get("selected") or [])[:COMMI_MAX]
+    alt_commi = alternative_commi(texts, selected)      # v79.19.4 (rule 1): a comma offering the option of the one before
     for k in selected:
         reqs = (rule.get("requisites") or {}).get(k)
         special = special_comma(texts.get(k) or "") if selected and k != selected[0] else ""     # v79.8 (D1)
@@ -258,8 +259,50 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
                         "facts_status": status, "status": status, "why": "", "supporting": [], "contradicting": [],
                         "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {}),
                         **({"branches": alternatives} if alternatives else {}),
+                        **({"alt_commi": alt_commi[k]} if k in alt_commi else {}),
                         **({"special": special} if special else {})})
+    for r in out:               # v79.19.4 (rule 1): each requisite of an alternative comma knows the other's requisites
+        if r.get("alt_commi"):
+            r["alternatives"] = [x["text"] for x in out if str(x.get("comma")) in {str(c) for c in r["alt_commi"]}
+                                 and x.get("kind") == "requisito"]
     return out
+
+
+# v79.19.4 (rule 1): a selected comma that opens on a disjunction («In alternativa …», «Ovvero …», «Oppure …», «O, …»)
+# offers the option of the comma before it: their requisites are alternatives, never required together. The
+# disjunctions inside one element are rule_quote.branches (v79.6); the two sets feed demote_contradicted, the record's
+# verdict (unmet_in_anchor) and the elements the reader gets (element_status).
+_ALT_COMMA_RE = re.compile(r"^\W*(?:in\s+alternativa|ovvero|oppure|o,)\b", re.IGNORECASE)
+
+
+def alternative_commi(texts: Dict[Any, str], selected: Sequence[Any]) -> Dict[Any, List[Any]]:
+    """{comma: [the commi whose requisites are its alternatives]} among the selected commi -- a comma opening on a
+    disjunction marker and the one selected before it; {} with none."""
+    out: Dict[Any, List[Any]] = {}
+    for prev, k in zip(list(selected), list(selected)[1:]):
+        if _ALT_COMMA_RE.match(" ".join(str(texts.get(k) or "").split())):
+            out.setdefault(k, []).append(prev)
+            out.setdefault(prev, []).append(k)
+    return out
+
+
+def alternative_open(rec: Dict[str, Any], req: Dict[str, Any]) -> bool:
+    """v79.19.4 (rule 1): the requisite is one alternative of a paragraph (alt_commi) and the other comma's requisites
+    are not every one «non risulta» -- its own exclusion excludes nothing."""
+    from .interactive_flow import NON_RISULTA
+    commi = {str(c) for c in req.get("alt_commi") or []}
+    others = [r for r in rec.get("requisites") or [] if r.get("kind") == "requisito" and str(r.get("comma")) in commi
+              and r is not req]
+    return bool(others) and any(r.get("status") != NON_RISULTA for r in others)
+
+
+def alternative_satisfied(rec: Dict[str, Any], req: Dict[str, Any]) -> bool:
+    """v79.19.4 (rule 1, row 80): the other alternative of the paragraph is «provato» -- this one is not a missing fact
+    of a line built on that other."""
+    from .interactive_flow import PROVATO
+    commi = {str(c) for c in req.get("alt_commi") or []}
+    return any(r.get("kind") == "requisito" and str(r.get("comma")) in commi and r.get("status") == PROVATO
+               for r in rec.get("requisites") or [])
 
 
 def schema_line(row: Optional[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -1660,6 +1703,13 @@ def branch_hit(branch: str, sentence: Dict[str, Any]) -> bool:
     return bool(own) and bool(own & element_nouns(sentence.get("text") or ""))
 
 
+def sibling_hit(sibling: str, element: str, sentence: Dict[str, Any]) -> bool:
+    """v79.19.4 (rule 1): a sentence speaks of an alternative comma's requisite (sibling) -- it holds one of the
+    sibling's own nouns that the element itself does not share (a noun common to both, «cosa», tells nothing)."""
+    own = element_nouns(sibling) - element_nouns(element)
+    return bool(own) and bool(own & element_nouns(sentence.get("text") or ""))
+
+
 def settle_branches(req: Dict[str, Any], sup: Sequence[Dict[str, Any]], sure_con: Sequence[Dict[str, Any]]) -> None:
     """v79.6 (item 4): the element's branches graded on the sentences the link found -- a branch a grounded supporting
     sentence speaks of «provato», one a sure contradicting sentence speaks of (and no support) «non risulta», the others
@@ -1734,7 +1784,8 @@ def unmet_in_anchor(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
     it) of its anchor comma -- the only ones that exclude."""
     from .interactive_flow import NON_RISULTA
     k = anchor_comma(rec)
-    return [r for r in rec.get("requisites") or [] if r.get("status") == NON_RISULTA and _comma(r) == k]
+    return [r for r in rec.get("requisites") or [] if r.get("status") == NON_RISULTA and _comma(r) == k
+            and not alternative_open(rec, r)]       # v79.19.4 (rule 1): an excluded alternative with another open
 
 
 # --- v62: what is counted, and the threats read from the defence -------------------------------------------------------
@@ -1932,9 +1983,11 @@ def threat_status(rec: Dict[str, Any], penal: bool = True) -> Optional[str]:
 def element_status(rec: Dict[str, Any], req: Dict[str, Any]) -> str:
     """v60r (3): an element's status as the reader gets it -- an unmet one outside the anchor comma is «non pertinente»
     (it excludes nothing, it proves nothing); else the record's."""
-    from .interactive_flow import NON_RISULTA
+    from .interactive_flow import DA_PROVARE, NON_RISULTA
     if req.get("status") == NON_RISULTA and req not in unmet_in_anchor(rec):
         return NOT_RELEVANT
+    if req.get("status") == DA_PROVARE and req.get("alt_commi") and alternative_satisfied(rec, req):
+        return NOT_RELEVANT         # v79.19.4 (rule 1, row 80): the other alternative holds -- no missing fact here
     return str(req.get("status") or "")
 
 
@@ -2283,7 +2336,8 @@ def distinctive(rows: Sequence[Dict[str, Any]], analysis: Dict[str, Any]) -> Dic
             own = set().union(*(_element_stems(x["text"]) for x in items))
             return sum(1 for w in mine if counts.get(w, 0) - (1 if w in own else 0) > 0), -len(mine)
         best = min(items, key=shared)
-        out[label] = {"comma": best["comma"], "text": best["text"], "kind": best["kind"]}
+        out[label] = {"comma": best["comma"], "text": best["text"], "kind": best["kind"],
+                      **({"alternatives": list(best["alternatives"])} if best.get("alternatives") else {})}  # v79.19.4
     return out
 
 
@@ -2390,10 +2444,26 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
         against = [by_id[i] for i in (link_ or {}).get("contradicting") or [] if i in by_id]
         sure = [x for x in against if x.get("certainty") == ACCERTATO and act_bears(x, element["text"])]
         from . import rule_quote
-        alternatives = rule_quote.branches(element["text"])
-        hit = [b for b in alternatives if any(branch_hit(b, x) for x in sure)] if sure else []
-        if hit and len(hit) < len(alternatives):
-            sure = []           # v79.6 (item 4): one branch contradicted while another holds never demotes
+        # v79.6 (item 4): one branch contradicted while another holds never demotes. v79.19.4 (rule 1): the
+        # alternatives are the element's own branches («o», «ovvero», «oppure», «in alternativa») or the requisites of
+        # the paragraph's alternative comma (alternatives, alternative_commi); the article is demoted only when every
+        # one of them is contradicted (a contradiction attributable to no branch is of the whole element: demotes); the
+        # contradicted alternative is marked on the row (_alternative_contradicted, the record's requisite «contraddetta»
+        # by seed) and logged (alternative_contradicted). A conjunctive element: as before.
+        branches_ = rule_quote.branches(element["text"])
+        siblings = [x for x in element.get("alternatives") or [] if x and x != element["text"]]
+        alternatives = branches_ or ([element["text"]] + siblings if siblings else [])
+        if sure and alternatives:
+            if branches_:
+                hit = [b for b in alternatives if any(branch_hit(b, x) for x in sure)]
+            else:               # the element itself is what the link contradicts; a sibling only on its own nouns
+                hit = [element["text"]] + [b for b in siblings if any(sibling_hit(b, element["text"], x) for x in sure)]
+            if hit and len(hit) < len(alternatives):     # (a contradiction of no branch is of the whole element: demotes)
+                row["_alternative_contradicted"] = list(hit)
+                log.setdefault("alternative_contradicted", []).append({
+                    "article": label, "alternative": hit[0][:160], "contradicted": [x[:160] for x in hit],
+                    "open": [x[:160] for x in alternatives if x not in hit], "kept": row["_grade"]})
+                sure = []
         if sure and roles and binds({"kind": "requisito", "text": element["text"]}, roles) == COUNTERPARTY_BINDS \
                 and any(not _NO_DUTY_RE.search(x.get("text") or "") for x in sure) and status != NON_RISULTA:
             log.setdefault("kept_breach", []).append(label)     # v79.10.4 (D3): a breach is no contradiction
@@ -2429,6 +2499,8 @@ def seed(rec: Dict[str, Any], row: Dict[str, Any]) -> None:
     for req in rec.get("requisites") or []:
         if element and req.get("kind") == "requisito" and _req_key(req["text"]) == element:
             req["distinctive"] = True
+            if row.get("_alternative_contradicted"):        # v79.19.4 (rule 1): the alternative the case contradicts
+                req["contraddetta"] = list(row["_alternative_contradicted"])
         if link_ and _req_key(req["text"]) == _req_key(link_.get("text")) and not req.get("supporting"):
             req["supporting"], req["contradicting"] = list(link_.get("supporting") or []), \
                 list(link_.get("contradicting") or [])

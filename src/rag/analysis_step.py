@@ -190,7 +190,19 @@ COUNTERS = ("analysis_calls", "analysis_reasked", "analysis_failed", "analysis_t
             # v79.15.2 (item 2): a string, the reason code (SKIP_*), "" when the fallback ran
             "analysis_fallback_skipped_reason",
             # v79.19.0 (item 6): no verified line, no rubrica match -- the best-tier fitted article leads
-            "analysis_line_fallback_fit")
+            "analysis_line_fallback_fit",
+            # v79.19.4 (rule 2): live records graded 2+ that are no line and got no listed reason (must be 0)
+            "analysis_silent_records")
+
+# v79.19.4 (rule 2): a live record graded 2 or more is a line or is in «rejected» with a reason from this list --
+# bookkeeping after the step, the step's own line choice and order untouched
+REJECT_NOT_IN_BLOCK = "not_in_block"        # the record never reached the block sent to the model (no norm built for it)
+REJECT_BLOCK_FULL = "block_full"            # reserved: the block never drops a norm today (block_sizes trims text only)
+REJECT_BELOW_CUT = "below_cut"              # in the block, not among the step's two lines
+REJECT_DUPLICATE = "duplicate_of"           # «duplicate_of:<label>»: an alias of a line's article (charge_aliases)
+REJECT_SILENT = "step_silent"               # the catch-all: the step gave no lines (failed, timed out, no input)
+RECORD_REJECT_REASONS = (REJECT_NOT_IN_BLOCK, REJECT_BLOCK_FULL, REJECT_BELOW_CUT, REJECT_DUPLICATE, REJECT_SILENT)
+RECORD_KIND = "record"                      # the «kind» of such an entry (a line's entries: linea_principale / _subordinata)
 PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO = "provato", "contestato", "da_provare", "escluso"
 ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 # v79.19.1: (item 1) the frame's charge the step rejected, or missing while a verified line exists, never leads;
@@ -727,7 +739,55 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         roles = flow.client_roles(state)
     except Exception:           # noqa: BLE001 -- no role read: the client's name and side words only
         roles = []
-    return make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents))
+    out = make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents))
+    # v79.19.4 (rule 2): the live records (not dropped) with their grade, for the accounting after the step; the aliases
+    out["graded"] = [{"article": str(label), "grade": rec.get("grade")}
+                     for label, rec in (state.get("records") or {}).items()
+                     if isinstance(rec, dict) and not rec.get("dropped")]
+    out["aliases"] = {str(k): str(v) for k, v in (state.get("charge_aliases") or {}).items()}
+    return out
+
+
+def account_records(result: Dict[str, Any], inp: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int]:
+    """v79.19.4 (rule 2): (the «rejected» entries for the live records graded 2 or more that are no line, the number
+    of them with no listed reason). A record that is a line (same_article) or already rejected by the verifier: no
+    entry. Else its reason: the step not ok (no lines at all) -> step_silent; its label an alias of a line's
+    (inp["aliases"]) -> «duplicate_of:<line>»; not among the block's norms -> not_in_block; else below_cut (the step's
+    two lines are others). Each entry: {kind: record, articolo, why, grade, rank: its 1-based place in the block, or
+    0}. Bookkeeping only."""
+    analysis = result.get("analysis") if result.get("status") == OK and isinstance(result.get("analysis"), dict) \
+        else {}
+    lines = [x.get("articolo") for x in (analysis.get(k) for k in LINE_KINDS) if x and x.get("articolo")]
+    rejected = [r.get("articolo") for r in result.get("rejected") or [] if r.get("articolo")]
+    block = [n.get("article") for n in inp.get("norms") or [] if n.get("article")]
+    aliases = inp.get("aliases") or {}
+    out: List[Dict[str, Any]] = []
+    silent = 0
+    for rec in inp.get("graded") or []:
+        label, grade = str(rec.get("article") or ""), rec.get("grade")
+        if not label or not isinstance(grade, int) or grade < 2:
+            continue
+        if any(same_article(label, x) for x in lines + rejected):
+            continue
+        twin = aliases.get(label) or next((k for k, v in aliases.items() if v == label), "")
+        rank = next((i for i, x in enumerate(block, 1) if same_article(label, x)), 0)
+        if result.get("status") != OK or not lines:
+            why = REJECT_SILENT
+        elif twin and any(same_article(twin, x) for x in lines):
+            why = f"{REJECT_DUPLICATE}:{twin}"
+        elif not rank:
+            why = REJECT_NOT_IN_BLOCK
+        else:
+            why = REJECT_BELOW_CUT
+        silent += int(why == REJECT_SILENT)
+        out.append({"kind": RECORD_KIND, "articolo": label, "why": why, "grade": grade, "rank": rank})
+    return out, silent
+
+
+def has_verified_line(view_: Optional[Dict[str, Any]]) -> bool:
+    """v79.19.4 (rule 3): the rendering's view holds a verified line (stato VERIFIED) -- principale or subordinata."""
+    a = (view_ or {}).get("analysis") or {}
+    return any(isinstance(a.get(k), dict) and a[k].get("stato") == VERIFIED for k in LINE_KINDS)
 
 
 def fit_verdicts(state: Dict[str, Any]) -> Dict[Any, str]:
@@ -1841,10 +1901,15 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
     result = {"status": status, "error": error, "analysis": analysis if status == OK else None, "counters": counters,
               "prompt_hash": prompt_hash(), "seconds": seconds, "calls": calls, "reasons": reasons,
               "rejected": rejected, "deadline_s": round(deadline, 1), "block": block}       # v79.19.1 (item 2)
+    # v79.19.4 (rule 2): every live record graded 2+ that is no line is in «rejected» with a listed reason
+    accounted, counters["analysis_silent_records"] = account_records(result, inp)
+    rejected += accounted
     _log("analysis_step", {"prompt_hash": result["prompt_hash"], "status": status,
                            "fallback_skipped_reason": counters.get(SKIPPED_REASON) or "",     # v79.15.2 (item 2)
                            "error": error,
                            "deadline_s": result["deadline_s"], "block": block,                # v79.19.1 (item 2)
+                           "silent_records": counters["analysis_silent_records"],                 # v79.19.4 (rule 2)
+                           "records_accounted": len(accounted),
                            "seconds": seconds, "calls": calls, "counters": counters,
                            "lines": _line_log(result["analysis"]), "rejected": rejected,
                            "claimant": bool(inp.get("claimant")),                        # v79.15.1 (item 3)

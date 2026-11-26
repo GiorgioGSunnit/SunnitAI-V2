@@ -1346,6 +1346,25 @@ def alternative_charges(holder: Optional[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def drop_hypothesis(holder: Optional[Dict[str, Any]], label: str, reason: str, rule: str = "") -> bool:
+    """v79.19.4 (rule 3): a candidate read from the facts (the frame's hypothesis, a first-read hypothesis, the frame's
+    own charge) failed the decomposition (reason: unread | undecomposed) -- dropped, never a reason for the method to
+    step aside: the frame's matching hypothesis «scartata», the counter frame_hypothesis_dropped, the event
+    frame_hypothesis_dropped {ipotesi, reason, rule}. True when the frame held it as a hypothesis."""
+    got = held(holder)
+    marked = False
+    if got is not None:
+        for a in _addebiti(got["frame"]):
+            if a.get("ipotesi") and _norm(a.get("label_ipotesi")) == _norm(label) and not a.get("ipotesi_resolved"):
+                a["ipotesi_resolved"] = "scartata"
+                marked = True
+        counters = got.setdefault("counters", {})
+        counters["frame_hypothesis_dropped"] = int(counters.get("frame_hypothesis_dropped") or 0) + 1
+    _log("frame_hypothesis_dropped", {"ipotesi": label, "reason": reason, "rule": rule, "fit": None,
+                                      "frame_hypothesis": marked})
+    return marked
+
+
 def hypotheses(holder: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     """v79.19.1 (item 1): the frame's articles read from the facts alone -- [{label, stato: aperta | confermata |
     scartata}]; [] with no frame or none."""

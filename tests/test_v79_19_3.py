@@ -97,6 +97,10 @@ def test_a_read_hypothesis_carries_its_line_and_scores(monkeypatch):
              "read": {"hypotheses": [{"line": "principale", "claim": "truffa", "institutions": ["truffa"]}]},
              "rows": [], "reserve": []}
     flow.decompose_records(state, IMPUTATO, [row], set(), fetch=lambda refs: [])
+    # v79.19.4 (rule 3): a read hypothesis never stops the method -- dropped, its source kept for the no-line check
+    assert "method_refused" not in state
+    assert state["method_dropped"][0]["source"] == {"rule": "read_hypothesis", "line": "principale", "scores": {}}
+    flow.step_aside_if_no_line(state, None)                 # no verified line: it steps aside with that source
     assert state["method_refused_reason"] == "undecomposed" and state["method_refused_article"] == "640 c.p."
     assert state["method_refused_why"] == {"rule": "read_hypothesis", "line": "principale", "scores": {}}
     aside = [d for e, d in events if e == "interactive_lawyer_method_aside"][-1]
@@ -117,6 +121,9 @@ def test_the_frames_charge_carries_the_case_frame_rule(monkeypatch):
     state = {"analysis": {}, "text": "Il PM contesta a Tizio una pena.", "request": "", "intake": {},
              "records": {}, "sentences": [], "questions": []}
     flow.decompose_records(state, IMPUTATO, [row], set(), fetch=lambda refs: [])
+    assert "method_refused" not in state                    # v79.19.4 (rule 3): dropped, not a step-aside
+    assert state["method_dropped"][0]["source"] == {"rule": "case_frame"}
+    flow.step_aside_if_no_line(state, None)
     assert state["method_refused_reason"] == "undecomposed" and state["method_refused_why"] == {"rule": "case_frame"}
     assert [d["charge_rule"] for e, d in events if e == "interactive_lawyer_method_aside"] == [{"rule": "case_frame"}]
 
@@ -132,7 +139,7 @@ def test_a_missing_reason_logs_unknown_and_the_refusal_branch_carries_the_charge
     assert got["reason"] == "placeholder" and got["article"] == "640 c.p." and got["why"] == {"rule": "rubrica_match"}
     src = (SRC / "interactive_flow.py").read_text(encoding="utf-8")
     assert 'state["method_refused_article"] = str(charge_held.get("article") or "")' in src   # the refusal branch
-    assert '"method_refused_why", "method_aside"):' in src                                    # reset per answer
+    assert '"method_refused_why", "method_aside",' in src                                     # reset per answer
 
 
 # --- 2. row 77, fix 1: the scope gate keeps what the similar rulings point to ---------------------------------------------

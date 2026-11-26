@@ -6269,7 +6269,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.pop("method_refused", None)       # v75: each answer decides it again
     state.pop("method_refused_lines", None)     # v79.10.1 (A1): likewise
     state.pop("method_refused_clients", None)   # v79.10.1 (A1, review): likewise
-    for key in ("method_refused_reason", "method_refused_article", "method_refused_why", "method_aside"):
+    for key in ("method_refused_reason", "method_refused_article", "method_refused_why", "method_aside",
+                "method_dropped"):              # v79.19.4 (rule 3): the hypotheses dropped at this answer's decomposition
         state.pop(key, None)                    # v79.19.3 (row 76): likewise -- each answer's own step-aside record
     for key in ("method_roles", "role_check", "method_client", "role_flip_reasons"):     # v79.14.1 (item 1): each
         # answer reads them anew
@@ -6474,6 +6475,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         mark("analysis_step")
         from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
         verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
+        _isolated("step_aside_if_no_line", lambda: step_aside_if_no_line(state, verified), False)   # v79.19.4 (rule 3)
     method_ctx: Optional[Dict[str, Any]] = None
     method_plan: Dict[str, Any] = {}
     method_clients = None
@@ -7809,6 +7811,41 @@ def step_aside_at(state: Dict[str, Any], reason: str, label: str, source: Dict[s
     _log("lawyer_method_aside", state["method_aside"])
 
 
+# v79.19.4 (rule 3): only the settled charge may stop the method -- a decisive candidate that fails the decomposition
+# makes it step aside only when it came by choose_charge's own rules (the user's article, the rubrica match); one read
+# from the facts (a first-read hypothesis, the frame's reading) is dropped (case_frame.drop_hypothesis) and the method
+# runs on the remaining verified lines -- none left: it steps aside after the analysis step (step_aside_if_no_line)
+CHARGE_STOPS_METHOD = ("user_article", "rubrica_match")
+
+
+def decisive_failed(state: Dict[str, Any], reason: str, label: str, source: Dict[str, Any]) -> None:
+    """v79.19.4 (rule 3): a decisive candidate unread or undecomposed -- the settled charge: the method steps aside
+    (step_aside_at, as 79.19.3); a hypothesis: dropped, recorded in state["method_dropped"] for step_aside_if_no_line."""
+    from . import case_frame
+    rule = str((source or {}).get("rule") or "")
+    if rule in CHARGE_STOPS_METHOD:
+        step_aside_at(state, reason, label, source)
+        return
+    case_frame.drop_hypothesis(state, label, reason, rule)
+    state.setdefault("method_dropped", []).append({"article": label, "reason": reason, "source": dict(source or {})})
+    _log("decisive_candidate_dropped", {"article": label, "reason": reason, "rule": rule})
+
+
+def step_aside_if_no_line(state: Dict[str, Any], verified: Optional[Dict[str, Any]]) -> bool:
+    """v79.19.4 (rule 3): after the analysis step -- a hypothesis was dropped at the decomposition (method_dropped) and
+    no verified line remains (analysis_step.has_verified_line): the method steps aside as before, the dropped
+    candidate's reason logged (step_aside_at). False when a verified line exists or nothing was dropped."""
+    from . import analysis_step
+    dropped = state.get("method_dropped") or []
+    if not dropped or state.get("method_refused") or analysis_step.has_verified_line(verified):
+        return False
+    first = dropped[0]
+    step_aside_at(state, str(first.get("reason") or STEP_ASIDE_UNDECOMPOSED), str(first.get("article") or ""),
+                  dict(first.get("source") or {}))
+    _log("step_aside_no_line", {"dropped": [d.get("article") for d in dropped], "reason": first.get("reason")})
+    return True
+
+
 def fit_removed_keys(state: Dict[str, Any]) -> set:
     """v79.13.0: the keys of the norms an applicability judgment removed (this answer's or an earlier one's) -- never
     back through any later step or answer (read as dead). Empty with the flag off: nothing ever writes the list."""
@@ -8253,7 +8290,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             log["unread"].append(label)
             outcome[label] = "unread"
             if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
-                step_aside_at(state, STEP_ASIDE_UNREAD, label, sources.get(label) or {"rule": why})   # v79.19.3
+                decisive_failed(state, STEP_ASIDE_UNREAD, label, sources.get(label) or {"rule": why})   # v79.19.3, .4
             continue
         frags: List[Dict[str, str]] = []
         reqs = [r for r in issue_records._requisites(row, analysis, frags) if r.get("kind") == "requisito"]
@@ -8267,7 +8304,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             if rec is not None:
                 rec["undecomposed"] = True
             if decisive:            # v76: even the general penal splitter found no element -- said in the answer
-                step_aside_at(state, STEP_ASIDE_UNDECOMPOSED, label, sources.get(label) or {"rule": why})  # v79.19.3
+                decisive_failed(state, STEP_ASIDE_UNDECOMPOSED, label, sources.get(label) or {"rule": why})  # .3, .4
             continue
         if rec is None:
             rec = records[label] = {"article": label, "rubrica": rubrica, "topic": "", "grade": None, "issue": "",

@@ -401,7 +401,7 @@ def test_the_civil_fixture_by_ids_with_the_allegation_as_its_objection(monkeypat
     assert step["lines"][0]["eid"].startswith("A1385cc:E") and step["claimant"] is True
     assert c["analysis_bad_eid"] == 0 and c["analysis_line_exception"] == 0 and c["analysis_line_fallback_rubrica"] == 0
     # v79.15.2: the id form read -- «1453cc» rejected as a remedy (logged «1453 c.c.»), «1385cc» verified
-    assert [r["articolo"] for r in step["rejected"]] == ["1453 c.c."]
+    assert [r["articolo"] for r in step["rejected"] if r.get("kind") != "record"] == ["1453 c.c."]   # v79.19.4: records aside
     assert step["rejected"][0]["why"].startswith("art. 1453 c.c.: rimedio o parte generale")
     assert step["lines"][0]["articolo"] == "1385 c.c." and c["analysis_line_rejected"] == 1
     assert c["analysis_fallback_skipped_reason"] == "line_verified" == step["fallback_skipped_reason"]
@@ -433,7 +433,8 @@ def test_the_penal_fixture_one_objection_per_allegation(monkeypatch, tmp_path):
     assert c["objections_from_allegations"] == 2 and c["objections_from_exceptions"] == 0
     assert c["analysis_bad_eid"] == 0 and run["by"]["analysis_step"][0][0]["claimant"] is False
     step = run["by"]["analysis_step"][0][0]         # v79.15.2: «646cp» verified on the first reply, logged «646 c.p.»
-    assert c["analysis_calls"] == 1 and step["rejected"] == [] and step["lines"][0]["articolo"] == "646 c.p."
+    assert c["analysis_calls"] == 1 and [r for r in step["rejected"] if r.get("kind") != "record"] == [] \
+        and step["lines"][0]["articolo"] == "646 c.p."                                      # v79.19.4: records aside
     assert c["analysis_fallback_skipped_reason"] == "line_verified"
 
 
@@ -563,7 +564,7 @@ def test_a_claimants_line_is_constitutive_and_the_allegation_is_the_objection(mo
     assert "- A1667cc (art. 1667 c.c.): A1667cc:E1\n" in reask and "Il cliente agisce come attore" in reask
     assert {(x["eid"], x["fonte"]) for x in step["exceptions"]} == {("A1667cc:E2", "schema"), ("A1667cc:E3", "schema")}
     assert step["lines"][0]["eid"] == "A1667cc:E1" and step["lines"][0]["articolo"] == "1667 c.c."
-    assert [r["articolo"] for r in step["rejected"]] == ["1667 c.c."]          # v79.15.2: «1667cc» read
+    assert [r["articolo"] for r in step["rejected"] if r.get("kind") != "record"] == ["1667 c.c."]   # v79.15.2; .19.4
     assert c["analysis_fallback_skipped_reason"] == "line_verified"
     sintesi = H.section(answer, "sintesi")
     # v79.15.3 (item 1): the code's tesi -- a claimant (the committente), the element in play contested

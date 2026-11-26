@@ -355,7 +355,8 @@ def test_server_penal_run_640cp_with_no_frame_article_now_verifies(monkeypatch, 
                                               OLDER_FRAME={}))
     c, step = run["state"]["block_counters"], run["by"]["analysis_step"][0][0]
     assert not run["state"]["case_frame"]["frame"]["addebito_o_domanda"]["articolo"]
-    assert step["status"] == "ok" and step["rejected"] == [] and c["analysis_calls"] == 1
+    assert step["status"] == "ok" and [r for r in step["rejected"] if r.get("kind") != "record"] == [] \
+        and c["analysis_calls"] == 1                                                   # v79.19.4: records aside
     assert step["lines"][0]["articolo"] == "640 c.p." and step["lines"][0]["stato"] == A.VERIFIED
     assert c["analysis_fallback_skipped_reason"] == step["fallback_skipped_reason"] == A.SKIP_LINE_VERIFIED
     assert H.section(run["answer"], "sintesi").startswith("Linea principale: art. 640 c.p. — L'accusa deve provare "
@@ -368,7 +369,7 @@ def test_server_civil_run_1667cc_with_no_frame_article_now_verifies(monkeypatch,
     run = H.run(monkeypatch, tmp_path, _clone(X.APPALTO, FRAME_REPLY=frame))       # X.APPALTO's reply: «1667cc»
     c, step = run["state"]["block_counters"], run["by"]["analysis_step"][0][0]
     assert step["lines"][0]["articolo"] == "1667 c.c." and step["lines"][0]["eid"] == "A1667cc:E1"
-    assert [r["articolo"] for r in step["rejected"]] == ["1667 c.c."]       # the exception element, not the key
+    assert [r["articolo"] for r in step["rejected"] if r.get("kind") != "record"] == ["1667 c.c."]   # the exception
     assert c["analysis_line_undetermined"] == 0 and c["analysis_fallback_skipped_reason"] == A.SKIP_LINE_VERIFIED
 
 
@@ -387,7 +388,7 @@ def test_with_no_verified_line_the_counter_says_why_the_fallback_did_not_run(des
     run = H.run(monkeypatch, tmp_path, _clone(X.TRUFFA, analysis_reply=_truffa_rejected,
                                               FRAME_REPLY=_truffa_frame(descrizione), OLDER_FRAME={}))
     c, step = run["state"]["block_counters"], run["by"]["analysis_step"][0][0]
-    assert [r["articolo"] for r in step["rejected"]] == ["640 c.p.", "640 c.p."]
+    assert [r["articolo"] for r in step["rejected"] if r.get("kind") != "record"] == ["640 c.p.", "640 c.p."]
     assert c["analysis_line_fallback_rubrica"] == fired and c["analysis_line_undetermined"] == 0
     assert c["analysis_line_fallback_fit"] == 1 - fired                 # v79.19.0 (item 6): a fitted article leads
     assert c["analysis_fallback_skipped_reason"] == step["fallback_skipped_reason"] == reason
