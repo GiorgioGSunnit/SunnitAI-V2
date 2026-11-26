@@ -364,17 +364,22 @@ def test_hybrid_takes_a_hypothesis_found_by_a_channel_or_applied_by_three_ruling
     many = [(str(100 + i), "c.p.") for i in range(20)]
     fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
     stats = {("119", "c.p."): {"rulings": 1}, ("43", "c.p."): {"rulings": 3}, ("56", "c.p."): {"rulings": 2}}
-    voted = _mapping(fusion_env, [("119", "c.p."), ("43", "c.p."), ("56", "c.p.")], stats)
+    # v79.19.3 (row 77, fix 2): the map's first MAP_HYPOTHESES_GRADED hypotheses are candidates on their own; one past
+    # them with no channel and under MIN_RULINGS is still rejected
+    tail = [(str(600 + i), "c.p.") for i in range(13)]
+    voted = _mapping(fusion_env, [("119", "c.p."), ("43", "c.p."), ("56", "c.p.")] + tail, stats)
     picked = dg._select_articles_fusion(object(), object(), "db", "facts", "",
                                         {"questioni": [], "route": "narrative"})
     assert voted == []                                                    # the vote does not run
     assert ("119", "c.p.") in picked["selected"]                          # rank 20 of a channel, past the cap
     assert ("43", "c.p.") in picked["selected"]                           # 3 similar rulings apply it
-    assert ("56", "c.p.") not in picked["selected"]                       # 2 rulings only, no channel
+    assert ("56", "c.p.") in picked["selected"]                           # 2 rulings, no channel: graded (79.19.3)
+    assert ("611", "c.p.") in picked["selected"] and ("612", "c.p.") not in picked["selected"]   # the 15th in, the 16th out
     rows = {r["_article"]: r for r in picked["article_rows"]}
     assert rows[("119", "c.p.")]["_multi_signal"] and rows[("119", "c.p.")]["_map"]
     assert rows[("43", "c.p.")]["_map"] and not rows[("43", "c.p.")].get("_multi_signal")
     assert rows[("43", "c.p.")]["_vote_stats"] == {"rulings": 3}
+    assert rows[("56", "c.p.")]["_map"] and not rows[("56", "c.p.")].get("_multi_signal")      # after the cap, tagged
     assert not any(r.get("_vote") for r in rows.values())                # graded like any article
 
 

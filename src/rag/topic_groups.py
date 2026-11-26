@@ -634,7 +634,7 @@ def default_admitted() -> Dict[str, str]:
 
 def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str], keep: Sequence[str] = (),
                     pass_only: Sequence[str] = (), log: Optional[Dict[str, Any]] = None,
-                    defaults: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+                    defaults: Optional[Dict[str, str]] = None, held: Sequence[str] = ()) -> List[Dict[str, Any]]:
     """v79.12.1: the rows without the code articles of a Titolo / Capo (code_unit) outside the case's institutions. The
     case's units: those of the rows in scope -- an institution match (institution_match on the first read's names and
     rubricated names), a first-read whole-name hit (never a keyword hit: keyword_hit), an article in keep (the user's,
@@ -645,14 +645,16 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
     and tables' anchors: kept, never widening the scope). No first-read institution: off, nothing dropped (log «off»).
     log: «units» (the case's), «dropped» ({article, unit, hit}), «kept_by» ({article: why} for a row kept outside the
     units). v79.12.5 (item 10): defaults ({label: why}, default_admitted's when None) kept like pass_only -- logged
-    «admitted_default»."""
+    «admitted_default». v79.19.3 (row 77): held (fix 1: the labels the grade cap holds, interactive_flow.cap_anchors --
+    what the similar rulings point to) kept like pass_only, «indicata dalle sentenze simili»; (fix 3) with no unit of
+    the case's own, «units_empty» counts the rows the gate drops for it -- a count only, what it does unchanged."""
     from .posture import _stems
     log = log if log is not None else {}
     names = [str(n) for n in institutions or [] if str(n or "").strip()]
     if not names:
         log["off"] = "nessun istituto dalla prima lettura"
         return list(rows or [])
-    keep_set, passing = set(keep or ()), set(pass_only or ())
+    keep_set, passing, holding = set(keep or ()), set(pass_only or ()), set(held or ())
     defaults = default_admitted() if defaults is None else dict(defaults)
     by_default: Dict[str, str] = {}
 
@@ -679,6 +681,14 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
             units.add(code_unit(ref))
             reasons[id(r)] = reasons[id(r)] or f"prima lettura «{inst}» (rubrica nell'istituto)"
     units.discard(None)
+
+    def passes(ref) -> str:
+        """why a row outside the units stays: a rule's anchor, what the similar rulings point to."""
+        return ("ancora di una regola" if _label(ref) in passing else
+                "indicata dalle sentenze simili" if _label(ref) in holding else "")
+    if not units:       # v79.19.3 (row 77, fix 3): no unit of the case's own -- every unit's row goes; counted only
+        log["units_empty"] = sum(1 for r in rows or [] if _ref(r) and code_unit(_ref(r)) is not None
+                                 and not reasons[id(r)] and not passes(_ref(r)) and not defaults.get(_label(_ref(r))))
     out, dropped, kept_by = [], {}, {}
     for r in rows or []:
         ref = _ref(r)
@@ -686,7 +696,7 @@ def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str],
         if unit is None or unit in units:
             out.append(r)
             continue
-        why = reasons[id(r)] or ("ancora di una regola" if _label(ref) in passing else "")
+        why = reasons[id(r)] or passes(ref)
         if not why and defaults.get(_label(ref)):           # v79.12.5 (item 10): a general clause, a stage article
             why = by_default[_label(ref)] = defaults[_label(ref)]
         if why:

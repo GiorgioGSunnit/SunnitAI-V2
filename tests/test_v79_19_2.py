@@ -176,10 +176,10 @@ def test_a_procedure_article_named_by_the_text_is_never_the_charge_nor_the_expos
 
 def test_step_aside_answer_logs_a_closed_reason(monkeypatch):
     events = _events(monkeypatch)
-    assert flow.STEP_ASIDE_REASONS == ("no_action", "placeholder")
+    assert flow.STEP_ASIDE_REASONS[:2] == ("no_action", "placeholder")      # v79.19.3 (row 76): unread, undecomposed too
     draft = "**Sintesi**\n\nUn parere.\n\n**Norme applicabili**\n\nL'art. 1218 c.c. regola l'inadempimento."
-    for given, want in (("no_action", "no_action"), ("placeholder", "placeholder"), ("", "placeholder"),
-                        ("qualcosa", "placeholder")):
+    for given, want in (("no_action", "no_action"), ("placeholder", "placeholder"), ("", "unknown"),
+                        ("qualcosa", "unknown")):                           # v79.19.3 (row 76): never the placeholder
         state = {"records": {}, "method_refused_reason": given}
         flow.step_aside_answer(state, draft, [], "Il caso.")
         got = [d for e, d in events if e == "interactive_step_aside_answer"][-1]
@@ -202,5 +202,5 @@ def test_what_the_method_computed_is_saved_when_it_steps_aside():
     assert c["records"]["1453 c.c."]["dropped"] is True and c["records"]["1218 c.c."]["charged"] is True
     assert [x["placeholder"] for x in c["lines"]] == [False, True] and c["main"] == "La domanda è fondata."
     assert c["no_action"].startswith("Nessuna norma")
-    assert flow.method_aside_record("altro", {}, [])["reason"] == "placeholder"      # outside the vocabulary
+    assert flow.method_aside_record("altro", {}, [])["reason"] == "unknown"      # outside the vocabulary (v79.19.3)
     assert flow.method_aside_record("placeholder", {"tesi": "t"}, [("", None, None)])["clients"][0]["records"] == {}

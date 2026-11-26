@@ -162,9 +162,12 @@ def test_a_failure_gives_no_support(no_embedding, logged):
 def test_a_hypothesis_needs_a_primary_channel_or_three_similar_rulings():
     hypotheses = [("1490", "c.c."), ("2043", "c.c."), ("1218", "c.c.")]
     stats = {("2043", "c.c."): {"rulings": 3}, ("1218", "c.c."): {"rulings": 2}}
-    kept, why = st.confirmed_hypotheses(hypotheses, [("1490", "c.c.")], stats)
+    kept, why = st.confirmed_hypotheses(hypotheses, [("1490", "c.c.")], stats, graded=0)
     assert kept == [("1490", "c.c."), ("2043", "c.c.")]
-    assert why == {"channel": ["1490 c.c."], "rulings": ["2043 c.c."], "rejected": ["1218 c.c."]}
+    assert why == {"channel": ["1490 c.c."], "rulings": ["2043 c.c."], "map": [], "rejected": ["1218 c.c."]}
+    # v79.19.3 (row 77, fix 2): one of the map's first graded hypotheses is a candidate for the grading on its own
+    kept, why = st.confirmed_hypotheses(hypotheses, [("1490", "c.c.")], stats)
+    assert kept == hypotheses and why["map"] == ["1218 c.c."] and why["rejected"] == []
 
 
 def test_the_flags_act_on_their_route(monkeypatch):

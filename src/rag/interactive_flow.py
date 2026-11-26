@@ -450,19 +450,23 @@ def rule_named(rule_topics: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], s
 
 
 def code_scope(rows: Sequence[Dict[str, Any]], case: str, first_read: Optional[Dict[str, Any]],
-               anchors: Sequence[str] = ()) -> Dict[str, Any]:
+               anchors: Sequence[str] = (), held: Sequence[str] = ()) -> Dict[str, Any]:
     """v79.12.1: the Capo-scope gate on every book (topic_groups.code_scope_gate) -- the first read's institutions by
     their names and rubricated names (lawyer_method.institution_names of read_institutions), the articles the user
     names and the actions of the modules active on the same input as the answer stage's (lawyer_method.module_input)
-    in scope; anchors (the rules' and tables'): kept, never widening the scope. The gate's log with «_rows» (the rows
-    kept) and «modules» (the modules' ids with their signal)."""
+    in scope; anchors (the rules' and tables'): kept, never widening the scope. v79.19.3 (row 77, fix 1): held (the
+    labels cap_anchors computes -- a row the similar rulings voted, `_vote`; a map hypothesis, `_map`; MIN_RULINGS or
+    more similar rulings applying it, `_vote_stats`) kept the same way: what the grade cap would hold is not dropped
+    before it; logged «anchors_held». The gate's log with «_rows» (the rows kept) and «modules» (the modules' ids with
+    their signal)."""
     from . import defensive_generation as dg, lawyer_method, topic_groups
     insts = read_institutions(first_read) if first_read else []
     mods = lawyer_method.active_modules(lawyer_method.module_input(case, insts)) if insts else []
     named = [_label(_key(r)) for r in dg._refs_in(case or "") if len(r) == 2]
     keep = list(dict.fromkeys(named + [str(a) for m in mods for a in m.get("actions") or []]))
-    log: Dict[str, Any] = {"modules": lawyer_method.modules_active(mods)}
-    kept = topic_groups.code_scope_gate(rows, lawyer_method.institution_names(insts), keep, anchors, log)
+    log: Dict[str, Any] = {"modules": lawyer_method.modules_active(mods), "anchors_held": list(held or ())}
+    kept = topic_groups.code_scope_gate(rows, lawyer_method.institution_names(insts), keep, anchors, log,
+                                        held=held)
     return {**log, "_rows": kept}
 
 
@@ -942,8 +946,11 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
         if case_first:          # v79.12.1: the Capo-scope gate on every book -- a code article of a Titolo / Capo outside
+            # v79.19.3 (row 77, fix 1): what the grade cap holds (cap_anchors: the rows the similar rulings point to,
+            # tagged in the fusion select; the anchors' sections) passes the gate too -- kept, never widening the scope
+            held_scope = _isolated("cap_anchors_scope", lambda: cap_anchors(article_rows, pre, anchor_keep), []) or []
             code_log = _isolated("code_scope", lambda: code_scope(article_rows, case, first_read,           # the case's
-                                                                  anchor_keep), None)                    # institutions
+                                                                  anchor_keep, held_scope), None)        # institutions
             if code_log is not None:
                 article_rows = demote_instead("code_scope_gate", article_rows, code_log.pop("_rows"), out)   # v79.19.1
                 track_gate(top, gates, "code_scope_gate", article_rows)
@@ -6262,6 +6269,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.pop("method_refused", None)       # v75: each answer decides it again
     state.pop("method_refused_lines", None)     # v79.10.1 (A1): likewise
     state.pop("method_refused_clients", None)   # v79.10.1 (A1, review): likewise
+    for key in ("method_refused_reason", "method_refused_article", "method_refused_why", "method_aside"):
+        state.pop(key, None)                    # v79.19.3 (row 76): likewise -- each answer's own step-aside record
     for key in ("method_roles", "role_check", "method_client", "role_flip_reasons"):     # v79.14.1 (item 1): each
         # answer reads them anew
         state.pop(key, None)
@@ -6517,7 +6526,12 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             # lost with the context; no rule changes
             reason = STEP_ASIDE_NO_ACTION if refusal.get("no_action") else STEP_ASIDE_PLACEHOLDER
             state["method_refused_reason"] = reason
-            state["method_aside"] = _jsonable(method_aside_record(reason, refusal, items))
+            charge_held = dict(state.get("charge") or {})         # v79.19.3 (row 76): the article and its rule too
+            state["method_refused_article"] = str(charge_held.get("article") or "")
+            state["method_refused_why"] = {k: v for k, v in charge_held.items() if k != "article"}
+            state["method_aside"] = _jsonable(method_aside_record(reason, refusal, items,
+                                                                  article=state["method_refused_article"],
+                                                                  charge=state["method_refused_why"]))
             _log("lawyer_method_aside", state["method_aside"])
             lawyer_method.end()
             method_ctx, method_plan, method_clients = None, {}, None
@@ -7503,15 +7517,28 @@ STEP_ASIDE_NO_CANDIDATE = {"id": "step_aside", "contesta": []}     # v79.12.1: n
 # v79.19.2 (item 4): why the method stepped aside -- a closed vocabulary, the one word both events carry
 STEP_ASIDE_NO_ACTION = "no_action"          # no norm confers an action on the claimant (lawyer_method.client_refusal)
 STEP_ASIDE_PLACEHOLDER = "placeholder"      # the main line is the placeholder thesis (no candidate line)
-STEP_ASIDE_REASONS = (STEP_ASIDE_NO_ACTION, STEP_ASIDE_PLACEHOLDER)
+# v79.19.3 (row 76): the decomposition's own two -- the decisive article's text not fetched, or split into no element
+STEP_ASIDE_UNREAD = "unread"                # lawyer_method.NOT_APPLIED_WHY["unread"] (decompose_records)
+STEP_ASIDE_UNDECOMPOSED = "undecomposed"    # lawyer_method.NOT_APPLIED_WHY["undecomposed"] (decompose_records)
+STEP_ASIDE_UNKNOWN = "unknown"              # the state carries no reason: logged as such, never read as the placeholder
+STEP_ASIDE_REASONS = (STEP_ASIDE_NO_ACTION, STEP_ASIDE_PLACEHOLDER, STEP_ASIDE_UNREAD, STEP_ASIDE_UNDECOMPOSED)
 
 
-def method_aside_record(reason: str, refusal: Dict[str, Any], items: Sequence[Any]) -> Dict[str, Any]:
+def step_aside_reason(reason: Any) -> str:
+    """v79.19.3 (row 76): the reason as the events carry it -- one of STEP_ASIDE_REASONS, else STEP_ASIDE_UNKNOWN."""
+    return str(reason) if reason in STEP_ASIDE_REASONS else STEP_ASIDE_UNKNOWN
+
+
+def method_aside_record(reason: str, refusal: Dict[str, Any], items: Sequence[Any], article: str = "",
+                        charge: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """v79.19.2 (item 4): what the method had computed when it stepped aside, kept in state["method_aside"] -- per
     client: the records it assessed (label, status counts), the charge it held, the candidate lines (tesi, argued) and
-    the plan's main line; with the refusal's reason, why and tesi."""
-    out: Dict[str, Any] = {"reason": reason if reason in STEP_ASIDE_REASONS else STEP_ASIDE_PLACEHOLDER,
-                           "why": str(refusal.get("why") or ""), "tesi": str(refusal.get("tesi") or ""), "clients": []}
+    the plan's main line; with the refusal's reason, why and tesi. v79.19.3 (row 76): the article it stepped aside
+    on and the charge rule that produced it («charge_rule»: {rule, scores…}, posture.choose_charge's or the
+    decomposition's source)."""
+    out: Dict[str, Any] = {"reason": step_aside_reason(reason), "why": str(refusal.get("why") or ""),
+                           "tesi": str(refusal.get("tesi") or ""), "article": str(article or ""),
+                           "charge_rule": dict(charge or {}), "clients": []}
     for name, ctx, plan in items or []:
         ctx, plan = ctx or {}, plan or {}
         records = ctx.get("records") or {}
@@ -7599,8 +7626,11 @@ def step_aside_answer(state: Dict[str, Any], draft: str, rows: Sequence[Dict[str
                                                   else x) for t, x in parts])
         else:
             draft = f"{draft.rstrip()}\n\n{section}"
-    reason = str(state.get("method_refused_reason") or "")      # v79.19.2 (item 4): the closed vocabulary
-    _log("step_aside_answer", {"reason": reason if reason in STEP_ASIDE_REASONS else STEP_ASIDE_PLACEHOLDER,
+    # v79.19.2 (item 4): the closed vocabulary; v79.19.3 (row 76): a missing reason is «unknown», never the placeholder;
+    # the article the method stepped aside on and the charge rule that produced it
+    _log("step_aside_answer", {"reason": step_aside_reason(state.get("method_refused_reason")),
+                               "article": str(state.get("method_refused_article") or ""),
+                               "why": dict(state.get("method_refused_why") or {}),
                                "cited": cited, "own": own, "kept": len((record or {}).get("kept") or []),
                                "rule_statements_removed": rules_log})
     return draft
@@ -7750,6 +7780,33 @@ DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativ
                  "remedy": "rimedio civile della persona offesa",                     # v79.12.4 (item 1)
                  "frame_alternative": "altro addebito o articolo letto dal quadro",    # v79.19.0 (items 3, 5)
                  "posture_demoted": "ipotesi della lettura respinta dall'evento, retrocessa"}  # v79.19.1 (item 6a)
+
+
+def read_source(records: Dict[str, Any], labels: Sequence[str], hypothesis: Optional[Dict[str, Any]] = None
+                ) -> Dict[str, Any]:
+    """v79.19.3 (row 76): a candidate read from the first read's hypothesis -- {"rule": "read_hypothesis", "line": the
+    hypothesis's line, "scores": {label: [provato, escluso, elements]} for the hypothesis's articles that hold a
+    record (posture.element_score, the numbers choose_charge ranks by)}."""
+    from . import posture as posture_mod
+    return {"rule": "read_hypothesis", "line": str((hypothesis or {}).get("line") or ""),
+            "scores": {x: list(posture_mod.element_score(records[x])) for x in labels
+                       if isinstance((records or {}).get(x), dict)}}
+
+
+def step_aside_at(state: Dict[str, Any], reason: str, label: str, source: Dict[str, Any]) -> None:
+    """v79.19.3 (row 76): the method steps aside at the decomposition -- the decisive article's text unread or split
+    into no element. The sentence in state["method_refused"] as before (lawyer_method.NOT_APPLIED_WHY); beside it the
+    reason (STEP_ASIDE_REASONS), the article and the rule it came by (method_refused_reason / _article / _why); the
+    lawyer_method_aside event fires here too (no client computed yet). Logging only: no behaviour change."""
+    from . import lawyer_method
+    sentence = lawyer_method.NOT_APPLIED_WHY[reason].format(art=label)
+    state["method_refused"] = sentence
+    state["method_refused_reason"] = reason
+    state["method_refused_article"] = label
+    state["method_refused_why"] = dict(source or {})
+    state["method_aside"] = _jsonable(method_aside_record(reason, {"why": sentence}, [], article=label,
+                                                          charge=source))
+    _log("lawyer_method_aside", state["method_aside"])
 
 
 def fit_removed_keys(state: Dict[str, Any]) -> set:
@@ -8082,22 +8139,31 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     analysis = _restored_analysis(state["analysis"])
     case = case_text(state)
     wanted: Dict[str, str] = {}
+    # v79.19.3 (row 76): the rule each candidate came by (case_frame / user_article / read_hypothesis, the hypothesis's
+    # element scores) -- said when the method steps aside on it (step_aside_at); choose_charge has not run yet here
+    sources: Dict[str, Dict[str, Any]] = {}
     victim = posture_mod.victim(posture)
     from . import case_frame
     framed = case_frame.bound(state, "addebito_o_domanda", posture)
     if framed:                  # v79.14.0 (CASE_FRAME): the frame's charge decomposed first, whatever the rules read
         wanted[framed] = DECOMPOSE_WHY["charge"]
+        sources[framed] = {"rule": posture_mod.FRAME_CHARGE_RULE}
     for x in case_frame.alternative_charges(state):     # v79.19.0 (items 3, 5): the other charges, the disputed one
         wanted.setdefault(x, DECOMPOSE_WHY["frame_alternative"])
     for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
         # v79.12.4 (item 1): the victim's charge is the querela's offence -- a civil article its remedy, never decisive
         wanted.setdefault(x, DECOMPOSE_WHY["remedy"] if victim and not posture_mod.penal_article(x)
                           else DECOMPOSE_WHY["charge"])
+        sources.setdefault(x, {"rule": "user_article"})
     if not any(why == DECOMPOSE_WHY["charge"] for why in wanted.values()):
         # v75: a civil claim naming no article -- the first read's principal hypothesis for it; v79 (C4)
         why = DECOMPOSE_WHY["hypothesis" if str(posture.get("family") or "") == "penale" else "claim"]
-        for x in posture_mod.claim_from_read(state, posture, rows):
+        claimed = posture_mod.claim_from_read(state, posture, rows)
+        line = posture_mod.PENAL_LINE if str(posture.get("family") or "") == "penale" \
+            else posture_mod.CLAIM_ROLES.get(str(posture.get("role") or ""), "")     # the line claim_from_read reads
+        for x in claimed:
             wanted.setdefault(x, why)
+            sources.setdefault(x, read_source(records, claimed, {"line": line}))
         if str(posture.get("family") or "") == "penale":
             # v79.12.4 (item 3): every hypothesis of the first read split too, so the charge rule scores each
             # (posture.choose_charge) -- never one the certain facts' event does not fit
@@ -8105,6 +8171,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             demoted_posture: List[str] = []
             for h, labels in posture_mod.read_hypotheses(state, posture, rows):
                 for x in labels:
+                    sources.setdefault(x, read_source(records, labels, h))
                     if not posture_mod.event_refuses(x, event, h):     # (review) an attempt's never refused
                         wanted.setdefault(x, posture_mod.READ_CANDIDATE_WHY)
                     elif gates_demote() and x not in wanted:   # v79.19.1 (item 6a): refused by the event -- demoted,
@@ -8186,7 +8253,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             log["unread"].append(label)
             outcome[label] = "unread"
             if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
-                state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["unread"].format(art=label)
+                step_aside_at(state, STEP_ASIDE_UNREAD, label, sources.get(label) or {"rule": why})   # v79.19.3
             continue
         frags: List[Dict[str, str]] = []
         reqs = [r for r in issue_records._requisites(row, analysis, frags) if r.get("kind") == "requisito"]
@@ -8200,7 +8267,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             if rec is not None:
                 rec["undecomposed"] = True
             if decisive:            # v76: even the general penal splitter found no element -- said in the answer
-                state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["undecomposed"].format(art=label)
+                step_aside_at(state, STEP_ASIDE_UNDECOMPOSED, label, sources.get(label) or {"rule": why})  # v79.19.3
             continue
         if rec is None:
             rec = records[label] = {"article": label, "rubrica": rubrica, "topic": "", "grade": None, "issue": "",

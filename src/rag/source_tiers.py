@@ -35,6 +35,7 @@ SUPPORT_SOURCE = "ruling_support"
 # A hypothesis no primary channel found is a candidate only when this many of the top similar rulings apply it.
 MAP_MIN_RULINGS = 3
 MAP_TOP_RULINGS = 20
+MAP_HYPOTHESES_GRADED = 15      # v79.19.3 (row 77, fix 2): the map's own hypotheses graded (the ones hybrid_map logs)
 
 
 def boilerplate() -> set:
@@ -322,7 +323,7 @@ def ruling_map(session, driver, database: str, case_text: str, index: str,
         out["issues"] = [i for i, _ in sorted(issues.items(), key=lambda kv: (-kv[1], kv[0]))][:6]
         info.update(rulings=len(top), carded=sum(r in cards for r in head), areas=areas,
                     dropped={reason: [f"{a} {c}" for a, c in refs[:20]] for reason, refs in dropped.items()},
-                    hypotheses=[f"{a} {c} {scores[(a, c)]:.2f}" for a, c in out["articles"][:15]],
+                    hypotheses=[f"{a} {c} {scores[(a, c)]:.2f}" for a, c in out["articles"][:MAP_HYPOTHESES_GRADED]],
                     issues=out["issues"])
         return out
     except Exception as exc:
@@ -334,20 +335,26 @@ def ruling_map(session, driver, database: str, case_text: str, index: str,
 
 
 def confirmed_hypotheses(hypotheses: Sequence[tuple], channel_refs: Iterable[tuple],
-                         stats: Dict[tuple, Dict[str, int]], min_rulings: int = MAP_MIN_RULINGS
-                         ) -> Tuple[List[tuple], Dict[str, List[str]]]:
+                         stats: Dict[tuple, Dict[str, int]], min_rulings: int = MAP_MIN_RULINGS,
+                         graded: int = MAP_HYPOTHESES_GRADED) -> Tuple[List[tuple], Dict[str, List[str]]]:
     """(the hypotheses that may become candidates, why each did or did not): found by a primary channel, or
     applied by min_rulings or more of the top similar rulings of the case's area (the map already dropped
-    other areas' codes). Whether the article exists in the primary corpus is the fetch's to say."""
+    other areas' codes); v79.19.3 (row 77, fix 2): else one of the map's own first graded hypotheses (the ones
+    hybrid_map logs, best first: «map»), a candidate for the grading only -- appended after the cap, tagged `_map`
+    (the grade cap holds it; the grade and the fit decide whether it is printed). Whether the article exists in the
+    primary corpus is the fetch's to say."""
     found = set(channel_refs)
-    kept, why = [], {"channel": [], "rulings": [], "rejected": []}
-    for ref in hypotheses:
+    kept, why = [], {"channel": [], "rulings": [], "map": [], "rejected": []}
+    for i, ref in enumerate(hypotheses):
         if ref in found:
             kept.append(ref)
             why["channel"].append(f"{ref[0]} {ref[1]}")
         elif (stats.get(ref) or {}).get("rulings", 0) >= min_rulings:
             kept.append(ref)
             why["rulings"].append(f"{ref[0]} {ref[1]}")
+        elif i < graded:
+            kept.append(ref)
+            why["map"].append(f"{ref[0]} {ref[1]}")
         else:
             why["rejected"].append(f"{ref[0]} {ref[1]}")
     return kept, why

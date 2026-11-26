@@ -4032,6 +4032,9 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         map_rulings = [ref for ref in confirmed if ref not in channel_refs]
         vote_stats.update({ref: dict(ruling_map["stats"][ref]) for ref in confirmed if ref in ruling_map["stats"]})
         vlog("hybrid_hypotheses", why)
+        # v79.19.3 (row 77, fix 2): the map's own hypotheses no channel found and no MIN_RULINGS confirmed -- graded
+        # (appended after the cap, tagged _map below), the cost counted per case
+        vlog("map_hypotheses_added", {"count": len(why.get("map") or []), "articles": list(why.get("map") or [])})
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
     # single-signal text-search hit is the only thing the cap should ever
