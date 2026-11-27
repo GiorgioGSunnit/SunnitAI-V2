@@ -945,6 +945,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {x["article"] for x in gate_log.get("rows") or []}
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
+        held_scope: List[str] = []      # v79.19.5 (item 6): the matter gate reads the same list
         if case_first:          # v79.12.1: the Capo-scope gate on every book -- a code article of a Titolo / Capo outside
             # v79.19.3 (row 77, fix 1): what the grade cap holds (cap_anchors: the rows the similar rulings point to,
             # tagged in the fusion select; the anchors' sections) passes the gate too -- kept, never widening the scope
@@ -962,11 +963,14 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             from . import topic_groups
             matter_log: Dict[str, Any] = {}
             named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
+            # v79.19.5 (item 6, row 85): the held labels (cap_anchors) as a separate argument -- never dropped, their
+            # matter not added to the case's (through keep the whole matter would come in)
             article_rows = demote_instead("matter_gate", article_rows, _isolated("matter_gate", lambda: topic_groups.matter_gate(
-                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True), article_rows), out)
+                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True, held=held_scope),
+                article_rows), out)
             track_gate(top, gates, "matter_gate", article_rows)
-            if matter_log.get("dropped"):
-                gone = {x["article"] for x in matter_log["dropped"]}
+            if matter_log.get("dropped") or matter_log.get("held"):
+                gone = {x["article"] for x in matter_log.get("dropped") or []}
                 anchor_keep = [a for a in anchor_keep if a not in gone]
                 must = [a for a in must if a not in gone]
                 out["matter_gate"] = matter_log

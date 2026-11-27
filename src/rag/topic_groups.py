@@ -436,13 +436,18 @@ def keyword_hit(row: Dict[str, Any]) -> bool:
 
 
 def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: Optional[Dict[str, Any]] = None,
-                every: bool = False) -> List[Dict[str, Any]]:
+                every: bool = False, held: Sequence[str] = ()) -> List[Dict[str, Any]]:
     """v79.6 (item 6): the rows without the keyword hits (keyword_hit) whose matter is none of the case's -- the case's
     matters are those of the rows reached by two signals or more, of the first read's whole-name hits and of the
     articles kept by name or rule (keep: labels). With no matter known, nothing is dropped. log["dropped"]: each with
     its matter. v79.8 (A1): every -- any retrieval hit outside the case's matters goes (a vector hit as a keyword one:
-    another code's institution, another Libro's or Titolo's article), before the applicability grading."""
+    another code's institution, another Libro's or Titolo's article), before the applicability grading.
+    v79.19.5 (item 6, row 85): held -- the labels the grade cap holds (interactive_flow.cap_anchors, the rows the
+    similar rulings point to), with the scope gate's meaning: a held label is never dropped and does not add its matter
+    to the case's matters (a label in keep adds its matter: the whole matter would come in). log["held"]: the held
+    labels the gate would otherwise have dropped."""
     keep = set(keep or ())
+    held_ = {str(x) for x in held or ()}
     matters = set()
     for r in rows or []:
         ref = _ref(r)
@@ -459,6 +464,11 @@ def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: O
         m = matter_of(ref) if ref else ""
         if matters and ref and (every or keyword_hit(r)) and m and m not in matters and _label(ref) not in keep \
                 and not r.get("_multi_signal") and not (r.get("_first_read") and not keyword_hit(r)):
+            if _label(ref) in held_:            # v79.19.5 (item 6): held by the similar rulings -- kept, its matter not added
+                if log is not None:
+                    log.setdefault("held", []).append({"article": _label(ref), "matter": m})
+                out.append(r)
+                continue
             if log is not None:
                 log.setdefault("dropped", []).append({"article": _label(ref), "matter": m,
                                                       "institution": str(r.get("_first_read") or ""),

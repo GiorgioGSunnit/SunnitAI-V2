@@ -465,7 +465,11 @@ def test_a_penal_charge_with_no_article_number_finds_its_line_by_rubrica(monkeyp
     assert "| Linea principale | art. 646 c.p. | — | Appropriazione indebita: elementi da provare dall'accusa | — |" \
         in sol
     assert H.section(answer, "conclusioni").startswith("**Linea principale**: art. 646 c.p. — Appropriazione indebita")
-    assert "62-bis" not in sintesi and "62-bis" not in sol
+    assert "62-bis" not in sintesi
+    # v79.19.5 (item 5): the grade-3 record 62-bis c.p. (general part, no line) is printed in §6's general-part section
+    # as a record -- never as a line row
+    assert not any("62-bis" in row for row in sol.splitlines() if row.startswith("| Linea"))
+    assert "**Difese di parte generale che i fatti sollevano**" in sol and "- art. 62-bis c.p." in sol
     legacy = run["by"]["legacy_plan"][0][0]
     assert legacy["rendered"] is False
 

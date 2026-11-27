@@ -728,15 +728,83 @@ def charged_by_name(case: str, records: Dict[str, Dict[str, Any]], rows: Sequenc
             if label in (records or {}):
                 names.append((label, _stems(str(row["_first_read"]))))
     out: List[str] = []
+    stem_log: List[Dict[str, str]] = []
     for sentence in intake.sentences(case or ""):
-        if not charge_re().search(sentence):
+        m = charge_re().search(sentence)
+        if not m:
             continue
         words = _stems(sentence)
         hits = [(label, stems) for label, stems in names if stems and stems - GENERIC_STEMS and stems <= words]
         for label, stems in hits:
             if not any(stems < other for x, other in hits if x != label) and label not in out:
                 out.append(label)
+        if not hits:            # v79.19.5 (item 7, row 87): the offence named in words, by stems (stem_match)
+            phrase = charge_phrase(sentence, m.end())
+            label = stem_match(phrase, records)
+            if label and label not in out:
+                out.append(label)
+                stem_log.append({"phrase": phrase, "article": label})
+    if stem_log:
+        interactive_flow_log("charge_by_name", {"stem_match": stem_log})
     return out
+
+
+# v79.19.5 (item 7, row 87): an offence the charge sentence names in words that are not the rubrica's («maltrattamenti
+# in famiglia» against «Maltrattamenti contro familiari e conviventi»). The phrase: the words after the charge wording
+# up to the next punctuation or a citation («ai sensi», «ex art.», «previsto», «punito» …), at most CHARGE_PHRASE_WORDS,
+# a leading «il reato di» / «il delitto di» / «l'ipotesi di» dropped. Its content stems (italian_stem.stem_word on
+# topic_step.content_words: no article, no preposition, no category word) must be two at least -- a one-stem phrase is a
+# generic word alone and never fires -- and every one of them found in ONE record's rubrica: the first (the head noun)
+# by an equal stem, the others by an equal stem or a derivative of the same root (stem_found: the two stems six letters
+# or more sharing their first four -- «famigli» / «familiar»: the stemmer alone cannot pair «famiglia» and
+# «familiari»). Two records matching: none (ambiguous). No hand table of common names.
+CHARGE_PHRASE_WORDS = 8
+_PHRASE_END_RE = re.compile(r"[.;:,()«»\"]|\b(?:ai\s+sensi|a\s+norma|ex\s+art|art\.|artt\.|articol[oi]|previst[oaie]|"
+                            r"punit[oaie]|commess[oaie]|in\s+danno|ai\s+danni|nei\s+confronti|aggravat[oaie]|"
+                            r"continuat[oaie]|tentat[oaie])\b", re.IGNORECASE)
+_PHRASE_LEAD_RE = re.compile(r"^\s*(?:(?:il|del|dei|per\s+il|per\s+i)\s+(?:reat[oi]|delitt[oi])\s+di\s+|l['’]ipotesi\s+di\s+|"
+                             r"i\s+reati\s+di\s+|di\s+)", re.IGNORECASE)
+
+
+def charge_phrase(sentence: str, start: int) -> str:
+    """The words after the charge wording (start: the wording's end) up to the next punctuation or citation
+    (_PHRASE_END_RE), CHARGE_PHRASE_WORDS at most, the «il reato di» lead dropped; "" when none."""
+    tail = str(sentence or "")[start:]
+    m = _PHRASE_END_RE.search(tail)
+    tail = tail[:m.start()] if m else tail
+    tail = _PHRASE_LEAD_RE.sub("", tail, count=1)
+    return " ".join(tail.split()[:CHARGE_PHRASE_WORDS]).strip()
+
+
+def phrase_stems(text: str) -> List[str]:
+    """The phrase's content stems in order (italian_stem.stem_word on topic_step.content_words), each once."""
+    from .italian_stem import stem_word
+    from .topic_step import content_words
+    return list(dict.fromkeys(stem_word(w) for w in content_words(text or "") if len(w) >= 4))
+
+
+def stem_found(stem: str, rubrica: Sequence[str], head: bool = False) -> bool:
+    """The phrase's stem is in the rubrica's: equal; for a stem after the head, also a derivative of the same root (both
+    six letters or more, the first four shared)."""
+    if stem in rubrica:
+        return True
+    if head:
+        return False
+    return any(len(stem) >= 6 and len(r) >= 6 and stem[:4] == r[:4] for r in rubrica)
+
+
+def stem_match(phrase: str, records: Dict[str, Dict[str, Any]]) -> str:
+    """The one record whose rubrica holds every content stem of the phrase (two at least: stem_found, the head by an
+    equal stem); "" for a one-stem phrase, no match or two records matching."""
+    stems = phrase_stems(phrase)
+    if len(stems) < 2:
+        return ""
+    found: List[str] = []
+    for label, rec in (records or {}).items():
+        rubrica = phrase_stems(str((rec or {}).get("rubrica") or ""))
+        if rubrica and all(stem_found(s, rubrica, head=(i == 0)) for i, s in enumerate(stems)):
+            found.append(label)
+    return found[0] if len(found) == 1 else ""
 
 
 def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]:

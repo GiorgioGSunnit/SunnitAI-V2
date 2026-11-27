@@ -1831,18 +1831,7 @@ def _best_categoria_for_codice(
     )
 
 
-_STEM_SUFFIXES = ("zioni", "zione", "menti", "mento", "ali", "ale")
-
-
-def _stem_word(word: str) -> str:
-    """Strip a common Italian noun/adjective ending, only if the remaining stem is > 3 chars."""
-    for suffix in _STEM_SUFFIXES:
-        if word.endswith(suffix) and len(word) - len(suffix) > 3:
-            return word[: -len(suffix)]
-    stem = re.sub(r"[oaie]s?$", "", word)
-    if stem != word and len(stem) > 3:
-        return stem
-    return word
+from .italian_stem import STEM_SUFFIXES as _STEM_SUFFIXES, stem_word as _stem_word    # v79.19.5 (item 7): shared
 
 
 def _stem_text(s: str) -> str:

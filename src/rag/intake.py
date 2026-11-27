@@ -452,15 +452,53 @@ def quesiti(message: str) -> List[Tuple[int, str]]:
 _QUESTION_SPLIT_RE = re.compile(r"\?")
 # v79.6 (item 1): a request phrased as a question without «?» -- «chiedo se …», «vorrei sapere …», «quale … sia …»,
 # «è possibile …»
-_ASK_PHRASE_RE = re.compile(r"\b(?:chied(?:o|iamo)\s+(?:se|quale|quali|come|quando|di\s+sapere)|vorrei\s+sapere|vorremmo\s+"
-                            r"sapere|desidero\s+sapere|mi\s+(?:chiedo|domando)|(?:qual[ei]?|quale)\s+(?:[^.;]{0,80}?\s)?sia(?:no)?\b|"
-                            r"(?:^|[.;]\s*)è\s+possibile\b|\bse\s+sia\s+possibile)", re.IGNORECASE)
+# v79.19.5 (item 3, row 93): the first person's verbs beside «sapere» (capire, comprendere, conoscere, verificare); the
+# third person («Tizio chiede quali …», «intende sapere …», «desidera sapere …», «si rivolge al legale per sapere …»)
+_ASK_VERBS = r"(?:sapere|capire|comprendere|conoscere|verificare)"
+_ASK_WH = r"(?:se|qual[ei]|come|quando|dove|a\s+chi|contro\s+chi|(?:che\s+)?cosa|quant[oaie]|perch[ée]|in\s+che)"
+_ASK_PHRASE_RE = re.compile(
+    rf"\b(?:chied(?:o|iamo|e|ono)\s+(?:{_ASK_WH}|di\s+{_ASK_VERBS})|"
+    rf"(?:vorrei|vorremmo|vorrebbe|vorrebbero|desidero|desideriamo|desidera|desiderano|intendo|intendiamo|intende|"
+    rf"intendono|vuole|vogliono|vorrebbe)\s+{_ASK_VERBS}|"
+    rf"mi\s+(?:chiedo|domando)|si\s+(?:chiede|chiedono|domanda|domandano)\s+{_ASK_WH}|"
+    rf"si\s+rivolg\w+\s+(?:al|all['’]|alla|allo|agli|a)\s*[^.;]{{0,40}}?\bper\s+{_ASK_VERBS}|"
+    r"(?:qual[ei]?|quale)\s+(?:[^.;]{0,80}?\s)?sia(?:no)?\b|"
+    r"(?:^|[.;]\s*)è\s+possibile\b|\bse\s+sia\s+possibile)", re.IGNORECASE)
+# v79.19.5 (item 3): a request listing its points («a chi rivolgermi, in che tempi e con quali costi») -- every point
+# opens on an interrogative (with or without its preposition): one question per point
+_POINT_MARK_RE = re.compile(r"^(?:(?:a|in|con|per|da|entro|verso|contro|presso|su|di|ad)\s+)?(?:chi|che|cosa|quali?|"
+                            r"quant[oaie]|come|quando|dove|perch[ée]|se)\b", re.IGNORECASE)
+_POINT_SPLIT_RE = re.compile(r"\s*,\s*|\s+ed?\s+|\s*;\s*", re.IGNORECASE)
+
+
+def split_points(question: str) -> List[str]:
+    """v79.19.5 (item 3): the questions a request lists as points -- after its asking phrase (_ASK_PHRASE_RE) or its
+    task verb (_task_head), the remainder split at «,», «e» / «ed» and «;»; two points or more, every one opening on an
+    interrogative (_POINT_MARK_RE) -> each point a question of its own (a «?» kept on each); else [question]."""
+    text = _flat(question).strip()
+    mark = "?" if text.endswith("?") else ""
+    body = text.rstrip(" .?;")
+    m = _ASK_PHRASE_RE.search(body)
+    if m:
+        rest = body[m.end():]
+    else:
+        head = _task_head(body)
+        rest = body[head.end(1):] if head else body
+    points = [p.strip() for p in _POINT_SPLIT_RE.split(rest.strip()) if p.strip()]
+    if len(points) < 2 or not all(_POINT_MARK_RE.match(p) and len(p.split()) >= 2 for p in points):
+        return [text]
+    return [p + mark for p in points]
 
 
 def questions(message: str) -> List[str]:
     """v79.6 (item 1): every explicit question of the request, in order -- a sentence ending in «?», or one phrased as
     a request («chiedo se …», «vorrei sapere …», «quale … sia …», «è possibile …») --, one or more. v79.10.2 (B2): a
-    question written as a task counts too (task_question: «Illustra …», «valuti …», «valutando se …», «indichi …»)."""
+    question written as a task counts too (task_question: «Illustra …», «valuti …», «valutando se …», «indichi …»).
+    v79.19.5 (item 3, row 93): the forms added -- the first person's other verbs («vorrei capire …»), the third person
+    («Tizio chiede quali …», «intende sapere …», «si rivolge al legale per sapere …»), the impersonal task («si
+    illustrino …», «si valuti …»), a task verb after a premise or an inserted clause («Il candidato, letta …, illustri
+    …»; «Letta …, il candidato illustri …»), a gerund attached to the asking sentence only («soffermandosi su …»);
+    a request listing its points split into one question per point (split_points)."""
     out: List[str] = []
     for sentence in sentences(message or ""):
         text = _flat(sentence).strip()
@@ -476,6 +514,7 @@ def questions(message: str) -> List[str]:
             task = task_question(text)
             if task:
                 out.append(task)
+    out = [p for q in out for p in split_points(q)]
     return list(dict.fromkeys(x[:QUESITO_CHARS] for x in out))
 
 
@@ -498,12 +537,21 @@ _TASK_IMPERATIVE = (r"(?:illustr[ai]|illustrate|valut[ai]|valutate|indic(?:a|hi|
                     r"propon(?:i|ga|ete)|espon(?:i|ga|ete)|(?:illustr|indic|elenc|precis)ami|(?:chiarisc|descriv|"
                     r"suggerisc|propon|espon)imi)")
 _TASK_INFINITIVE = rf"(?:{_TASK_STEMS})(?:are|ere|ire)\b"
+# v79.19.5 (item 3, row 93): the impersonal task («si illustrino», «si espongano», «si delinei», «si indichino», «si
+# valuti»): «si» and the subjunctive (-i, -ino, -ano; never the indicative «si verifica», a narrative's)
+_TASK_IMPERSONAL = (rf"si\s+(?:(?:{_TASK_STEMS})(?:h?ino|ano|h?i)|espongan?o|espon[gi]a|propongan?o|propon[gi]a|"
+                    r"consider(?:i|ino)|determin(?:i|ino)|accert(?:i|ino)|suggerisc(?:a|ano))\b")
+# v79.19.5 (item 3): a premise before the task («Letta la documentazione allegata, il candidato illustri …»; «Premesso
+# quanto sopra, si illustrino …») -- an absolute or participle clause up to its comma, by its opener
+_TASK_PREMISE = (r"(?:(?:premess\w*|lett[aeio]|esaminat[aeio]|considerat[aeio]|vist[aeio]|valutat[aeio]|assunt[aeio]|"
+                 r"acquisit[aeio]|ricevut[aeio]|accertat[aeio]|tenuto\s+conto|alla\s+luce|sulla\s+base|in\s+relazione|"
+                 r"con\s+riferimento|in\s+merito|ci[oò]\s+premesso|tanto\s+premesso|quanto\s+sopra)\b[^.;:,]{0,120}?,\s*)?")
 _TASK_HEAD_RE = re.compile(
-    r"^(?:(?:avv(?:ocat[oa])?\.?|collega|dottor[ea]?|dott\.(?:ssa)?)\s*,\s*)?"
+    rf"^{_TASK_PREMISE}(?:(?:avv(?:ocat[oa])?\.?|collega|dottor[ea]?|dott\.(?:ssa)?)\s*,\s*)?"
     r"(?:(?:e|ed|poi|quindi|inoltre|infine|ora|dunque|in\s+particolare|in\s+seguito|altresì)\s*,?\s+)?"
-    r"(?:(?:il|la)\s+candidat[oa]\s+(?:[^.;:]{0,120}?,\s*)?|(?:si\s+chiede|ti\s+chiedo|le\s+chiedo|vi\s+chiedo|"
+    r"(?:(?:il|la)\s+candidat[oa]\s*,?\s*(?:[^.;:]{0,120}?,\s*)?|(?:si\s+chiede|ti\s+chiedo|le\s+chiedo|vi\s+chiedo|"
     rf"la\s+prego|ti\s+prego|chiedo)\s+(?:al\s+candidat[oa]\s+)?di\s+(?={_TASK_INFINITIVE}))?"
-    rf"((?:(?:mi|ci)\s+)?(?:{_TASK_IMPERATIVE}\b|{_TASK_INFINITIVE}))", re.IGNORECASE)
+    rf"((?:(?:mi|ci)\s+)?(?:{_TASK_IMPERATIVE}\b|{_TASK_INFINITIVE}|{_TASK_IMPERSONAL}))", re.IGNORECASE)
 # v79.10.2 (B2, review): what follows a task verb -- its object (an article, «se», «quali» …), an adverb, a preposition;
 # «Verifica fiscale», «Determina dirigenziale n. 5» are nouns. A verb with a party or a document after it and «che»
 # («Precisa il cliente che …», «Indica la lettera che …») is the narrative's, its subject postposed.
@@ -539,8 +587,21 @@ def _task_head(clause: str) -> Optional["re.Match"]:
         if not _TASK_HEAD_RE.match(tail) and _FINITE_AUX_RE.search(tail):
             return None                                 # «Indicate le somme dovute, Alfa ha agito …»: a participle
     return m
-_TASK_GERUND_RE = re.compile(rf"\b((?:anche\s+)?(?:{_TASK_STEMS})(?:ando|endo)\b)", re.IGNORECASE)
+_TASK_GERUND_RE = re.compile(rf"\b((?:anche\s+)?(?:(?:{_TASK_STEMS}|sofferm)(?:ando|endo)(?:si)?|dando\s+conto))\b",
+                             re.IGNORECASE)      # v79.19.5 (item 3): «soffermandosi su …», «dando conto di …» too
 _PROGRESSIVE_RE = re.compile(r"\b(?:sto|stai|sta|stiamo|state|stanno|stava|stavano|stavo|stavamo)\s*$", re.IGNORECASE)
+# v79.19.5 (item 3): the sentence a gerund may hang on must itself ask -- a question mark, «parere», «il candidato», a
+# drafting verb in a finite or infinitive form (_DRAFT_RE), an asking phrase or a task head; never a narrative sentence
+# («Il giudice, valutando le prove, ha condannato Tizio»; «Tizio si reca dal notaio, indicando il prezzo»)
+_DRAFT_RE = re.compile(r"\b(?:redig[ai]|rediga(?:no)?|redigere|predispon[gi]a|predisponi|predisporre|prepar[ai]|"
+                       r"preparare|scriv[ai]|scrivere|stend[ai]|stendere|formul[ai]|formulare|elabor[ai]|elaborare|"
+                       r"rendere|renda|rendano)\b", re.IGNORECASE)
+
+
+def _asks(text: str) -> bool:
+    """v79.19.5 (item 3): the sentence (its gerund clause out) asks something itself."""
+    return bool("?" in text or re.search(r"\bparer\w*|\bil\s+candidat[oa]\b", text, re.IGNORECASE)
+                or _DRAFT_RE.search(text) or _ASK_PHRASE_RE.search(text) or _task_head(text.strip()))
 
 
 def task_question(sentence: str) -> str:
@@ -557,8 +618,8 @@ def task_question(sentence: str) -> str:
         rest = text[:m.start(1)] + text[m.end(1):]
         if _PROGRESSIVE_RE.search(before):          # «il giudice sta valutando»: a narrative, no question
             continue
-        if (m.start(1) == 0 or _ASK_MARK_RE.search(rest) or re.search(r"\bparer\w*", rest, re.IGNORECASE)) \
-                and len(text[m.start(1):].split()) >= 3:
+        # v79.19.5 (item 3): the gerund hangs on the asking sentence only (_asks), never on a narrative one
+        if (m.start(1) == 0 or _asks(rest)) and len(text[m.start(1):].split()) >= 3:
             return text[m.start(1):].rstrip(" .;").strip()
     return ""
 QUESTIONS_MIN = 2

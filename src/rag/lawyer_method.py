@@ -4046,10 +4046,14 @@ def candidates_block(cands: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, Dict[str, Any]]] = None,
+                  verdicts: Optional[Dict[str, Dict[str, str]]] = None) -> str:
     """The thesis call's SCHEDE. v79.14.3 (item 4): never a record the frame's binding excluded (excluded means
-    excluded: no scheda, no context); (item 1) a contested element's esito as the table prints it (esito_label)."""
+    excluded: no scheda, no context); (item 1) a contested element's esito as the table prints it (esito_label).
+    v79.19.5 (item 2, row 92): verdicts {label: {element id: esito in words}} -- the verified step's verdicts for the
+    lines' articles, printed in place of the record's esito for those elements (step_selection)."""
     lines = []
+    verdicts = verdicts or {}
     for label, rec in list((records or {}).items()) + list((circ or {}).items()):
         live = _live(rec)
         if not live or frame_excluded(rec):
@@ -4058,7 +4062,9 @@ def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, D
             str(rec.get("side") or ""), "circostanza" if rec.get("circumstance") else "")
         lines.append(f"- art. {label}" + (f" — {_plain(rec.get('rubrica'))}" if rec.get("rubrica") else "")
                      + (f" [{side}]" if side else ""))
-        lines += [f"  · [{r.get('id')}] {_short(r.get('text'), 140)}: {esito_label(r)}" for r in live]
+        mine = next((v for x, v in verdicts.items() if _same_label(x, label)), {})
+        lines += [f"  · [{r.get('id')}] {_short(r.get('text'), 140)}: {mine.get(str(r.get('id')), esito_label(r))}"
+                  for r in live]
     return "\n".join(lines)
 
 
@@ -4952,16 +4958,17 @@ def excluded_theses(sols: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def objections_material(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, sub: Optional[int],
-                        party: Optional[Dict[str, Any]] = None) -> str:
+                        party: Optional[Dict[str, Any]] = None, verdicts: Optional[Dict[str, Dict[str, str]]] = None
+                        ) -> str:
     """The objections call's material; v79.14.1 (item 6): the POSIZIONE is the objection_party's (the frame's client
-    and role under CASE_FRAME)."""
+    and role under CASE_FRAME). v79.19.5 (item 2): verdicts -- the step's esiti in the SCHEDE (records_block)."""
     a = ctx.get("assessment") or {}
     party = party or _party_of(ctx)
     where = posture_text({**(ctx.get("posture") or {}), "role": party.get("role") or ""}) if party.get("frame") else \
         ctx.get("posture_text")
     out = [f"CASO:\n{ctx.get('case') or ''}",
            f"POSIZIONE: {party.get('client') or ctx.get('client') or 'la parte assistita'}, {where or 'non indicata'}",
-           f"SCHEDE:\n{records_block(ctx.get('records') or {}, ctx.get('circumstances')) or '(nessuna)'}",
+           f"SCHEDE:\n{records_block(ctx.get('records') or {}, ctx.get('circumstances'), verdicts) or '(nessuna)'}",
            "VALUTAZIONE DAL REGISTRO: " + f"esito probabile {a.get('esito')}; grado di certezza {a.get('grado')}; "
            f"obiettivo realistico {a.get('obiettivo')} ({a.get('why')})",
            f"LINEA PRINCIPALE: {_line(sols[main])}",
@@ -5126,6 +5133,65 @@ def followup_scope(first: str, second: str, request: str, records_before: Option
     return out
 
 
+# v79.19.5 (item 2, row 92): §7 written for the line §1 prints -- the step's verdicts in the record's vocabulary
+STEP_STATUS = {"provato": PROVATO, "escluso": NON_RISULTA, "contestato": DA_PROVARE, "da_provare": DA_PROVARE}
+THESIS_STEP, THESIS_LEGACY = "step", "legacy"
+
+
+def step_selection(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """v79.19.5 (item 2, row 92): the objections' lines and statuses from the verified analysis step when it ran
+    (ctx["verified_analysis"]: analysis_step.view, status ok, a verified leading line) -- {"sols": [main thesis,
+    subordinate thesis], "main": 0, "sub": 1 | None, "known": {element id: {article, text, status, side}}, "verdicts":
+    {article: {element id: esito in words}}}. The lines: analysis_step.objection_lines (the leading and the subordinate
+    verified lines; for an accused with the first line's element proven, item 4's «Linea difensiva», else the
+    qualification / pena line). Each thesis: tesi the line as §1 prints it (analysis_step.line_text), «article»,
+    «contesta» the line article's elements the step holds contestato / da provare / escluso (a defence's), «poggia_su»
+    those it holds provato; argued «step». The statuses: every element of the lines' articles with the step's verdict
+    (STEP_STATUS: provato -> provato, escluso -> non risulta, contestato / da_provare -> da provare), by the record's
+    element id, laid over every record's elements (elements_by_id: the other records' statuses as before); the SCHEDE
+    print them (records_block) and the reply binding reads them (bind_replies): the «non negare un elemento integrato»
+    instruction works on the step's esiti. None when the step did not run, is not ok or has no verified line: the old
+    selection (selection), logged thesis_source «legacy»."""
+    from . import analysis_step, issue_records
+    v = ctx.get("verified_analysis") if isinstance(ctx.get("verified_analysis"), dict) else None
+    if not v or v.get("status") != analysis_step.OK:
+        return None
+    a = v.get("analysis") or {}
+    first, second = analysis_step.objection_lines(v)
+    lines = [x for x in (first, second) if x and x.get("stato") == analysis_step.VERIFIED and x.get("articolo")]
+    if not lines:
+        return None
+    side = a.get("side") or ""
+    # every record's elements as before (the reply binding checks them all), the step's statuses laid over the lines'
+    known: Dict[str, Dict[str, Any]] = elements_by_id(ctx.get("records") or {}, ctx.get("circumstances"))
+    verdicts: Dict[str, Dict[str, str]] = {}
+    records = ctx.get("records") or {}
+    for label, els in (a.get("elementi") or {}).items():
+        rec = next((r for x, r in records.items() if _same_label(x, label)), {}) or {}
+        for e in els or []:
+            eid = str(e.get("id") or e.get("eid") or "")
+            if not eid:
+                continue
+            esito = str(e.get("esito") or analysis_step.DA_PROVARE)
+            known[eid] = {"article": label, "text": _short(e.get("elemento"), 140),
+                          "status": STEP_STATUS.get(esito, DA_PROVARE), "side": rec.get("side") or ""}
+            if esito == analysis_step.CONTESTATO and e.get("parte_che_afferma"):
+                words = CONTESTED_ESITO.format(di_parte=issue_records.of_party(e["parte_che_afferma"]))
+            else:
+                words = ESITO.get(STEP_STATUS.get(esito, DA_PROVARE), esito)
+            verdicts.setdefault(label, {})[eid] = words
+    sols = []
+    for x in lines:
+        els = (a.get("elementi") or {}).get(x["articolo"]) or []
+        open_ids = [str(e.get("id") or e.get("eid")) for e in els if e.get("esito") in analysis_step.OPEN_ESITI]
+        sols.append({"tesi": analysis_step.line_text(x), "article": x["articolo"], "argued": THESIS_STEP,
+                     "contesta": open_ids if side == analysis_step.SIDE_DEFENCE else [],
+                     "poggia_su": [str(e.get("id") or e.get("eid")) for e in els
+                                   if e.get("esito") == analysis_step.PROVATO],
+                     "eid": x.get("eid"), "elemento_in_gioco": x.get("elemento_in_gioco")})
+    return {"sols": sols, "main": 0, "sub": 1 if len(sols) > 1 else None, "known": known, "verdicts": verdicts}
+
+
 def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Callable] = None,
                     review_call: Optional[Callable] = None) -> Dict[str, Any]:
     """v73: the objections written for the selected line -- one call after the selection (selection(): compose's own),
@@ -5141,13 +5207,24 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     sols, main, sub = selection(ctx, plan)
     if sols[main].get("placeholder"):   # v79.12.5 (item 2): no line to object to (no_claim, or the step-aside)
         return plan
+    # v79.19.5 (item 2, row 92): the verified step ran -- its lines are the thesis, its verdicts the statuses; the old
+    # selection keeps only the barred list (TESI ESCLUSE), a barred thesis on a step line's article left out
+    step = step_selection(ctx)
+    legacy_sols = sols
+    verdicts: Optional[Dict[str, Dict[str, str]]] = None
+    known = elements_by_id(ctx.get("records") or {}, ctx.get("circumstances"))
+    source = THESIS_LEGACY
+    if step is not None:
+        sols, main, sub = step["sols"], step["main"], step["sub"]
+        known, verdicts, source = step["known"], step["verdicts"], THESIS_STEP
     party = _party_of(ctx)              # v79.14.1 (item 6): the frame's client and role under CASE_FRAME
     who = OBJECTOR[party["side"]]       # v79 (E2): «l'accusa» in a criminal matter; the defence for a victim client
     system = OBJECTIONS_SYSTEM.format(who=who)
     # v79.14.1 (item 6): every element of the main record «da provare» -- the same call asks for ONE objection, on the
     # strongest element (strongest_open), grounded in the record's elements or the article, or none
     strong = strongest_open(ctx, sols, main)
-    material = objections_material(ctx, sols, main, sub, party)
+    material = objections_material(ctx, step_sols_with_excluded(sols, legacy_sols) if step else sols, main, sub, party,
+                                   verdicts)
     if strong:
         system = system.replace(OBJECTIONS_THREE.format(who=who), OBJECTIONS_ONE.format(who=who))
         material += "\n\n" + STRONGEST_LINE.format(id=strong["id"], el=strong["text"], art=strong["article"],
@@ -5172,13 +5249,13 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
         error = f"{type(exc).__name__}: {exc}"[:300]
         raw = {}
     got = clean_objections((raw or {}).get("obiezioni") if isinstance(raw, dict) else raw)
-    excluded = excluded_theses(sols)
+    excluded = excluded_theses(step_sols_with_excluded(sols, legacy_sols) if step else sols)
     kept, dropped = [], []
     for o in got:
         hit = next((t["tesi"] for t in excluded if same_line(o.get("risposta") or "", t["tesi"])), "")
         (dropped if hit else kept).append({**o, **({"argues": hit[:160]} if hit else {})})
-    replies = bind_replies(kept, sols[main], elements_by_id(ctx.get("records") or {}, ctx.get("circumstances")),
-                           review_call)                    # v75b: no reply negates past the main line's «contesta»
+    replies = bind_replies(kept, sols[main], known, review_call)     # v75b: no reply negates past the main line's
+    #                                       «contesta»; v79.19.5 (item 2): the step's statuses when the step ran
     causation_replies(ctx, kept)                            # v79.12.7 (item 5): the subjective element, not the nexus
     if strong:          # v79.14.1 (item 6): the model's first objection on the strongest element, alone; else none
         pick = next((o for o in kept if on_element(f"{o.get('obiezione') or ''} {o.get('risposta') or ''}", strong)),
@@ -5189,11 +5266,23 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     ctx.setdefault("timings", {})["objections_s"] = seconds
     entry = {"main": sols[main]["tesi"], "subordinate": sols[sub]["tesi"] if sub is not None else "",
              "barred": [t["tesi"] for t in excluded], "kept": len(kept), "dropped": dropped, "seconds": seconds,
-             "error": error, "reply_binding": replies, "all_open": dict(ctx.get("objection_all_open") or {})}
+             "error": error, "reply_binding": replies, "all_open": dict(ctx.get("objection_all_open") or {}),
+             "thesis_source": source}           # v79.19.5 (item 2): step | legacy
+    ctx["objections_thesis_source"] = source
     objections_log(ctx, messages, text, raw, entry)
     _log("objections", entry, seconds * 1000)
     return {**plan, "obiezioni": [{"obiezione": o["obiezione"], "risposta": o.get("risposta") or ""}
                                   for o in kept][:OBJECTIONS]}
+
+
+def step_sols_with_excluded(step_sols: Sequence[Dict[str, Any]], legacy_sols: Sequence[Dict[str, Any]]
+                            ) -> List[Dict[str, Any]]:
+    """v79.19.5 (item 2): the step's theses followed by the old selection's barred ones (TESI ESCLUSE) -- a barred
+    thesis naming a step line's article left out (it would bar the line §1 prints)."""
+    articles = [str(t.get("article") or "") for t in step_sols]
+    barred_ = [t for t in excluded_theses(legacy_sols)
+               if not any(a and _names_article(str(t.get("tesi") or ""), a) for a in articles)]
+    return list(step_sols) + barred_
 
 
 def causation_replies(ctx: Dict[str, Any], objections: List[Dict[str, Any]]) -> int:
@@ -6783,9 +6872,11 @@ def steps_from_selection(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], ma
     return steps[:STEPS_MAX]
 
 
-def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, Any]) -> List[Dict[str, str]]:
+def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, Any],
+                      known: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, str]]:
     """v72: objections from the selection, when the model's and the record's are fewer than three -- the main line's
-    own weak point, the counterparty against the main line, the integrated elements it will lean on."""
+    own weak point, the counterparty against the main line, the integrated elements it will lean on. v79.19.5 (item
+    2): known -- the step's statuses (step_selection) when the step ran; else the records'."""
     penal = criminal(ctx.get("posture"))                          # v79 (E2)
     who = "L'accusa" if penal else "La controparte"
     m = sols[main]
@@ -6794,8 +6885,8 @@ def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, 
         out.append({"obiezione": m["contro"], "risposta": m.get("argomento") or m.get("pro") or ""})
     out.append({"obiezione": f"{who} contesterà la linea principale: {m['tesi'].rstrip('.')}",
                 "risposta": m.get("argomento") or m.get("pro") or ""})
-    integrated = [x for x, e in elements_by_id(ctx.get("records") or {}).items() if e["status"] == PROVATO
-                  and e.get("side") == "threat"]
+    known = known if known is not None else elements_by_id(ctx.get("records") or {})
+    integrated = [x for x, e in known.items() if e["status"] == PROVATO and e.get("side") == "threat"]
     if integrated:
         out.append({"obiezione": f"{who} sosterrà che gli elementi integrati ({', '.join(integrated)}) bastano",
                     "risposta": "La difesa non li nega: la discussione si sposta sulla linea scelta e sulla misura "
@@ -7287,7 +7378,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     ctx["objections_fallback_legacy"] = 0
     if verified is not None and not kind and not strong and not verified_objections and not plan.get("obiezioni"):
         try:
-            legacy = list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
+            step = step_selection(ctx)          # v79.19.5 (item 2): the fallback too argues the line §1 prints
+            legacy = list(ctx.get("objections_fallback") or []) + (
+                thesis_objections(step["sols"], step["main"], ctx, step["known"]) if step
+                else thesis_objections(sols, main, ctx))
         except Exception as exc:          # noqa: BLE001 -- the legacy path failing leaves §7 the record's objections
             _log("objections_fallback_legacy_failed", {"error": f"{type(exc).__name__}: {exc}"[:200]})
             legacy = list(ctx.get("objections_fallback") or [])

@@ -571,7 +571,8 @@ def _role_hits(text: Any, entries: Sequence[Any]) -> List[str]:
     return [str(x) for x in entries or [] if words(x) and f" {words(x)} " in low]
 
 
-def client_side(frame: Optional[Dict[str, Any]], client: str = "") -> Tuple[str, str]:
+def client_side(frame: Optional[Dict[str, Any]], client: str = "", client_roles: Sequence[str] = ()
+                ) -> Tuple[str, str]:
     """v79.15.3 (item 2): (the client's side, why) from the VERIFIED frame only -- SIDE_CLAIMANT, SIDE_DEFENCE or
     SIDE_NEUTRAL (data «claimant», whole words, accent- and case-folded):
       1. the verified ruolo (valore and intake: «imputato/indagato» read as both words): a word of «claimant.roles»
@@ -581,7 +582,10 @@ def client_side(frame: Optional[Dict[str, Any]], client: str = "") -> Tuple[str,
          (case_frame voids an ungrounded one): only claimant words -> claimant, only defence words -> defence;
          «claimant.worker» words (lavoratore) are a claimant's only when the claim is the worker's: the verified rito
          one of «worker.riti» (lavoro) and the frame verifying an addebito_o_domanda (articolo or descrizione);
-      3. else (no verified role, no side word, or both sides' words) -> neutral («why» empty).
+      3. v79.19.5 (item 1, row 91): else the posture's role words (client_roles: interactive_flow.client_roles -- the
+         intake's and the posture's role, the parties' words for the client), the same two lists: only defence words
+         -> defence, only claimant words -> claimant («why»: «client_roles: <word>»);
+      4. else (no verified role, no side word anywhere, or both sides' words) -> neutral («why» empty).
     79.15.1's claimant() read «roles» (attore, ricorrente) on the ruolo only and «party_words» on the party only
     after no defendant ruolo; the brief's sets now read on both."""
     f = frame if isinstance(frame, dict) else {}
@@ -614,6 +618,12 @@ def client_side(frame: Optional[Dict[str, Any]], client: str = "") -> Tuple[str,
         return SIDE_CLAIMANT, f"ruolo_nel_fatto: {ups[0]}"
     if downs and not ups:
         return SIDE_DEFENCE, f"ruolo_nel_fatto: {downs[0]}"
+    said = " ".join(str(r or "") for r in client_roles or [])      # v79.19.5 (item 1): the posture's role words
+    ups, downs = _role_hits(said, pro), _role_hits(said, contra)
+    if downs and not ups:
+        return SIDE_DEFENCE, f"client_roles: {downs[0]}"
+    if ups and not downs:
+        return SIDE_CLAIMANT, f"client_roles: {ups[0]}"
     return SIDE_NEUTRAL, ""
 
 
@@ -695,10 +705,12 @@ def make_input(frame: Optional[Dict[str, Any]], norms: Sequence[Dict[str, Any]],
              for s in sentences or [] if isinstance(s, dict) and s.get("id") and _flat(s.get("text"))
              and s.get("source") != "sistema"]
     client = _flat(client or (f.get("cliente") or {}).get("nome"))
-    side, side_why = client_side(f, client)         # v79.15.3 (item 2): the verified side; «claimant» its claimant
+    roles = [str(r) for r in client_roles or [] if str(r or "").strip()]
+    side, side_why = client_side(f, client, roles)  # v79.15.3 (item 2): the verified side; v79.19.5 (item 1): else the
+    #                                                 posture's role words; «claimant» its claimant
     return {"frame": f, "norms": out_norms, "sentences": sents, "questions": [_flat(q) for q in questions or [] if
                                                                               _flat(q)],
-            "client": client, "client_roles": [str(r) for r in client_roles or [] if str(r or "").strip()],
+            "client": client, "client_roles": roles,
             "charge": charge, "charge_hypothesis": charge_hyp, "contractual": contractual,
             "claimant": side == SIDE_CLAIMANT,
             "side": side, "side_why": side_why, "issues": named_issues(f, older_issues)}
@@ -741,7 +753,13 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
         roles = []
     out = make_input(frame, norms, sents, questions, client, roles, older_issues(state, sents))
     # v79.19.4 (rule 2): the live records (not dropped) with their grade, for the accounting after the step; the aliases
-    out["graded"] = [{"article": str(label), "grade": rec.get("grade")}
+    # v79.19.5 (item 5): with the rubrica and the live elements (issue_records.element_status) for the general-part section
+    from . import issue_records
+    out["graded"] = [{"article": str(label), "grade": rec.get("grade"), "rubrica": _flat(rec.get("rubrica")),
+                      "elements": [{"id": str(r.get("id") or ""), "text": _flat(r.get("text")),
+                                    "status": str(r.get("status") or ""), "contested": bool(r.get("contested_by"))}
+                                   for r in rec.get("requisites") or [] if isinstance(r, dict)
+                                   and issue_records.element_status(rec, r) != issue_records.NOT_RELEVANT]}
                      for label, rec in (state.get("records") or {}).items()
                      if isinstance(rec, dict) and not rec.get("dropped")]
     out["aliases"] = {str(k): str(v) for k, v in (state.get("charge_aliases") or {}).items()}
@@ -1698,9 +1716,24 @@ def code_tesi(line: Optional[Dict[str, Any]], elements: Dict[str, List[Dict[str,
     own = lambda xs: [i for i in xs or [] if i in texts and not reported_by(m["sents"][i], inp)]  # noqa: E731
     fatti = _quoted(own(e.get("cita_fatti")), texts) or _quoted(own(line.get("cita_fatti")), texts) or \
         str(cfg.get("nessun_fatto") or LABEL_NO_FACT)
-    template = str(((cfg.get(side) or cfg.get(SIDE_NEUTRAL) or {}).get(esito)) or "«{elemento}»")
+    key = side
+    if side == SIDE_DEFENCE and not penal_frame(inp.get("frame"), line["articolo"]) and cfg.get("difesa_civile"):
+        key = "difesa_civile"       # v79.19.5 (item 1, row 91): a civil or labour defence -- the party's name, never «L'accusa»
+    template = str(((cfg.get(key) or cfg.get(side) or cfg.get(SIDE_NEUTRAL) or {}).get(esito)) or "«{elemento}»")
     return {**line, "tesi_modello": line.get("tesi") or "", "tesi_codice": True, "esito_in_gioco": esito,
-            "tesi": template.format(elemento=line.get("elemento_in_gioco") or "", art=line["articolo"], fatti=fatti)}
+            "tesi_fatti": fatti,        # v79.19.5 (item 4): the facts as printed, for the «Tesi dell'accusa» rendering
+            "tesi": template.format(elemento=line.get("elemento_in_gioco") or "", art=line["articolo"], fatti=fatti,
+                                    controparte=counterparty_name(inp))}
+
+
+def counterparty_name(inp: Dict[str, Any]) -> str:
+    """v79.19.5 (item 1): the first verified party the frame lists as controparte (frame.parti, lato «controparte»);
+    none: data «rendering.tesi.controparte_default» («la controparte»)."""
+    f = inp.get("frame") if isinstance(inp.get("frame"), dict) else {}
+    for p in f.get("parti") or []:
+        if isinstance(p, dict) and p.get("lato") == "controparte" and _flat(p.get("nome")):
+            return _flat(p["nome"])
+    return str((rendering().get("tesi") or {}).get("controparte_default") or "la controparte")
 
 
 def finish(checked: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
@@ -2002,16 +2035,180 @@ def view(result: Optional[Dict[str, Any]], inp: Optional[Dict[str, Any]]) -> Dic
         analysis = {"linea_principale": fitted_fallback(inp) or undetermined_line(), "linea_subordinata": None,
                     "elementi": {},
                     "affermazioni_di_diritto": [], "rimedi": [n["article"] for n in inp.get("norms") or []
-                                                              if n.get("remedy")]}
-    return {"status": result.get("status") or NO_INPUT, "analysis": analysis,
-            "sentences": {s["id"]: s["text"] for s in inp.get("sentences") or []},
-            "rubriche": {n["article"]: n.get("rubrica") or "" for n in inp.get("norms") or []},
-            "remedies": list(analysis.get("rimedi") or []),
-            "statements": list(analysis.get("affermazioni_di_diritto") or [])}
+                                                              if n.get("remedy")],
+                    "side": inp.get("side") or SIDE_NEUTRAL, "claimant": bool(inp.get("claimant"))}   # v79.19.5 (5)
+    v = {"status": result.get("status") or NO_INPUT, "analysis": analysis,
+         "sentences": {s["id"]: s["text"] for s in inp.get("sentences") or []},
+         "rubriche": {n["article"]: n.get("rubrica") or "" for n in inp.get("norms") or []},
+         "remedies": list(analysis.get("rimedi") or []),
+         "statements": list(analysis.get("affermazioni_di_diritto") or [])}
+    v["relabel"] = defence_relabel(v)                       # v79.19.5 (item 4, row 90): an accused's labels
+    if v["relabel"].get("applied"):
+        r = v["relabel"]
+        _log("analysis_defence_relabel", {"line": (r.get("accusa") or {}).get("articolo"),
+                                          "element": (r.get("accusa") or {}).get("elemento_in_gioco"),
+                                          "esito": (r.get("accusa") or {}).get("esito_in_gioco"),
+                                          "difesa": (r.get("difesa") or {}).get("articolo"),
+                                          "nessun_elemento": bool(r.get("nessun_elemento"))})
+    v["general_part"] = general_part_section(v, inp)        # v79.19.5 (item 5, row 94a): the records, never a line
+    if v["general_part"].get("records"):
+        _log("analysis_general_part_section", {"count": len(v["general_part"]["records"]),
+                                               "articles": [x["article"] for x in v["general_part"]["records"]],
+                                               "title": v["general_part"].get("title")})
+    return v
+
+
+# --- v79.19.5 (item 4, row 90): an accused's proven element is not «Linea principale» ------------------------------------
+FIXED_LINE = "frase_fissa"          # the pseudo-line's «stato»: the one fixed sentence when every element is proven
+OPEN_ESITI = (CONTESTATO, DA_PROVARE, ESCLUSO)
+
+
+def defence_cfg() -> Dict[str, Any]:
+    return rendering().get("difesa") or {}
+
+
+def defence_relabel(v: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.19.5 (item 4, row 90): the labels of an accused's lines -- {"applied", "accusa", "difesa", "nessun_elemento",
+    "subordinata"}. Applied when the analysis's side is «difesa» and its first line is verified with its element in
+    play «provato» (esito_in_gioco): that line is the prosecution's case («Tesi dell'accusa», its tesi re-rendered with
+    data «rendering.difesa.accusa_tesi» from the line's element and tesi_fatti); «Linea difensiva» is the first verified
+    line whose element in play is contestato / da_provare / escluso (the subordinate, today); none: «nessun_elemento»
+    (the one fixed sentence), and the subordinate line follows under «subordinata». Which lines exist and their order
+    are unchanged; {"applied": False} otherwise."""
+    a = v.get("analysis") or {}
+    first, second = a.get("linea_principale"), a.get("linea_subordinata")
+    if a.get("side") != SIDE_DEFENCE or not first or first.get("stato") != VERIFIED or \
+            first.get("esito_in_gioco") != PROVATO:
+        return {"applied": False}
+    cfg = defence_cfg()
+    template = str(cfg.get("accusa_tesi") or "l'elemento «{elemento}» risulta provato da {fatti}")
+    accusa = {**first, "tesi": template.format(elemento=first.get("elemento_in_gioco") or "",
+                                               fatti=first.get("tesi_fatti") or LABEL_NO_FACT)}
+    difesa = second if second and second.get("stato") == VERIFIED and second.get("esito_in_gioco") in OPEN_ESITI \
+        else None
+    out = {"applied": True, "accusa": accusa, "difesa": difesa, "nessun_elemento": difesa is None, "subordinata": None}
+    if difesa is None:
+        out["nessun_elemento_line"] = {"articolo": None, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
+                                       "tesi": str(cfg.get("nessun_elemento") or ""), "cita_fatti": [],
+                                       "cita_norma": [], "stato": FIXED_LINE}
+        out["subordinata"] = second
+    return out
+
+
+def objection_lines(v: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """v79.19.5 (items 2, 4): (the line §7 argues, the other) -- the verified leading and subordinate lines; with the
+    defence relabel applied, the «Linea difensiva» when one exists, else the subordinate (the qualification / pena
+    line) with the accusa line as the other; the accusa line alone when nothing else exists."""
+    a = v.get("analysis") or {}
+    r = v.get("relabel") or defence_relabel(v)
+    if r.get("applied"):
+        if r.get("difesa"):
+            return r["difesa"], r["accusa"]
+        if r.get("subordinata"):
+            return r["subordinata"], r["accusa"]
+        return r["accusa"], None
+    return a.get("linea_principale"), a.get("linea_subordinata")
+
+
+# --- v79.19.5 (item 5, row 94a): the general-part defences the facts raise, printed as records, never a line ---------------
+
+def general_part_cfg() -> Dict[str, Any]:
+    return rendering().get("parte_generale") or {}
+
+
+def _record_esito(e: Dict[str, Any]) -> str:
+    """A record element's esito in the step's words: «provato», «escluso» (non risulta), «contestato», «da provare»."""
+    if e.get("contested"):
+        return ESITO_LABELS[CONTESTATO]
+    status = str(e.get("status") or "")
+    if status == "provato":
+        return ESITO_LABELS[PROVATO]
+    if status == "non risulta":
+        return ESITO_LABELS[ESCLUSO]
+    return ESITO_LABELS[DA_PROVARE]
+
+
+def general_part_section(v: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.19.5 (item 5, row 94a): {"title", "side", "records": [{article, rubrica, grade, elements: [{text, esito}]}]}
+    -- the live records (inp «graded», analysis_step.inputs: not dropped) graded 2 or more that are no line article:
+    for the «difesa» side those whose article is a c.p. article of the remedy / general-part set (is_remedy) or one of
+    data «parte_generale.difese» (41, 52, 55, 56, 62, 62-bis c.p.), under «titolo_difesa»; for the «attore» side with
+    the frame contractual and no verified line on a claim article (every verified line's article a remedy, or none),
+    those of «parte_generale.rimedi» (c.c.), under «titolo_attore». Print only: no gate, no retrieval, no grading
+    touched. Empty records: nothing printed."""
+    a = v.get("analysis") or {}
+    cfg = general_part_cfg()
+    side = a.get("side") or SIDE_NEUTRAL
+    lines = [x for x in (a.get("linea_principale"), a.get("linea_subordinata")) if x and x.get("articolo")]
+    contractual = bool(inp.get("contractual"))
+    if side == SIDE_DEFENCE:
+        wanted = {(_in_num(x), "cp") for x in cfg.get("difese") or []}
+        title, code = str(cfg.get("titolo_difesa") or ""), "cp"
+    elif side == SIDE_CLAIMANT and contractual and not any(
+            x.get("stato") == VERIFIED and not is_remedy(x["articolo"], contractual) for x in lines):
+        wanted = {(_in_num(x), "cc") for x in cfg.get("rimedi") or []}
+        title, code = str(cfg.get("titolo_attore") or ""), "cc"
+    else:
+        return {"title": "", "side": side, "records": []}
+    out = []
+    for rec in inp.get("graded") or []:
+        label = str(rec.get("article") or "")
+        try:
+            grade = int(rec.get("grade") or 0)
+        except (TypeError, ValueError):
+            grade = 0
+        if grade < 2 or not label or any(same_article(label, x["articolo"]) for x in lines):
+            continue
+        num, c = art_parts(label)
+        if c != code:
+            continue
+        if not ((num, c) in wanted or (code == "cp" and is_remedy(label))):
+            continue
+        out.append({"article": label, "rubrica": _flat(rec.get("rubrica")), "grade": grade,
+                    "elements": [{"text": _flat(e.get("text")), "esito": _record_esito(e)}
+                                 for e in rec.get("elements") or [] if _flat(e.get("text"))]})
+    return {"title": title, "side": side, "records": out}
+
+
+def _in_num(x: Any) -> str:
+    return art_parts(f"{x} x")[0] or str(x)
+
+
+def general_part_text(v: Dict[str, Any]) -> str:
+    """The section as printed: the title in bold, one line per record («art. X — rubrica: «elemento» (esito); …»);
+    "" when there is nothing to print."""
+    g = v.get("general_part") or {}
+    cfg = general_part_cfg()
+    if not g.get("records"):
+        return ""
+    rows = [f"**{g.get('title') or ''}**"]
+    for r in g["records"]:
+        els = str(cfg.get("elementi_sep") or "; ").join(
+            str(cfg.get("elemento") or "«{testo}» ({esito})").format(testo=e["text"], esito=e["esito"])
+            for e in r.get("elements") or []) or str(cfg.get("nessun_elemento") or LABEL_NO_FACT)
+        rubrica = str(cfg.get("rubrica") or " — {rubrica}").format(rubrica=_stop(r["rubrica"])) if r.get("rubrica") \
+            else ""
+        rows.append("- " + str(cfg.get("record") or "art. {art}{rubrica}: {elementi}").format(
+            art=r["article"], rubrica=rubrica, elementi=els) + ".")
+    return "\n".join(rows)
 
 
 def _lines(v: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    """The labelled lines §1, §6 and §9 print. v79.19.5 (item 4, row 90): with the defence relabel applied (an accused,
+    the first line's element proven) -- «Tesi dell'accusa» the first line, «Linea difensiva» the open line, or the
+    fixed sentence and then the subordinate line; the same lines, the same order."""
     a = v.get("analysis") or {}
+    r = v.get("relabel") or defence_relabel(v)
+    if r.get("applied"):
+        cfg = defence_cfg()
+        out = [(str(cfg.get("accusa") or "Tesi dell'accusa"), r["accusa"])]
+        if r.get("difesa"):
+            out.append((str(cfg.get("difesa") or "Linea difensiva"), r["difesa"]))
+        else:
+            out.append((str(cfg.get("difesa") or "Linea difensiva"), r["nessun_elemento_line"]))
+            if r.get("subordinata"):
+                out.append((str(cfg.get("subordinata") or LABEL_SUB), r["subordinata"]))
+        return out
     out = [(LABEL_MAIN, a.get("linea_principale") or undetermined_line())]
     if a.get("linea_subordinata"):
         out.append((LABEL_SUB, a["linea_subordinata"]))
@@ -2029,6 +2226,8 @@ def line_text(line: Optional[Dict[str, Any]]) -> str:
     v79.15.3 (item 1): a verified line's tesi is the code's (code_tesi), which names the element itself -- «art. X —
     <tesi>», the «(elemento in gioco: …)» label no longer repeated after it."""
     x = line or undetermined_line()
+    if x.get("stato") == FIXED_LINE:            # v79.19.5 (item 4): the one fixed sentence, no article
+        return _stop(x.get("tesi"))
     if x.get("stato") == UNDETERMINED or not x.get("articolo"):
         return f"{LINE_UNDETERMINED} ({LINE_UNVERIFIED_LABEL})"
     if x.get("stato") == FRAME_LINE:
@@ -2129,9 +2328,12 @@ def solutions_text(v: Dict[str, Any]) -> str:
         elif x.get("stato") == VERIFIED:
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | {_cell(x.get('elemento_in_gioco'))} | "
                         f"{_cell(_stop(x.get('tesi')))} | {_cell(_facts_cell(x.get('cita_fatti'), v))} |")
+        elif x.get("stato") == FIXED_LINE:          # v79.19.5 (item 4): the fixed sentence
+            rows.append(f"| {label} | — | — | {_cell(_stop(x.get('tesi')))} | — |")
         else:
             rows.append(f"| {label} | {_cell(line_text(x))} | — | — | — |")
-    return "\n".join(rows)
+    section = general_part_text(v)          # v79.19.5 (item 5): after the lines, the general-part defences as records
+    return "\n".join(rows) + (f"\n\n{section}" if section else "")
 
 
 def conclusions_text(v: Dict[str, Any]) -> str:

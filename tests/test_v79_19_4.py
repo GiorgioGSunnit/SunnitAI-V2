@@ -188,7 +188,8 @@ def test_inputs_carry_the_live_records_and_the_aliases(monkeypatch):
     state = {"records": {"1385 c.c.": {"grade": 3}, "1453 c.c.": {"grade": 2, "dropped": True}, "2043 c.c.": {"grade": 1}},
              "rows": [], "sentences": [], "charge_aliases": {"73 d.P.R. 309/1990": "73 Testo Unico"}}
     inp = A.inputs(state)
-    assert inp["graded"] == [{"article": "1385 c.c.", "grade": 3}, {"article": "2043 c.c.", "grade": 1}]
+    assert [(g["article"], g["grade"]) for g in inp["graded"]] == [("1385 c.c.", 3), ("2043 c.c.", 1)]
+    assert all(g["rubrica"] == "" and g["elements"] == [] for g in inp["graded"])    # v79.19.5 (item 5): carried too
     assert inp["aliases"] == {"73 d.P.R. 309/1990": "73 Testo Unico"}
     assert A.account_records({"status": A.FAILED, "rejected": []}, inp) == (
         [{"kind": "record", "articolo": "1385 c.c.", "why": "step_silent", "grade": 3, "rank": 1}], 1)

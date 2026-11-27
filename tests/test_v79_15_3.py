@@ -104,7 +104,9 @@ def test_a_provato_tesi_cites_only_the_sentences_no_other_party_asserts():
 def test_with_no_verified_role_the_neutral_wording():
     frame = {k: v for k, v in T.PENAL_FRAME.items() if k != "ruolo"}
     frame["parti"] = [{"nome": "Paolo Sarti", "ruolo_nel_fatto": "venditore", "lato": "cliente"}]
-    inp = T._penal(frame=frame)
+    # v79.19.5 (item 1): with no verified role the posture's role words decide -- neutral only when those are empty too
+    inp = A.make_input(frame, T.PENAL_NORMS, T._sents(T.PENAL_SENTENCES, sistema=(9,)), frame.get("quesiti") or [],
+                       client="Paolo Sarti", client_roles=[])
     assert inp["side"] == A.SIDE_NEUTRAL and not inp["claimant"]
     for esito, cf_, want in (("da_provare", (), "«con artifizi o raggiri» è da provare"),
                              ("escluso", ("S5",), "«con artifizi o raggiri» è escluso: «Paolo Sarti nega di aver mai "
@@ -245,7 +247,9 @@ def test_the_input_carries_the_side_and_the_model_call_is_unchanged():
     assert inp["side"] == A.SIDE_CLAIMANT and inp["claimant"] and inp["side_why"] == "ruolo_nel_fatto: committente"
     reask = A.reask_messages([], "", ["x"], inp)[-1].content
     assert A.config()["reask_claimant"] in reask                   # the claimant's existing re-ask rule, no new one
-    neutral = T._penal(frame={k: v for k, v in T.PENAL_FRAME.items() if k not in ("ruolo", "parti")})
+    bare = {k: v for k, v in T.PENAL_FRAME.items() if k not in ("ruolo", "parti")}
+    neutral = A.make_input(bare, T.PENAL_NORMS, T._sents(T.PENAL_SENTENCES, sistema=(9,)), [], client="Paolo Sarti",
+                           client_roles=[])          # v79.19.5 (item 1): no role words either -> neutral
     assert neutral["side"] == A.SIDE_NEUTRAL and not neutral["claimant"]
     assert A.config()["reask_claimant"] not in A.reask_messages([], "", ["x"], neutral)[-1].content
 
@@ -429,16 +433,18 @@ def test_review_the_plural_roles_read_their_side(role, side):
 
 
 def test_review_role_words_outside_the_verified_frame_are_no_side():
-    """The brief: claimant detection from the frame's verified role, unverified -> neither. The pipeline's role words
-    (inp client_roles: intake, posture, extracted parties) are not the verified frame: a voided ruolo_nel_fatto with
-    «committente» only there stays neither."""
+    """79.15.3's brief: claimant detection from the frame's verified role, unverified -> neither. v79.19.5 (item 1,
+    row 91) reverses the last step: when the frame verifies no role, the pipeline's role words (inp client_roles:
+    intake, posture, extracted parties) decide with the same two lists -- a voided ruolo_nel_fatto with «committente»
+    in client_roles is the claimant, side_why «client_roles: committente»."""
     inp = A.make_input({"cliente": {"nome": "Marta Galli"},
                         "parti": [{"nome": "Marta Galli", "lato": "cliente", "ruolo_nel_fatto": ""},
                                   {"nome": "Edilnova S.r.l.", "lato": "controparte", "ruolo_nel_fatto": "appaltatore"}],
                         "rito": {"valore": "civile", "intake": "civile"}},
                        [], [{"id": "S1", "text": "Marta Galli ha commissionato i lavori."}], [], "Marta Galli",
                        ["committente"])
-    assert inp["side"] == A.SIDE_NEUTRAL and inp["claimant"] is False
+    assert inp["side"] == A.SIDE_CLAIMANT and inp["claimant"] is True
+    assert inp["side_why"] == "client_roles: committente"
 
 
 # --- the fixtures end to end ------------------------------------------------------------------------------------------
