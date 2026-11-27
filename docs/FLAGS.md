@@ -553,6 +553,10 @@ The 21 special-law documents ingested in the be2 graph on 27 Nov 2026 registered
 
 Not carried: no data file on this branch holds `rito_families`. Assumptions to confirm on the server by the documents' first articles: «Riti Civili Semplificati 2026» is d.lgs. 150/2011, «Depenalizzazione e Sanzioni Amministrative 2026» is L. 689/1981, «Misure Urgenti Sicurezza Pubblica e Stalking 2026» is d.l. 11/2009 (conv. L. 38/2009). The bare alias «statuto» is left out (statuto sociale); «statuto dei lavoratori» and «statuto lavoratori» are in. The cards and schemas job for the 21 documents (`scripts/article_cards_bulk.py`) is printed in the 79.19.6 report, not run.
 
+## 5o. v79.19.7 addition (branch v79.19; a script option, no new environment variable)
+
+`scripts/article_cards_bulk.py --docs-only` (with one or more `--doc`): the order groups (a) the top articles of the runs and (b) the four codes are skipped -- the `--doc` documents alone are read and ordered, in the cards pass and in the `--schemas` pass (`card_items`, `schema_items`, `order_refs` take `docs_only`); no code document is read and no run is counted; the dry run reports those documents only («N articles: only the K --doc documents (--docs-only); …»). Without the flag nothing changes. `--docs-only` without `--doc` is a usage error.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

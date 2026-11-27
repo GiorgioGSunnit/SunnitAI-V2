@@ -4,9 +4,12 @@
     nohup venv/bin/python scripts/article_cards_bulk.py --doc "Codice del Consumo 2026" --max-per-hour 600 \
         > article_cards_bulk.log 2>&1 &
     venv/bin/python scripts/article_cards_bulk.py --sample 40                              # N cards by code, for review
+    venv/bin/python scripts/article_cards_bulk.py --docs-only --doc "Codice Rosso 2026" --dry-run   # v79.19.7: those only
 
 ORDER    (a) the --top (500) articles most often in the pools and plans of diagnose_long_runs/*/cases/*.json; (b) every
          article of c.c., c.p., c.p.c., c.p.p. (each code's primary document with most headed Sections); (c) each --doc.
+         v79.19.7: --docs-only (with --doc) skips (a) and (b) -- the --doc documents alone are read and ordered, in the
+         cards pass and in the --schemas pass; the dry run reports those documents only.
 RUNNING  --concurrency parallel calls (6), at most --max-per-hour started. Stop it at any time: each card is appended as it
          is made, and the next run goes on. A card is made again only when its text_hash changes, or if it failed (--force:
          all). A text that is only "(abrogato)" gets no card.
@@ -107,14 +110,26 @@ def frequency(paths: list) -> Counter:
     return counts
 
 
-def order_refs(top: list, codes: dict, specials: dict) -> list:
-    """[(doc, number)]: the top ones, then the codes', then the --doc ones, each once."""
+def order_refs(top: list, codes: dict, specials: dict, docs_only: bool = False) -> list:
+    """[(doc, number)]: the top ones, then the codes', then the --doc ones, each once. v79.19.7: docs_only -- the --doc
+    ones alone (groups (a) and (b) skipped)."""
     seen, out = set(), []
-    for doc, number in list(top) + [(d, n) for group in (codes, specials) for d, numbers in group.items() for n in numbers]:
+    first = [] if docs_only else list(top) + [(d, n) for d, numbers in codes.items() for n in numbers]
+    for doc, number in first + [(d, n) for d, numbers in specials.items() for n in numbers]:
         if (doc, number) not in seen:
             seen.add((doc, number))
             out.append((doc, number))
     return out
+
+
+def card_items(top: list, documents: dict, code_docs: list, specials: list, docs_only: bool = False) -> tuple:
+    """v79.19.7: (items [(doc, article)], bare) -- the cards' order (order_refs) over the documents read: the top ones,
+    the codes' (code_docs) by number, the --doc ones (specials) by number; docs_only: the --doc ones alone. "bare" the
+    articles whose text is only "(abrogato)" (no card), left out of items."""
+    codes = {doc: sorted(documents[doc], key=number_key) for doc in code_docs if doc in documents}
+    extra = {doc: sorted(documents[doc], key=number_key) for doc in specials}
+    every = [(doc, documents[doc][number]) for doc, number in order_refs(top, codes, extra, docs_only)]
+    return [x for x in every if has_body(x[1])], [x for x in every if not has_body(x[1])]
 
 
 def number_key(number: str) -> tuple:
@@ -625,14 +640,14 @@ def schema_summary(lines: list, coverage: dict) -> list:
     return L
 
 
-def schema_items(cards: list, documents: dict, code_docs: list, specials: list = ()) -> tuple:
+def schema_items(cards: list, documents: dict, code_docs: list, specials: list = (), docs_only: bool = False) -> tuple:
     """v79.11: (items [(doc, article)], bare, carded) -- the order of --schemas: (a) the cards file's articles in its
     order (those still in their document), (b) the codes' documents by number, (c) the --doc ones; each once; "bare" the
-    ones whose text is only "(abrogato)" (no schema), left out of items."""
-    carded = [(d, str(n).lower()) for d, n in cards if str(n).lower() in documents.get(d, {})]
-    codes = {doc: sorted(documents[doc], key=number_key) for doc in code_docs}
+    ones whose text is only "(abrogato)" (no schema), left out of items. v79.19.7: docs_only -- (c) alone, carded []."""
+    carded = [] if docs_only else [(d, str(n).lower()) for d, n in cards if str(n).lower() in documents.get(d, {})]
+    codes = {doc: sorted(documents[doc], key=number_key) for doc in code_docs if doc in documents}
     extra = {doc: sorted(documents[doc], key=number_key) for doc in specials}
-    every = [(doc, documents[doc][number]) for doc, number in order_refs(carded, codes, extra)]
+    every = [(doc, documents[doc][number]) for doc, number in order_refs(carded, codes, extra, docs_only)]
     return [x for x in every if has_body(x[1])], [x for x in every if not has_body(x[1])], carded
 
 
@@ -652,10 +667,11 @@ def schemas_main(args) -> None:
     import neo4j
     with neo4j.GraphDatabase.driver(uri, auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))) as driver:
         with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j"), default_access_mode=neo4j.READ_ACCESS) as session:
-            code_of = {code_document(session, code): code for code in SCHEMA_CODES}
+            docs_only = bool(getattr(args, "docs_only", False))      # v79.19.7: the --doc documents alone
+            code_of = {} if docs_only else {code_document(session, code): code for code in SCHEMA_CODES}
             code_of.pop("", None)
             documents = {doc: read_document(session, doc, code) for doc, code in code_of.items()}
-            for doc in dict.fromkeys(d for d, _ in cards):
+            for doc in [] if docs_only else dict.fromkeys(d for d, _ in cards):
                 if doc not in documents:
                     documents[doc] = read_document(session, doc, code_of.get(doc, doc))
             for doc in args.doc:
@@ -663,7 +679,7 @@ def schemas_main(args) -> None:
                     documents[doc] = read_document(session, doc, doc)
                 if not documents[doc]:
                     sys.exit(f"--doc: no articles in {doc!r} (the exact document name)")
-    items, bare, carded = schema_items(cards, documents, list(code_of), args.doc)
+    items, bare, carded = schema_items(cards, documents, list(code_of), args.doc, docs_only)
     asked = bool(getattr(args, "only_keys", None))
     if asked:                                   # v79.12.3: only the keys asked (schema_show --recheck --regen-list)
         keys = read_keys(args.only_keys)
@@ -674,8 +690,9 @@ def schemas_main(args) -> None:
     model = schema_model(args)
     prompt = bool(getattr(args, "regen_prompt", False))
     whys = Counter(schema_due(a, d, have, model, reviewed, args.force, asked) for d, a in items)
-    print(f"{len(items):,} articles: {len(carded):,} carded ({len(cards) - len(carded):,} of the cards file not found), "
-          f"then the codes, then {len(args.doc)} --doc; {len(bare):,} only \"(abrogato)\", no schema; "
+    print(f"{len(items):,} articles: " + (f"only the {len(args.doc)} --doc documents (--docs-only); " if docs_only else
+          f"{len(carded):,} carded ({len(cards) - len(carded):,} of the cards file not found), "
+          f"then the codes, then {len(args.doc)} --doc; ") + f"{len(bare):,} only \"(abrogato)\", no schema; "
           f"{sum(v for k, v in whys.items() if is_due(k, prompt)):,} to make ({model}), "
           f"{whys['reviewed'] + whys['reviewed_stale']:,} reviewed, kept ({whys['reviewed_stale']:,} stale: the text "
           "changed after the review, the text path runs until the lawyer reviews it again)" +
@@ -703,6 +720,9 @@ def main() -> None:
     parser.add_argument("--runs", default=os.path.join("diagnose_long_runs", "*", "cases", "*.json"))
     parser.add_argument("--top", type=int, default=TOP)
     parser.add_argument("--doc", action="append", default=[], help="a special law, by its exact document name (repeatable)")
+    parser.add_argument("--docs-only", dest="docs_only", action="store_true",
+                        help="v79.19.7: with --doc, only those documents -- the top articles and the four codes skipped "
+                             "(cards and --schemas alike)")
     parser.add_argument("--concurrency", type=int, default=6)
     parser.add_argument("--max-per-hour", type=int, default=0, help="0: no limit")
     parser.add_argument("--limit", type=int, default=0, help="only the first N articles of the order")
@@ -724,6 +744,8 @@ def main() -> None:
     parser.add_argument("--regen-prompt", action="store_true", help="--schemas (v79.12.3): also make again the "
                         "lines whose prompt alone changed (kept by default)")
     args = parser.parse_args()
+    if args.docs_only and not args.doc:
+        parser.error("--docs-only needs at least one --doc")
     if args.schemas:
         schemas_main(args)
         return
@@ -737,7 +759,8 @@ def main() -> None:
     import neo4j
     with neo4j.GraphDatabase.driver(uri, auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))) as driver:
         with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j"), default_access_mode=neo4j.READ_ACCESS) as session:
-            code_of = {code_document(session, code): code for code in ac.CODE_PREFIXES}
+            # v79.19.7: --docs-only -- the --doc documents alone: no code document read, no top articles counted
+            code_of = {} if args.docs_only else {code_document(session, code): code for code in ac.CODE_PREFIXES}
             code_of.pop("", None)
             if args.sample:
                 chosen = sample(list(have.values()), args.sample, args.seed)
@@ -750,7 +773,7 @@ def main() -> None:
                 return
             documents = {doc: read_document(session, doc, code) for doc, code in code_of.items()}
             by_code = {code: doc for doc, code in code_of.items()}
-            top, counted = [], frequency(glob.glob(args.runs))
+            top, counted = [], frequency([] if args.docs_only else glob.glob(args.runs))
             for (doc, number, label), _ in counted.most_common():
                 doc = doc or by_code.get(label)
                 if doc and doc not in documents:
@@ -764,15 +787,11 @@ def main() -> None:
                     documents[doc] = read_document(session, doc, doc)
                 if not documents[doc]:
                     sys.exit(f"--doc: no articles in {doc!r} (the exact document name)")
-    codes = {doc: sorted(documents[doc], key=number_key) for doc in code_of}
-    specials = {doc: sorted(documents[doc], key=number_key) for doc in args.doc}
-    refs = order_refs(top, codes, specials)
-    items = [(doc, documents[doc][number]) for doc, number in refs]
-    bare = [item for item in items if not has_body(item[1])]
-    items = [item for item in items if has_body(item[1])]
+    items, bare = card_items(top, documents, list(code_of), args.doc, args.docs_only)
     if args.limit:
         items = items[:args.limit]
-    print(f"{len(items):,} articles: top {len(top):,}, then the codes, then {len(args.doc)} --doc; {len(bare):,} only "
+    print(f"{len(items):,} articles: " + (f"only the {len(args.doc)} --doc documents (--docs-only)" if args.docs_only else
+          f"top {len(top):,}, then the codes, then {len(args.doc)} --doc") + f"; {len(bare):,} only "
           f"\"(abrogato)\", no card; {sum(due(a, d, have, args.force) for d, a in items):,} to make", flush=True)
     if args.dry_run:
         for doc, article in items[:30]:
