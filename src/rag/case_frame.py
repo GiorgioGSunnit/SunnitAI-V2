@@ -1249,8 +1249,9 @@ def apply_fit(holder: Dict[str, Any], judgments: Sequence[Dict[str, Any]]) -> Li
     """v79.19.0 (item 5): the applicability judgment settles a disputed article, once -- the text's article judged «no»
     (verified) and the facts' one «si» or «dipende»: the facts' article is the charge (a correction old -> new, why
     the judgment); the text's article judged «si» / «dipende»: it stands, the facts' one stays an alternative
-    (alternative_charges). Neither verified: nothing changes (the text's article stands, logged). The corrections
-    made."""
+    (alternative_charges). Neither verified: nothing changes (the text's article stands, logged). v79.19.8 (item 4,
+    row 100): a hypothesis (no article in the text) the fit confirms stays a candidate line -- never the charge. The
+    corrections made."""
     out = settle(holder)
     if out is None or out.get("fit_checked"):
         return []
@@ -1277,23 +1278,24 @@ def apply_fit(holder: Dict[str, Any], judgments: Sequence[Dict[str, Any]]) -> Li
             a["disputed_resolved"] = "testo"
             _log("frame_article_disputed_kept", {"articolo": a.get("label"), "articolo_fatti": a["label_fatti"],
                                                  "fit_testo": text_v, "fit_fatti": facts_v})
-    # v79.19.1 (item 1): a hypothesis (an article read from the facts, none named by the text) becomes the charge
-    # only on a verified «si» / «dipende» (a correction "" -> the article, frame_hypothesis_confirmed); anything else
-    # -- «no», unverified, not judged -- drops it (frame_hypothesis_dropped): never the charge from memory
+    # v79.19.1 (item 1): a hypothesis (an article read from the facts, none named by the text) is confirmed only on a
+    # verified «si» / «dipende»; anything else -- «no», unverified, not judged -- drops it (frame_hypothesis_dropped):
+    # never the charge from memory. v79.19.8 (item 4, row 100): a hypothesis the fit alone confirms is a CANDIDATE
+    # line, not the settled charge -- «ipotesi_resolved» confermata, «articolo» stays null (no correction, choose_charge
+    # reads the other sources), it stays among alternative_charges; logged frame_hypothesis_confirmed {article, as:
+    # candidate}. A hypothesis confirmed by the text (user_article / rubrica_match) never passes here: the text's
+    # article is the charge already.
     counters = out.setdefault("counters", {})
     for a in _addebiti(out["frame"]):
         if not a.get("ipotesi") or not a.get("label_ipotesi") or a.get("ipotesi_resolved"):
             continue
         hyp_v = verdict.get(_norm(a["label_ipotesi"]))
         if hyp_v in ("si", "dipende"):
-            made.append(_settle_correction(out, "addebito_o_domanda.articolo", "", a["label_ipotesi"],
-                                           f"giudizio di applicabilità: nessun articolo nel testo, quello letto dai "
-                                           f"fatti «{hyp_v}»", "fit"))
             a["ipotesi_resolved"] = "confermata"
-            a["articolo"], a["label"] = a["ipotesi"], a["label_ipotesi"]
-            parsed = parse_article(a["articolo"])
-            a["numero"], a["codice"] = parsed["number"], parsed["code"]
+            a["ipotesi_fit"] = hyp_v
             counters["frame_hypothesis_confirmed"] = int(counters.get("frame_hypothesis_confirmed") or 0) + 1
+            _log("frame_hypothesis_confirmed", {"article": a["label_ipotesi"], "as": "candidate", "fit": hyp_v,
+                                                "frase": str(a.get("frase") or "")[:160]})
         else:
             a["ipotesi_resolved"] = "scartata"
             counters["frame_hypothesis_dropped"] = int(counters.get("frame_hypothesis_dropped") or 0) + 1
@@ -1341,7 +1343,8 @@ def alternative_charges(holder: Optional[Dict[str, Any]]) -> List[str]:
         if a.get("disputed") and other and other not in first and other not in out:
             out.append(other)
         hyp = a.get("label_ipotesi") or ""          # v79.19.1 (item 1): the facts' hypothesis, a fit candidate until
-        if hyp and not a.get("ipotesi_resolved") and hyp not in first and hyp not in out:      # the judgment decides
+        # the judgment decides; v79.19.8 (item 4): confirmed by the fit, it stays a candidate line (never the charge)
+        if hyp and a.get("ipotesi_resolved") in (None, "", "confermata") and hyp not in first and hyp not in out:
             out.append(hyp)
     return out
 

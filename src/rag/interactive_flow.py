@@ -5725,6 +5725,63 @@ def grade_chosen(state: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> Lis
     return added
 
 
+def general_part_grading(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]]
+                         ) -> List[str]:
+    """v79.19.8 (item 6, row 97): for an accused in a penal frame (analysis_step.client_side «difesa», penal_frame) the
+    records whose article is in the defence's general-part set (data «parte_generale.graded_for_defence»:
+    analysis_step.defence_graded_set) and that hold no grade -- any source, a dropped record too -- are graded now
+    (defensive_generation._filter_applicable_articles on their rows, as grade_chosen grades), the grade written on the
+    record. Grading only: the general-part gate still keeps them out of the line candidates (remedy_articles.json
+    unchanged), nothing else about them changes. Logged general_part_gate {graded_for_defence: {articles, grades,
+    no_row}}. [] when the side is not the defence, the frame not penal, or nothing is to grade. The labels graded."""
+    from . import analysis_step, case_frame, defensive_generation as dg
+    records = state.get("records") or {}
+    if not records or not analysis_step.enabled():
+        return []
+    held = case_frame.held(state)
+    frame = case_frame._frame(held) if held else {}
+    client = (frame.get("cliente") or {}).get("nome") or (state.get("client") or {}).get("name") or ""
+    try:
+        roles = client_roles(state)
+    except Exception:           # noqa: BLE001
+        roles = []
+    side, side_why = analysis_step.client_side(frame, client, roles)
+    charge = str((state.get("charge") or {}).get("article") or "") if isinstance(state.get("charge"), dict) else ""
+    if side != analysis_step.SIDE_DEFENCE or not analysis_step.penal_frame(frame, charge):
+        return []
+    todo = [label for label, rec in records.items() if isinstance(rec, dict) and analysis_step.in_defence_set(label)
+            and not isinstance(rec.get("grade"), int)]
+    if not todo:
+        return []
+    have = {_key(r["_article"]): r for r in rows if r.get("_article")}
+    have.update({_key(r["_article"]): r for r in _restored_rows(state.get("reserve")) if r.get("_article")
+                 and _key(r["_article"]) not in have})
+    mine, no_row = [], []
+    for label in todo:
+        row = have.get(_key(_parse_label(label)))
+        (mine if row is not None else no_row).append(row if row is not None else label)
+    grades: Dict[str, Any] = {}
+    if mine:
+        analysis = _restored_analysis(state["analysis"])
+        limits = {"graded": True}
+        with dg.grading_limits(limits):
+            graded = dg._filter_applicable_articles(state.get("text") or "", state.get("request") or "", mine, analysis)
+        for row in graded or []:
+            if not row.get("_article") or not isinstance(row.get("_grade"), int):
+                continue
+            label = _label(_key(row["_article"]))
+            rec = records.get(label) or next((r for x, r in records.items() if _key(_parse_label(x)) ==
+                                              _key(row["_article"])), None)
+            if rec is not None:
+                rec["grade"] = row["_grade"]
+                rec["graded_for_defence"] = True
+                grades[label] = row["_grade"]
+    _log("general_part_gate", {"graded_for_defence": {"articles": list(grades), "grades": grades, "no_row": no_row,
+                                                      "side_why": side_why, "charge": charge}})
+    state.setdefault("block_counters", {})["general_part_graded_for_defence"] = len(grades)
+    return list(grades)
+
+
 _CHARGED_RE = re.compile(r"a carico|indagat|imputat|convenut|ricorrent|accusat|denunciat", re.IGNORECASE)
 # v60s (7): the extraction writes a convenuto as «controparte» (fact_signals._ROLE_SYNONYMS) -- with no client tagged,
 # the party the action is directed at
@@ -6335,6 +6392,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                                    ([], [])) or ([], [])
         all_rows = all_rows + [r for r in fetched if _key(r["_article"]) not in
                                {_key(x["_article"]) for x in all_rows if x.get("_article")}]
+        # v79.19.8 (item 6, row 97): an accused's general-part records (41, 52, 55, 56, 59-62-bis c.p.) graded now --
+        # grading only, they stay out of the line candidates
+        _isolated("general_part_grading", lambda: general_part_grading(state, posture, all_rows), [])
     elif fit_hook is not None:  # v79.13.0: no decomposition step -- the records' candidates alone
         fit_hook([], {})
     if fit_on:                  # v79.13.0: the «dipende» elements «da provare», on the records as decomposed now
@@ -6489,16 +6549,16 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         mark("method")
         clients = clients_of(state)             # v79.6 (item 2): more than one client -- a method per client
         state.setdefault("block_counters", {})["clients_detected"] = len(clients)       # v79.10.2 (B3)
+        # v79.19.8 (item 1, row 95): the verified analysis goes INTO method_inputs / method_inputs_clients -- set on
+        # each context before the objections call (method_objections inside them), so the objections argue the step's
+        # line (lawyer_method.step_selection, thesis_source «step»); 79.15.0 set it here, after both had returned
         method_clients = _isolated("lawyer_method_clients", lambda: method_inputs_clients(
-            state, posture, plan, topics, refs, all_rows, case, clients), None) if clients else None
+            state, posture, plan, topics, refs, all_rows, case, clients, verified=verified), None) if clients else None
         if method_clients:
             method_ctx, method_plan = method_clients[0][1], method_clients[0][2]
         else:
             method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
-                state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
-        if verified is not None:        # v79.15.0 (build B): every client's sections from the verified analysis
-            for c in ([c for _, c, _ in method_clients] if method_clients else [method_ctx] if method_ctx else []):
-                c["verified_analysis"] = verified
+                state, posture, plan, topics, refs, all_rows, case, verified=verified), (None, {})) or (None, {})
         if method_ctx is not None:      # v79.8 (D1): the special commi made records of their own
             state.setdefault("block_counters", {})["special_comma_records"] = len(
                 (method_ctx.get("records_view") or {}).get("special_commi") or [])
@@ -6948,7 +7008,8 @@ def method_role(state: Dict[str, Any], posture: Dict[str, Any], client: Dict[str
 
 def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any],
                           topics: Sequence[Dict[str, Any]], refs: Sequence[tuple], rows: Sequence[Dict[str, Any]],
-                          case: str, clients: Sequence[Dict[str, str]]) -> List[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+                          case: str, clients: Sequence[Dict[str, str]], verified: Optional[Dict[str, Any]] = None
+                          ) -> List[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """v79.6 (item 2): one method per client -- each with its posture (its role when the read gives one), its records'
     sides and charge marked on the clauses that name it (posture.client_text: another client's offence never enters
     its charge), its candidates, its thesis call and its objections call; the rulings record is built once and shared.
@@ -6977,7 +7038,7 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
         method_roles.append(entry)
         posture_mod.mark_sides(view, posture_c)
         ctx, mplan = method_inputs(view, posture_c, {**plan, "parte_assistita": c["name"]}, topics, refs, rows, case,
-                                   shared_record=record, with_objections=False)
+                                   shared_record=record, with_objections=False, verified=verified)
         record = record if record is not None else view.get("rulings_record")
         counts[c["name"]] = view.get("thesis_counts") or {}
         if isinstance(view.get("schema_shadow"), dict):         # v79.11 (6): ELEMENT_SCHEMAS only
@@ -7437,12 +7498,14 @@ def method_objections(ctx: Dict[str, Any], mplan: Dict[str, Any]) -> Dict[str, A
 
 def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],
                   refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], case: str,
-                  shared_record: Optional[Dict[str, Any]] = None, with_objections: bool = True
-                  ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                  shared_record: Optional[Dict[str, Any]] = None, with_objections: bool = True,
+                  verified: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """v70: the method's context (lawyer_method.prepare: the client, the main line's anchor, §3's order, the retrieved
     rulings with their document id and massima -- the only citable ones (v71) --, the open questions, the first read's
     lines, the named articles the ingestion marks abrogated, our
-    objections as the fallback) and its plan (the thesis selection, timed)."""
+    objections as the fallback) and its plan (the thesis selection, timed). v79.19.8 (item 1, row 95): `verified`
+    (analysis_step.view) is set on the context (ctx["verified_analysis"]) before the plan and the objections call --
+    the objections argue the step's line (lawyer_method.step_selection)."""
     from . import defensive_generation as dg, issue_records, lawyer_method
     from .article_text import row_abrogated
     main_topic = main_line_topic(topics)
@@ -7469,6 +7532,8 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     ctx = lawyer_method.prepare(state, posture, rows, case, client, main, order, rulings, lines, abrogated,
                                 objections(state, topics, refs), frame_areas=areas, questions=unanswered(state),
                                 case_id_=str(state.get("case_id") or ""))
+    if verified is not None:        # v79.19.8 (item 1, row 95): the verified analysis before the objections are asked
+        ctx["verified_analysis"] = verified
     from . import intake as intake_mod
     ctx["asked"] = list((state.get("intake") or {}).get("questions") or []) or intake_mod.questions(case)   # v79.6 (1)
     route = lawyer_method.penal_route(state.get("sentences") or [], posture)      # v79.8 (E3): one line, §1 and §9

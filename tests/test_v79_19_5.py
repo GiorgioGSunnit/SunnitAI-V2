@@ -253,26 +253,26 @@ def test_defence_side_first_line_provato_is_the_accusa_and_the_open_line_the_dif
     assert first["articolo"] == "641 c.p." and second["articolo"] == "640 c.p."
     logged = next(d for e, d in events if e == "analysis_defence_relabel")
     assert logged == {"line": "640 c.p.", "element": "con artifizi o raggiri", "esito": "provato", "difesa": "641 c.p.",
-                      "nessun_elemento": False}
+                      "nessun_elemento": False, "charge": "640 c.p.", "penal": True}         # v79.19.8 (item 2)
     # which lines exist and their order: unchanged
     assert [x["articolo"] for x in (v["analysis"]["linea_principale"], v["analysis"]["linea_subordinata"])] == \
         ["640 c.p.", "641 c.p."]
 
 
-def test_every_element_proven_prints_the_fixed_sentence_then_the_subordinate(monkeypatch, _sealed):
+def test_every_element_proven_prints_the_accusa_then_the_subordinate_nothing_in_between(monkeypatch, _sealed):
+    """v79.19.8 (item 2, row 96): 79.19.5's fixed sentence is gone -- the accusa line, then the next line / section."""
     v, _ = _view(monkeypatch, _penal_input(), _defence_reply("provato", "provato"))
     lines = A.summary_text(v).split("\n\n")
     assert lines[0].startswith("Tesi dell'accusa: art. 640 c.p.")
-    assert lines[1] == ("Linea difensiva: Nessun elemento della contestazione è contestabile sui fatti dati; la difesa "
-                        "si gioca sulla qualificazione e sulla pena.")
-    assert lines[2].startswith("Linea subordinata: art. 641 c.p. — «dissimulando il proprio stato d'insolvenza» risulta "
-                               "provato")
-    assert "| Linea difensiva | — | — | Nessun elemento della contestazione" in A.solutions_text(v)
+    assert lines[1].startswith("Linea subordinata: art. 641 c.p. — «dissimulando il proprio stato d'insolvenza» risulta "
+                               "provato") and len(lines) == 2
+    assert "Linea difensiva" not in A.summary_text(v) and "Nessun elemento della contestazione" not in A.solutions_text(v)
+    assert v["relabel"]["nessun_elemento"] is True and "nessun_elemento_line" not in v["relabel"]
     first, second = A.objection_lines(v)                   # §7: the qualification / pena line
     assert first["articolo"] == "641 c.p." and second["articolo"] == "640 c.p."
     alone, _ = _view(monkeypatch, _penal_input(), _defence_reply("provato"))
-    assert A.summary_text(alone).split("\n\n")[1].startswith("Linea difensiva: Nessun elemento") and \
-        len(A.summary_text(alone).split("\n\n")) == 2
+    assert A.summary_text(alone) == A.summary_text(alone).split("\n\n")[0] and \
+        A.summary_text(alone).startswith("Tesi dell'accusa: art. 640 c.p.")
     first, second = A.objection_lines(alone)
     assert first["articolo"] == "640 c.p." and first["tesi"].startswith("l'elemento «con artifizi") and second is None
 

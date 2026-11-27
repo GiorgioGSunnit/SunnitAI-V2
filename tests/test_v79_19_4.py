@@ -175,7 +175,8 @@ def test_an_alias_of_a_line_is_a_duplicate_and_a_failed_step_is_silent(monkeypat
     events = _events(monkeypatch)
     inp = _civil()
     inp["graded"] = [{"article": "2043 c.c.", "grade": 3}]
-    res = A.analyse(inp, call=_Model("niente di utile"))                 # no JSON: the step fails, no line
+    res = A.analyse(inp, call=_Model("niente di utile", "niente di utile"))   # no JSON twice (v79.19.8 item 5: one
+    #                                                                            retry): the step fails, no line
     assert res["status"] != A.OK
     silent = [r for r in res["rejected"] if r.get("kind") == A.RECORD_KIND]
     assert [r["why"] for r in silent] == ["step_silent"] and res["counters"]["analysis_silent_records"] == 1

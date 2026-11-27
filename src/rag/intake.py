@@ -468,24 +468,55 @@ _ASK_PHRASE_RE = re.compile(
 # opens on an interrogative (with or without its preposition): one question per point
 _POINT_MARK_RE = re.compile(r"^(?:(?:a|in|con|per|da|entro|verso|contro|presso|su|di|ad)\s+)?(?:chi|che|cosa|quali?|"
                             r"quant[oaie]|come|quando|dove|perch[ée]|se)\b", re.IGNORECASE)
-_POINT_SPLIT_RE = re.compile(r"\s*,\s*|\s+ed?\s+|\s*;\s*", re.IGNORECASE)
+_POINT_SPLIT_RE = re.compile(r"(\s*,\s*|\s+ed?\s+|\s*;\s*)", re.IGNORECASE)
+# v79.19.8 (item 3, row 98): the asking phrase's own interrogative («chiede se …», «chiede quali …») opens the first
+# point; a later point that opens on no interrogative stands when it is a listed noun phrase (a determiner first:
+# «i danni risarcibili», «le conseguenze», «eventuali responsabilità»), else it is an inserted clause joined back to
+# the point before it («se il contratto, stipulato nel 2020, sia valido»)
+_ASK_WH_END_RE = re.compile(rf"(?:{_ASK_WH})$", re.IGNORECASE)
+_POINT_NOUN_RE = re.compile(r"^(?:il|lo|la|i|gli|le|l['’]|un|una|uno|un['’]|eventuali|ogni|gli\s+eventuali|"
+                            r"le\s+eventuali)\s*\S+", re.IGNORECASE)
 
 
 def split_points(question: str) -> List[str]:
     """v79.19.5 (item 3): the questions a request lists as points -- after its asking phrase (_ASK_PHRASE_RE) or its
-    task verb (_task_head), the remainder split at «,», «e» / «ed» and «;»; two points or more, every one opening on an
-    interrogative (_POINT_MARK_RE) -> each point a question of its own (a «?» kept on each); else [question]."""
+    task verb (_task_head), the remainder split at «,», «e» / «ed» and «;»; two points or more -> each point a
+    question of its own (a «?» kept on each); else [question]. v79.19.8 (item 3, row 98): the FIRST point must open on
+    an interrogative or on «se» (_POINT_MARK_RE; the asking phrase's own «se» / «quali» counts as its opening) and
+    hold two words or more; the later points stand when they open on an interrogative or are a listed noun phrase
+    (_POINT_NOUN_RE) of two words or more, else they are joined back to the point before them (an inserted clause, a
+    one-word remainder of «e»). 79.19.5 asked every point to open on an interrogative."""
     text = _flat(question).strip()
     mark = "?" if text.endswith("?") else ""
     body = text.rstrip(" .?;")
     m = _ASK_PHRASE_RE.search(body)
     if m:
         rest = body[m.end():]
+        wh = _ASK_WH_END_RE.search(m.group(0).strip())
+        if wh:
+            rest = wh.group(0) + " " + rest.lstrip()
     else:
         head = _task_head(body)
         rest = body[head.end(1):] if head else body
-    points = [p.strip() for p in _POINT_SPLIT_RE.split(rest.strip()) if p.strip()]
-    if len(points) < 2 or not all(_POINT_MARK_RE.match(p) and len(p.split()) >= 2 for p in points):
+    pieces = _POINT_SPLIT_RE.split(rest.strip())
+    raw = [p for p in pieces[0::2]]
+    seps = [p for p in pieces[1::2]]
+    if len(raw) < 2 or not raw[0].strip():
+        return [text]
+    first = raw[0].strip()
+    if not (_POINT_MARK_RE.match(first) and len(first.split()) >= 2):
+        return [text]
+    points = [first]
+    for i, p in enumerate(raw[1:]):
+        p = p.strip()
+        if not p:
+            continue
+        stands = len(p.split()) >= 2 and (_POINT_MARK_RE.match(p) or _POINT_NOUN_RE.match(p))
+        if stands:
+            points.append(p)
+        else:
+            points[-1] = f"{points[-1]}{seps[i] if i < len(seps) else ' '}{p}"
+    if len(points) < 2:
         return [text]
     return [p + mark for p in points]
 

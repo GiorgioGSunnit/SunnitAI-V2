@@ -146,14 +146,16 @@ def test_an_article_from_the_facts_alone_is_a_hypothesis_not_the_charge():
     assert cf.bound(state, "addebito_o_domanda") is None and cf.charges(state) == []
     assert cf.alternative_charges(state) == ["584 c.p."]            # a fit candidate
     assert cf.hypotheses(state) == [{"label": "584 c.p.", "stato": "aperta"}]
-    # the judgment «si»: the charge, a correction "" -> the article, counted
+    # the judgment «si»: v79.19.8 (item 4, row 100) -- confirmed as a CANDIDATE line, never the charge: no correction,
+    # the frame's article stays null, the hypothesis stays among the alternatives, counted confirmed
     made = cf.apply_fit(state, [{"article": "584 c.p.", "fit": "si", "verified": True}])
-    assert made and made[0]["old"] == "" and made[0]["new"] == "584 c.p." and made[0]["step"] == "fit"
-    assert cf.bound(state, "addebito_o_domanda") == "584 c.p." and cf.alternative_charges(state) == []
+    assert made == []
+    assert cf.bound(state, "addebito_o_domanda") is None and cf.charges(state) == []
+    assert cf.alternative_charges(state) == ["584 c.p."]
     assert cf.hypotheses(state) == [{"label": "584 c.p.", "stato": "confermata"}]
     c = state["frame"]["counters"]
     assert c["frame_hypothesis_confirmed"] == 1 and c["frame_hypothesis_dropped"] == 0
-    assert c["frame_corrections_applied"] == 1
+    assert c["frame_corrections_applied"] == 0
     assert flow.frame_audit(state)["frame_hypothesis_confirmed"] == 1
 
 
@@ -549,9 +551,13 @@ def test_the_fixture_confirms_a_facts_hypothesis_through_the_fit(monkeypatch, tm
     audit = flow.frame_audit(state)                     # the frame's counters reach the answer's through the audit
     assert audit["frame_hypothesis_confirmed"] == 1 and audit["frame_hypothesis_dropped"] == 0
     assert flow.case_counters(state)["frame_hypothesis_confirmed"] == 1
-    assert cf.bound(state, "addebito_o_domanda") == "646 c.p." and cf.hypotheses(state)[0]["stato"] == "confermata"
+    # v79.19.8 (item 4, row 100): confirmed by the fit alone -- a candidate line, the frame's charge stays unset
+    assert cf.bound(state, "addebito_o_domanda") is None and cf.hypotheses(state)[0]["stato"] == "confermata"
+    assert "646 c.p." in cf.alternative_charges(state)
     step = run["by"]["analysis_step"][0][0]
     assert step["status"] == "ok" and c["analysis_frame_charge_missing"] == 0 and c["analysis_frame_charge_overridden"] == 0
-    assert "Linea principale: art. 646 c.p." in H.section(run["answer"], "sintesi")
-    assert any(x["field"] == "addebito_o_domanda.articolo" and x["old"] == "" and x["new"] == "646 c.p."
-               for x in cf.corrections(state))
+    assert "Linea principale: art. 646 c.p." in H.section(run["answer"], "sintesi")      # the step's own choice
+    assert not any(x["field"] == "addebito_o_domanda.articolo" for x in cf.corrections(state))
+    assert (state.get("charge") or {}).get("rule") != "case_frame"             # choose_charge: not from the frame
+    confirmed = run["by"]["frame_hypothesis_confirmed"][0][0]
+    assert confirmed["article"] == "646 c.p." and confirmed["as"] == "candidate"

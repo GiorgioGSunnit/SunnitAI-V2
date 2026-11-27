@@ -2235,7 +2235,11 @@ def act_gated_labels(ctx: Dict[str, Any], labels: Sequence[str]) -> set:
     return {x for x in labels if family_gate.act_gated_code(str(x).partition(" ")[2]) and x not in named}
 
 
-_CITATION_ABBREV_RE = re.compile(r"\b(?:Sez|Cass|n|nn|art|artt|co|pen|civ|Un|sent|ord|Rv|dep|cfr)\.$", re.IGNORECASE)
+# v79.19.8 (item 3, row 98): the abbreviations a sentence split never breaks on -- the citation's (Sez., Cass., n., art.,
+# co., …) and the acts' (d.lgs., d.P.R., d.l., L.); a piece ending on one is joined to the next (_citation_rejoin)
+_ABBREV = ("Sez", "Cass", "n", "nn", "art", "artt", "co", "pen", "civ", "Un", "sent", "ord", "Rv", "dep", "cfr", "lett",
+           "ss", "d.lgs", "d.P.R", "d.l", "L", "l", "D.Lgs", "D.P.R", "D.L")
+_CITATION_ABBREV_RE = re.compile(r"(?<![\w.])(?:" + "|".join(re.escape(x) for x in _ABBREV) + r")\.$", re.IGNORECASE)
 
 
 def _citation_rejoin(pieces: Sequence[str]) -> List[str]:
@@ -5341,7 +5345,10 @@ _FAVOUR_RE = re.compile(r"\besito\s+(?:sarà\s+|appare\s+|è\s+)?(?:favorevole|p
                         r"\b(?:sarà|verrà)\s+(?:assolt\w*|prosciolt\w*)|\bcerto\s+(?:accogliment\w*|esito)|"
                         r"\bfondate\s+possibilità\s+di\s+(?:assoluzion|accogliment)", re.I)
 _SENT_SPLIT = re.compile(r"(?<!\bn\.)(?<!\bnn\.)(?<!\bco\.)(?<!\bart\.)(?<!\bartt\.)(?<!\blett\.)(?<!\bss\.)"
-                         r"(?<!\bcfr\.)(?<!\bsez\.)(?<!\bCass\.)(?<=[.;!?])\s+(?=[A-ZÀ-ÖØ-Ý«\"“(\[*\d-])")
+                         r"(?<!\bcfr\.)(?<!\bsez\.)(?<!\bCass\.)"
+                         r"(?<!\bd\.lgs\.)(?<!\bD\.Lgs\.)(?<!\bd\.P\.R\.)(?<!\bD\.P\.R\.)(?<!\bd\.l\.)(?<!\bD\.L\.)"
+                         r"(?<!\bL\.)(?<!\bl\.)"                       # v79.19.8 (item 3): the acts' abbreviations
+                         r"(?<=[.;!?])\s+(?=[A-ZÀ-ÖØ-Ý«\"“(\[*\d-])")
 _ABBREV_END_RE = re.compile(r"\b(?:[a-z]\.){2,3}$", re.I)
 _ELEMENT_ID_RE = re.compile(r"^[RC]\d{1,3}$")
 
@@ -6928,13 +6935,52 @@ def _first_sentences(text: str, n: int) -> List[str]:
     return out[:n]
 
 
+_WHOLE_START_RE = re.compile(r"^[«(\[*\"“]*[A-ZÀ-ÖØ-Ý]")
+_WHOLE_END_RE = re.compile(r"[.!?»)\"”]$")
+
+
+def _whole_sentence(text: str) -> bool:
+    """v79.19.8 (item 3, row 98): a sentence as a reader expects one -- opening on a capital (a quote or a parenthesis
+    before it), closing on a stop, its parentheses balanced; never a cut inside a citation («31 ottobre 2024, n. 164),
+    dal …», «… (d.lgs.»)."""
+    x = str(text or "").strip()
+    return bool(x) and bool(_WHOLE_START_RE.match(x)) and bool(_WHOLE_END_RE.search(x)) and \
+        x.count("(") == x.count(")") and not _CITATION_ABBREV_RE.search(x)
+
+
 def procedural_answer(question: str, procedure: str) -> List[str]:
     """The §8 sentences a procedural question asks about -- those sharing its words, in their order; ANSWER_SENTENCES
-    at most."""
+    at most. v79.19.8 (item 3, row 98): whole sentences only (_whole_sentence) -- a fragment the split left is never
+    an answer."""
     want = _q_words(question)
-    pool = _first_sentences(procedure, 60)
+    pool = [x for x in _first_sentences(procedure, 60) if _whole_sentence(x)]
     hits = [x for x in pool if want & _q_words(x)]
     return hits[:ANSWER_SENTENCES[1]]
+
+
+SEE_SUMMARY_ANSWER = "v. §1."       # v79.19.8 (item 3, row 98): the answer that would only repeat §1's main line
+
+
+def _norm_sentence(text: str) -> str:
+    return re.sub(r"[^\w ]+", " ", _plain(text).lower()).strip()
+
+
+def summary_repeats(verified: Optional[Dict[str, Any]], strategy: Sequence[str]) -> List[str]:
+    """v79.19.8 (item 3, row 98): what §1 says, normalised -- the code's strategy sentence (its first) and, with the
+    verified analysis, each line as §1 prints it (analysis_step.summary_text) and each line's bare text."""
+    out = [_norm_sentence(strategy[0])] if strategy else []
+    if verified is not None:
+        from . import analysis_step
+        for label, x in analysis_step._lines(verified):
+            out += [_norm_sentence(f"{label}: {analysis_step.line_text(x)}"), _norm_sentence(analysis_step.line_text(x))]
+    return [x for x in dict.fromkeys(out) if x]
+
+
+def repeats_summary(sentence: str, repeats: Sequence[str]) -> bool:
+    """The sentence is §1's main line again: equal to one of the repeats after normalisation, or ending on a line's
+    text («La linea principale è quella …» aside)."""
+    x = _norm_sentence(sentence)
+    return bool(x) and any(x == r or (len(r) >= 20 and x.endswith(r)) for r in repeats)
 
 
 def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], procedure: str,
@@ -6975,6 +7021,8 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
             verified, excluded_labels(ctx), [ctx.get("case") or ""] + [str(q) for q in ctx.get("asked") or []])
     items, how = [], []
     said_at = 0                 # v79.12.7 (item 7): the answer that printed the main line -- the block prints it once
+    repeats = summary_repeats(verified, strategy)       # v79.19.8 (item 3, row 98): §1's main line, normalised
+    repeats_log: List[Dict[str, Any]] = []
     for i, q in enumerate(asked, 1):
         written = next((x for t, x in by_title.items() if same_line(t, q) or _plain(t) == _plain(q)), "")
         if written and verified is not None:    # v79.15.1 (item 4): the writer's sentences reviewed first -- a rule
@@ -6987,9 +7035,8 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
         elif written:
             got, kind = _first_sentences(checked(written), ANSWER_SENTENCES[1]), "writer"
         elif _PROCEDURAL_Q_RE.search(q):
+            # v79.19.8 (item 3, row 98): whole sentences of §8 or nothing -- never padded with §1's line
             got, kind = procedural_answer(q, procedure), "procedura"
-            if len(got) < ANSWER_SENTENCES[0]:
-                got += strategy[:ANSWER_SENTENCES[0] - len(got)]
         else:
             got, kind = list(strategy), "selezione"
         if strategy and strategy[0] in got:
@@ -7002,12 +7049,25 @@ def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], proce
             review = analysis_step.ProseReview(verified, scope, analysis_step.SITE_QA, events)    # v79.15.1 (item 4):
             got = [review.keep(x) if x in strategy or x.startswith(see) else review(x) for x in got]  # replaced
         got = [x for x in got if x][:ANSWER_SENTENCES[1]]
+        # v79.19.8 (item 3, row 98): an item that repeats §1's main line is not printed -- with nothing else to say,
+        # «v. §1» (SEE_SUMMARY_ANSWER) rather than the repeat; logged how
+        see = MAIN_LINE_SEE_ANSWER.split("{")[0]
+        repeated = [x for x in got if repeats_summary(x, repeats) or x.startswith(see)]
+        if repeated:
+            got = [x for x in got if x not in repeated]
+            repeats_log.append({"question": _plain(q)[:120], "removed": [x[:160] for x in repeated],
+                                "left": len(got)})
+            if not got:
+                got, kind = [SEE_SUMMARY_ANSWER], "v. §1"
         if not got:
             got, kind = [NO_SOURCE_ANSWER], "nessuna fonte"
         how.append(kind)
         items.append(f"{i}. «{_plain(q).rstrip()}» — {' '.join(got)}")
     if log is not None:
         log["answers"] = how
+    if repeats_log:
+        ctx["answers_repeats"] = repeats_log
+        _log("answers_repeat_of_summary", {"items": repeats_log})       # v79.19.8 (item 3, row 98)
     block = ANSWERS_TITLE + "\n\n" + "\n".join(items)
     if verified is not None:
         from . import analysis_step

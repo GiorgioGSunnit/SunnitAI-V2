@@ -84,9 +84,10 @@ def test_the_parere_opens_with_the_answers_before_section_1():
     assert out.index(M.ANSWERS_TITLE) < out.index(f"**1. {M.title('sintesi')}**")
     got = M.answers_of(out)
     assert [q for q, _ in got] == ctx["asked"]
-    assert got[0][1].startswith("La linea principale è:")                     # strategy: from the selection
+    # v79.19.8 (item 3, row 98): the main-line sentence repeats §1 -- not printed; the forecast stays
+    assert got[0][1].startswith("L'esito probabile è") and "La linea principale è:" not in got[0][1]
     assert "quindici giorni" in got[1][1]                                     # procedure: from §8
-    assert all(2 <= len([x for x in M._SENT_SPLIT.split(a) if x.strip()]) <= 4 for _, a in got)
+    assert all(1 <= len([x for x in M._SENT_SPLIT.split(a) if x.strip()]) <= 4 for _, a in got)
     assert "se vuoi" not in out.lower()
 
 

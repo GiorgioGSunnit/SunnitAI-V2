@@ -518,10 +518,13 @@ def test_a_charge_that_is_no_fitted_norm_is_not_re_asked_the_verified_line_leads
 @pytest.mark.parametrize("reply,status", [(RuntimeError("connection refused"), "failed"), ("non è JSON", "malformed"),
                                           ("[1, 2]", "malformed")])
 def test_a_failed_call_or_no_json_object_gives_nothing(reply, status):
-    model = _Model(reply)
+    # v79.19.8 (item 5, row 101): a malformed first reply is asked again once (the same input) -- malformed twice: nothing
+    model = _Model(reply, reply)
     res = A.analyse(_penal(), call=model)
-    assert res["status"] == status and res["analysis"] is None and len(model.seen) == 1
-    assert res["counters"]["analysis_failed"] == 1 and res["counters"]["analysis_calls"] == 1
+    calls = 2 if status == "malformed" else 1
+    assert res["status"] == status and res["analysis"] is None and len(model.seen) == calls
+    assert res["counters"]["analysis_failed"] == 1 and res["counters"]["analysis_calls"] == calls
+    assert res["counters"]["analysis_retried"] == int(status == "malformed")
 
 
 def test_the_deadline_cuts_the_call_and_nothing_is_printed(monkeypatch):

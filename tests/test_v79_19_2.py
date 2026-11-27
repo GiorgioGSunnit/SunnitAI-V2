@@ -70,7 +70,9 @@ def test_an_article_the_text_never_cites_is_a_hypothesis():
     assert cf.bound(state, "addebito_o_domanda") is None and cf.alternative_charges(state) == ["1667 c.c."]
     assert cf.hypotheses(state) == [{"label": "1667 c.c.", "stato": "aperta"}]
     cf.apply_fit(state, [{"article": "1667 c.c.", "fit": "si", "verified": True}])
-    assert cf.bound(state, "addebito_o_domanda") == "1667 c.c."           # the judgment made it the charge
+    # v79.19.8 (item 4, row 100): the judgment confirms it as a candidate line, never the charge
+    assert cf.bound(state, "addebito_o_domanda") is None and cf.alternative_charges(state) == ["1667 c.c."]
+    assert cf.hypotheses(state) == [{"label": "1667 c.c.", "stato": "confermata"}]
 
 
 @pytest.mark.parametrize("text,frase", [

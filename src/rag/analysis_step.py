@@ -208,6 +208,8 @@ ESITI_ALL = (PROVATO, CONTESTATO, DA_PROVARE, ESCLUSO)
 # v79.19.1: (item 1) the frame's charge the step rejected, or missing while a verified line exists, never leads;
 # (item 2) the article block sent with its periods omitted (over «max_block_chars»)
 COUNTERS = COUNTERS + ("analysis_frame_charge_overridden", "analysis_block_reduced")
+# v79.19.8 (item 5, row 101): a malformed first reply asked again once, the same input, inside the remaining budget
+COUNTERS = COUNTERS + ("analysis_retried",)
 OK, FAILED, MALFORMED, TIMEOUT, NO_INPUT, OFF = "ok", "failed", "malformed", "timeout", "no_input", "off"
 LINE_KINDS = ("linea_principale", "linea_subordinata")
 VERIFIED, FRAME_LINE, UNDETERMINED = "verificata", "addebito_del_quadro", "da_determinare"     # a line's «stato»
@@ -755,14 +757,21 @@ def inputs(state: Dict[str, Any]) -> Dict[str, Any]:
     # v79.19.4 (rule 2): the live records (not dropped) with their grade, for the accounting after the step; the aliases
     # v79.19.5 (item 5): with the rubrica and the live elements (issue_records.element_status) for the general-part section
     from . import issue_records
+    # v79.19.8 (item 6, row 97): a dropped record of the defence's general-part set (graded_for_defence) is listed too,
+    # flagged «dropped» -- the general-part section prints it; the accounting (account_records) skips it
     out["graded"] = [{"article": str(label), "grade": rec.get("grade"), "rubrica": _flat(rec.get("rubrica")),
                       "elements": [{"id": str(r.get("id") or ""), "text": _flat(r.get("text")),
                                     "status": str(r.get("status") or ""), "contested": bool(r.get("contested_by"))}
                                    for r in rec.get("requisites") or [] if isinstance(r, dict)
-                                   and issue_records.element_status(rec, r) != issue_records.NOT_RELEVANT]}
+                                   and issue_records.element_status(rec, r) != issue_records.NOT_RELEVANT],
+                      **({"dropped": True} if rec.get("dropped") else {})}
                      for label, rec in (state.get("records") or {}).items()
-                     if isinstance(rec, dict) and not rec.get("dropped")]
+                     if isinstance(rec, dict) and (not rec.get("dropped") or in_defence_set(label))]
     out["aliases"] = {str(k): str(v) for k, v in (state.get("charge_aliases") or {}).items()}
+    # v79.19.8 (item 2, row 96): choose_charge's settled article (state["charge"], posture.choose_charge) -- the relabel
+    # fires only when the step's first line is it
+    out["settled_charge"] = str((state.get("charge") or {}).get("article") or "") if isinstance(state.get("charge"),
+                                                                                              dict) else ""
     return out
 
 
@@ -783,7 +792,7 @@ def account_records(result: Dict[str, Any], inp: Dict[str, Any]) -> Tuple[List[D
     silent = 0
     for rec in inp.get("graded") or []:
         label, grade = str(rec.get("article") or ""), rec.get("grade")
-        if not label or not isinstance(grade, int) or grade < 2:
+        if not label or not isinstance(grade, int) or grade < 2 or rec.get("dropped"):     # v79.19.8 (item 6)
             continue
         if any(same_article(label, x) for x in lines + rejected):
             continue
@@ -1893,6 +1902,19 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
         messages = build_messages(inp)
         first = call_once(messages, call, deadline - (time.time() - t0), attempt=1)
         calls.append(logged(1, first))
+        if first["status"] == MALFORMED:        # v79.19.8 (item 5, row 101): one retry, the same input, the budget left
+            remaining = deadline - (time.time() - t0)
+            if remaining > 0:
+                again_call = call_once(messages, call, remaining, attempt=2)
+                calls.append(logged(2, again_call))
+                counters["analysis_retried"] = 1
+                _log("analysis_step_retry", {"attempt": 2, "status": again_call["status"], "first_status": MALFORMED,
+                                             "budget_s": round(remaining, 1), "error": again_call["error"]})
+                first = again_call
+            else:
+                _log("analysis_step_retry", {"attempt": 2, "status": "skipped", "first_status": MALFORMED,
+                                             "budget_s": 0.0, "error": "nessun tempo residuo"})
+        reask_n = len(calls) + 1            # the re-ask's attempt number: 2, or 3 after a retry
         status, error = first["status"], first["error"]
         if first["status"] == OK:
             checked = verify(first["data"], inp)
@@ -1902,8 +1924,8 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                 resolve(inp.get("charge"), [n["article"] for n in inp["norms"]]) is None
             if checked["reasons"] and not futile:
                 second = call_once(reask_messages(messages, first["reply"], checked["reasons"], inp), call,
-                                   deadline - (time.time() - t0), attempt=2)
-                calls.append(logged(2, second))
+                                   deadline - (time.time() - t0), attempt=reask_n)
+                calls.append(logged(reask_n, second))
                 counters["analysis_reasked"] = 1
                 if second["status"] == OK:
                     again = verify(second["data"], inp)
@@ -1911,7 +1933,7 @@ def analyse(inp: Dict[str, Any], call: Optional[Callable[[List[Any], Dict[str, A
                         again["counters"][k] += checked["counters"][k]
                     again["raised"] = list(checked.get("raised") or []) + [
                         r for r in again.get("raised") or [] if r not in (checked.get("raised") or [])]
-                    rejected += [dict(r, attempt=2) for r in again["rejected"]]
+                    rejected += [dict(r, attempt=reask_n) for r in again["rejected"]]
                     reasons += [r for r in again["reasons"] if r not in reasons]
                     checked = merge_replies(checked, again, inp)
                 else:
@@ -2042,6 +2064,12 @@ def view(result: Optional[Dict[str, Any]], inp: Optional[Dict[str, Any]]) -> Dic
          "rubriche": {n["article"]: n.get("rubrica") or "" for n in inp.get("norms") or []},
          "remedies": list(analysis.get("rimedi") or []),
          "statements": list(analysis.get("affermazioni_di_diritto") or [])}
+    # v79.19.8 (item 2, row 96): the relabel needs the settled charge (choose_charge's; a hand-made input: the frame's
+    # named article) and a penal frame (penal_frame, as item 1 of 79.19.5 reads it)
+    first_art = str((analysis.get("linea_principale") or {}).get("articolo") or "")
+    v["charge"] = str(inp.get("settled_charge") or inp.get("charge") or "")
+    v["aliases"] = dict(inp.get("aliases") or {})
+    v["penal"] = penal_frame(inp.get("frame"), v["charge"] or first_art)
     v["relabel"] = defence_relabel(v)                       # v79.19.5 (item 4, row 90): an accused's labels
     if v["relabel"].get("applied"):
         r = v["relabel"]
@@ -2049,17 +2077,22 @@ def view(result: Optional[Dict[str, Any]], inp: Optional[Dict[str, Any]]) -> Dic
                                           "element": (r.get("accusa") or {}).get("elemento_in_gioco"),
                                           "esito": (r.get("accusa") or {}).get("esito_in_gioco"),
                                           "difesa": (r.get("difesa") or {}).get("articolo"),
-                                          "nessun_elemento": bool(r.get("nessun_elemento"))})
+                                          "nessun_elemento": bool(r.get("nessun_elemento")),
+                                          "charge": v["charge"], "penal": v["penal"]})
     v["general_part"] = general_part_section(v, inp)        # v79.19.5 (item 5, row 94a): the records, never a line
     if v["general_part"].get("records"):
         _log("analysis_general_part_section", {"count": len(v["general_part"]["records"]),
                                                "articles": [x["article"] for x in v["general_part"]["records"]],
                                                "title": v["general_part"].get("title")})
+    elif v["general_part"].get("why"):          # v79.19.8 (item 6, row 97): why a side's section printed nothing
+        _log("analysis_general_part_skipped", {k: v["general_part"].get(k) for k in ("side", "why", "contractual",
+                                                                                       "candidates", "lines")})
     return v
 
 
 # --- v79.19.5 (item 4, row 90): an accused's proven element is not «Linea principale» ------------------------------------
-FIXED_LINE = "frase_fissa"          # the pseudo-line's «stato»: the one fixed sentence when every element is proven
+# v79.19.8 (item 2, row 96): 79.19.5's one fixed sentence (rendering.difesa.nessun_elemento) is gone -- with no open
+# element the accusa line is printed and the next line / section follows, nothing in its place
 OPEN_ESITI = (CONTESTATO, DA_PROVARE, ESCLUSO)
 
 
@@ -2067,19 +2100,35 @@ def defence_cfg() -> Dict[str, Any]:
     return rendering().get("difesa") or {}
 
 
+def charge_line(v: Dict[str, Any], line: Optional[Dict[str, Any]]) -> bool:
+    """v79.19.8 (item 2): the line's article is the settled charge (v «charge»: choose_charge's, else the frame's
+    named article) -- the same article, or its alias (v «aliases»: a special law's label and its store's)."""
+    art, charge = str((line or {}).get("articolo") or ""), str(v.get("charge") or "")
+    if not art or not charge:
+        return False
+    if same_article(art, charge):
+        return True
+    aliases = v.get("aliases") or {}
+    return aliases.get(art) == charge or aliases.get(charge) == art
+
+
 def defence_relabel(v: Dict[str, Any]) -> Dict[str, Any]:
     """v79.19.5 (item 4, row 90): the labels of an accused's lines -- {"applied", "accusa", "difesa", "nessun_elemento",
-    "subordinata"}. Applied when the analysis's side is «difesa» and its first line is verified with its element in
-    play «provato» (esito_in_gioco): that line is the prosecution's case («Tesi dell'accusa», its tesi re-rendered with
-    data «rendering.difesa.accusa_tesi» from the line's element and tesi_fatti); «Linea difensiva» is the first verified
-    line whose element in play is contestato / da_provare / escluso (the subordinate, today); none: «nessun_elemento»
-    (the one fixed sentence), and the subordinate line follows under «subordinata». Which lines exist and their order
-    are unchanged; {"applied": False} otherwise."""
+    "subordinata"}. Applied when the analysis's side is «difesa», v79.19.8 (item 2, row 96): the frame is penal
+    (v «penal»: penal_frame) and the first line is the settled charge's article (charge_line: choose_charge's), and
+    that first line is verified with its element in play «provato» (esito_in_gioco): it is the prosecution's case
+    («Tesi dell'accusa», its tesi re-rendered with data «rendering.difesa.accusa_tesi» from the line's element and
+    tesi_fatti); «Linea difensiva» is the first verified line whose element in play is contestato / da_provare /
+    escluso (the subordinate, today); none: «nessun_elemento» True and the subordinate line follows under
+    «subordinata» -- nothing is printed in the defence's place (79.19.5's fixed sentence is gone). Which lines exist
+    and their order are unchanged; {"applied": False} otherwise."""
     a = v.get("analysis") or {}
     first, second = a.get("linea_principale"), a.get("linea_subordinata")
     if a.get("side") != SIDE_DEFENCE or not first or first.get("stato") != VERIFIED or \
             first.get("esito_in_gioco") != PROVATO:
         return {"applied": False}
+    if not v.get("penal") or not charge_line(v, first):        # v79.19.8 (item 2): penal, and the charge's line
+        return {"applied": False, "why": "non penale" if not v.get("penal") else "prima linea non è l'addebito"}
     cfg = defence_cfg()
     template = str(cfg.get("accusa_tesi") or "l'elemento «{elemento}» risulta provato da {fatti}")
     accusa = {**first, "tesi": template.format(elemento=first.get("elemento_in_gioco") or "",
@@ -2088,9 +2137,6 @@ def defence_relabel(v: Dict[str, Any]) -> Dict[str, Any]:
         else None
     out = {"applied": True, "accusa": accusa, "difesa": difesa, "nessun_elemento": difesa is None, "subordinata": None}
     if difesa is None:
-        out["nessun_elemento_line"] = {"articolo": None, "elemento_in_gioco": None, "elemento_id": None, "eid": None,
-                                       "tesi": str(cfg.get("nessun_elemento") or ""), "cita_fatti": [],
-                                       "cita_norma": [], "stato": FIXED_LINE}
         out["subordinata"] = second
     return out
 
@@ -2114,6 +2160,21 @@ def objection_lines(v: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Option
 
 def general_part_cfg() -> Dict[str, Any]:
     return rendering().get("parte_generale") or {}
+
+
+def defence_graded_set() -> set:
+    """v79.19.8 (item 6, row 97): the c.p. general-part articles graded for an accused although the general-part gate
+    drops them from the line candidates -- data «parte_generale.graded_for_defence» (41, 52, 55, 56, 59, 60, 61, 62,
+    62-bis), as (number, "cp") keys."""
+    return {(_in_num(x), "cp") for x in general_part_cfg().get("graded_for_defence") or []}
+
+
+def in_defence_set(label: Any) -> bool:
+    """The label is one of the defence set's articles (defence_graded_set)."""
+    try:
+        return tuple(art_parts(label)) in defence_graded_set()
+    except Exception:           # noqa: BLE001
+        return False
 
 
 def _record_esito(e: Dict[str, Any]) -> str:
@@ -2141,33 +2202,45 @@ def general_part_section(v: Dict[str, Any], inp: Dict[str, Any]) -> Dict[str, An
     side = a.get("side") or SIDE_NEUTRAL
     lines = [x for x in (a.get("linea_principale"), a.get("linea_subordinata")) if x and x.get("articolo")]
     contractual = bool(inp.get("contractual"))
+    line_labels = [x["articolo"] for x in lines]
+    # v79.19.8 (item 6, row 97): a side's section printing nothing says why («why», logged by view)
+    base = {"title": "", "side": side, "records": [], "contractual": contractual, "lines": line_labels}
     if side == SIDE_DEFENCE:
-        wanted = {(_in_num(x), "cp") for x in cfg.get("difese") or []}
+        wanted = {(_in_num(x), "cp") for x in cfg.get("difese") or []} | defence_graded_set()
         title, code = str(cfg.get("titolo_difesa") or ""), "cp"
-    elif side == SIDE_CLAIMANT and contractual and not any(
-            x.get("stato") == VERIFIED and not is_remedy(x["articolo"], contractual) for x in lines):
+    elif side == SIDE_CLAIMANT:
+        if not contractual:
+            return {**base, "why": "quadro non contrattuale"}
+        if any(x.get("stato") == VERIFIED and not is_remedy(x["articolo"], contractual) for x in lines):
+            return {**base, "why": "linea verificata su un articolo della domanda"}
         wanted = {(_in_num(x), "cc") for x in cfg.get("rimedi") or []}
         title, code = str(cfg.get("titolo_attore") or ""), "cc"
     else:
-        return {"title": "", "side": side, "records": []}
+        return base
     out = []
+    candidates: List[str] = []
     for rec in inp.get("graded") or []:
         label = str(rec.get("article") or "")
         try:
             grade = int(rec.get("grade") or 0)
         except (TypeError, ValueError):
             grade = 0
-        if grade < 2 or not label or any(same_article(label, x["articolo"]) for x in lines):
-            continue
         num, c = art_parts(label)
-        if c != code:
+        if not label or c != code or any(same_article(label, x["articolo"]) for x in lines):
             continue
-        if not ((num, c) in wanted or (code == "cp" and is_remedy(label))):
+        # v79.19.8 (item 6): a claimant's set is the data's «rimedi» and the c.c. remedy set (1224 c.c. was out)
+        if not ((num, c) in wanted or is_remedy(label, contractual)):
+            continue
+        candidates.append(f"{label}: {rec.get('grade')}")
+        if grade < 2:
             continue
         out.append({"article": label, "rubrica": _flat(rec.get("rubrica")), "grade": grade,
                     "elements": [{"text": _flat(e.get("text")), "esito": _record_esito(e)}
                                  for e in rec.get("elements") or [] if _flat(e.get("text"))]})
-    return {"title": title, "side": side, "records": out}
+    got = {**base, "title": title, "records": out, "candidates": candidates}
+    if not out:
+        got["why"] = "nessun record del set graduato 2 o più" if candidates else "nessun record del set"
+    return got
 
 
 def _in_num(x: Any) -> str:
@@ -2195,8 +2268,8 @@ def general_part_text(v: Dict[str, Any]) -> str:
 
 def _lines(v: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     """The labelled lines §1, §6 and §9 print. v79.19.5 (item 4, row 90): with the defence relabel applied (an accused,
-    the first line's element proven) -- «Tesi dell'accusa» the first line, «Linea difensiva» the open line, or the
-    fixed sentence and then the subordinate line; the same lines, the same order."""
+    the first line's element proven) -- «Tesi dell'accusa» the first line, «Linea difensiva» the open line, else
+    (v79.19.8 item 2) the subordinate line under its own label, nothing in between; the same lines, the same order."""
     a = v.get("analysis") or {}
     r = v.get("relabel") or defence_relabel(v)
     if r.get("applied"):
@@ -2204,10 +2277,8 @@ def _lines(v: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
         out = [(str(cfg.get("accusa") or "Tesi dell'accusa"), r["accusa"])]
         if r.get("difesa"):
             out.append((str(cfg.get("difesa") or "Linea difensiva"), r["difesa"]))
-        else:
-            out.append((str(cfg.get("difesa") or "Linea difensiva"), r["nessun_elemento_line"]))
-            if r.get("subordinata"):
-                out.append((str(cfg.get("subordinata") or LABEL_SUB), r["subordinata"]))
+        elif r.get("subordinata"):          # v79.19.8 (item 2): no open element -- the next line, nothing in between
+            out.append((str(cfg.get("subordinata") or LABEL_SUB), r["subordinata"]))
         return out
     out = [(LABEL_MAIN, a.get("linea_principale") or undetermined_line())]
     if a.get("linea_subordinata"):
@@ -2226,8 +2297,6 @@ def line_text(line: Optional[Dict[str, Any]]) -> str:
     v79.15.3 (item 1): a verified line's tesi is the code's (code_tesi), which names the element itself -- «art. X —
     <tesi>», the «(elemento in gioco: …)» label no longer repeated after it."""
     x = line or undetermined_line()
-    if x.get("stato") == FIXED_LINE:            # v79.19.5 (item 4): the one fixed sentence, no article
-        return _stop(x.get("tesi"))
     if x.get("stato") == UNDETERMINED or not x.get("articolo"):
         return f"{LINE_UNDETERMINED} ({LINE_UNVERIFIED_LABEL})"
     if x.get("stato") == FRAME_LINE:
@@ -2328,8 +2397,6 @@ def solutions_text(v: Dict[str, Any]) -> str:
         elif x.get("stato") == VERIFIED:
             rows.append(f"| {label} | art. {_cell(x['articolo'])} | {_cell(x.get('elemento_in_gioco'))} | "
                         f"{_cell(_stop(x.get('tesi')))} | {_cell(_facts_cell(x.get('cita_fatti'), v))} |")
-        elif x.get("stato") == FIXED_LINE:          # v79.19.5 (item 4): the fixed sentence
-            rows.append(f"| {label} | — | — | {_cell(_stop(x.get('tesi')))} | — |")
         else:
             rows.append(f"| {label} | {_cell(line_text(x))} | — | — | — |")
     section = general_part_text(v)          # v79.19.5 (item 5): after the lines, the general-part defences as records
@@ -2355,7 +2422,13 @@ def conclusions_text(v: Dict[str, Any]) -> str:
 
 
 def answer_strategy(v: Dict[str, Any]) -> List[str]:
-    """The «Risposte ai quesiti» strategy sentence: the verified leading line (labels only)."""
+    """The «Risposte ai quesiti» strategy sentence: the verified leading line (labels only). v79.19.8 (item 2, row 96):
+    with the defence relabel applied the first line as §1 prints it («Tesi dell'accusa: art. X — …»), never «La linea
+    principale è: … risulta provato» for an accused."""
+    r = v.get("relabel") or {}
+    if r.get("applied"):
+        label, x = _lines(v)[0]
+        return [f"{label}: {line_text(x)}."]
     return [LABEL_QA_MAIN.format(line=line_text((v.get("analysis") or {}).get("linea_principale")))]
 
 

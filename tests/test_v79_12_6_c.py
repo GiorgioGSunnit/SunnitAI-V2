@@ -268,12 +268,15 @@ def test_the_main_line_is_printed_once_per_section():
     assert T.main_line_count(solutions, tesi) == 1 and M.STRATEGY_MAIN_IN_TABLE in solutions
 
 
-def test_a_second_answer_on_the_main_line_refers_to_the_first():
+def test_the_main_line_is_section_1s_and_no_answer_repeats_it():
+    """v79.12.6 printed the main line once and referred to it from the second answer; v79.19.8 (item 3, row 98): the
+    main line is §1's sentence -- no answer repeats it, the forecast stays in each."""
     sols = [{"tesi": "Contestare la prevedibilità in concreto dell'evento morte", "realismo": "medio"}]
     block, _ = M.answers_block({"asked": ["Quale linea conviene?", "Che esito avrà la difesa?"]}, [], "", sols, 0,
                                {"esito": M.INCERTO, "why": "un elemento è da provare"}, "Gamma", lambda x: x)
-    assert T.main_line_count(block, sols[0]["tesi"]) == 1
-    assert M.MAIN_LINE_SEE_ANSWER.format(n=1) in block
+    assert T.main_line_count(block, sols[0]["tesi"]) == 0
+    assert M.MAIN_LINE_SEE_ANSWER.format(n=1) not in block
+    assert block.count("L'esito probabile è incerto: un elemento è da provare.") == 2
 
 
 def test_the_counter_reads_tables_too():

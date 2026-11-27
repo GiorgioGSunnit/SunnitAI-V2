@@ -256,18 +256,18 @@
       "nessun_fatto": "nessun fatto citato"
     },
     "difesa": {
-      "_doc": "v79.19.5 (item 4, row 90): the labels of an accused's lines (analysis_step.defence_relabel). With side «difesa» and the first line's element in play verified «provato», that line is printed under «accusa» («accusa_tesi»: {elemento}, {fatti} as in tesi); «difesa» heads the first verified line whose element in play is contestato / da_provare / escluso; none: «nessun_elemento» (one fixed sentence), then the subordinate line under «subordinata». Which lines exist and their order are unchanged.",
+      "_doc": "v79.19.5 (item 4, row 90): the labels of an accused's lines (analysis_step.defence_relabel). With side «difesa», v79.19.8 (item 2, row 96): a penal frame and the first line on the settled charge's article (choose_charge's), and the first line's element in play verified «provato», that line is printed under «accusa» («accusa_tesi»: {elemento}, {fatti} as in tesi); «difesa» heads the first verified line whose element in play is contestato / da_provare / escluso; none: the subordinate line follows under «subordinata», nothing in the defence's place (79.19.5's fixed sentence is gone). Which lines exist and their order are unchanged.",
       "accusa": "Tesi dell'accusa",
       "difesa": "Linea difensiva",
       "subordinata": "Linea subordinata",
-      "accusa_tesi": "l'elemento «{elemento}» risulta provato da {fatti}",
-      "nessun_elemento": "Nessun elemento della contestazione è contestabile sui fatti dati; la difesa si gioca sulla qualificazione e sulla pena"
+      "accusa_tesi": "l'elemento «{elemento}» risulta provato da {fatti}"
     },
     "parte_generale": {
-      "_doc": "v79.19.5 (item 5, row 94a): the section after the lines (analysis_step.general_part_section, printed in §6). For a defence side: every live record graded 2 or more whose article is in the c.p. general-part set (remedy_articles.json) or in «difese» and is no line, under «titolo_difesa». For a claimant in contract (the frame contractual) with no claim article as a verified line: the records of «rimedi» (c.c.) graded 2 or more, under «titolo_attore». Each record as records print elsewhere: the article, its rubrica, its live elements with their esito. An empty section is not printed.",
+      "_doc": "v79.19.5 (item 5, row 94a): the section after the lines (analysis_step.general_part_section, printed in §6). For a defence side: every record graded 2 or more whose article is in the c.p. general-part set (remedy_articles.json), in «difese» or in «graded_for_defence» and is no line, under «titolo_difesa». For a claimant in contract (the frame contractual) with no claim article as a verified line: the records of «rimedi» or of the c.c. remedy set graded 2 or more, under «titolo_attore». Each record as records print elsewhere: the article, its rubrica, its live elements with their esito. An empty section is not printed (why, logged analysis_general_part_skipped). v79.19.8 (item 6, row 97): «graded_for_defence» -- for an accused in a penal frame these c.p. articles, when already in the records (any source, a dropped record too), are graded by the flow (interactive_flow.general_part_grading) although the general-part gate drops them from the line candidates; grading only, they stay never-a-line.",
       "titolo_difesa": "Difese di parte generale che i fatti sollevano",
       "titolo_attore": "Rimedi applicabili",
       "difese": ["41", "52", "55", "56", "62", "62-bis"],
+      "graded_for_defence": ["41", "52", "55", "56", "59", "60", "61", "62", "62-bis"],
       "rimedi": ["1218", "1223", "1453", "1455", "1458"],
       "record": "art. {art}{rubrica}: {elementi}",
       "rubrica": " — {rubrica}",

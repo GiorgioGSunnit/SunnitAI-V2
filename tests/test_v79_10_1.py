@@ -377,11 +377,11 @@ def test_the_flow_keeps_the_method_for_a_client_with_a_line_and_says_the_other(m
     monkeypatch.setattr(M, "method_plan", plan)
     monkeypatch.setattr(flow, "clients_of", lambda state: [{"name": "Tizio"}, {"name": "Sempronio"}])
 
-    def inputs(state_, posture, plan_, topics, refs, rows, case, clients):
+    def inputs(state_, posture, plan_, topics, refs, rows, case, clients, verified=None):     # v79.19.8 (item 1)
         out = []
         for c in clients:               # Sempronio: no norm confers an action on him
             ctx, mplan = flow.method_inputs(state_, posture, {**plan_, "parte_assistita": c["name"]}, topics, refs,
-                                            rows, case)
+                                            rows, case, verified=verified)
             if c["name"] == "Sempronio":
                 ctx = {**ctx, "candidates": [], "no_action": line}
                 mplan = M.clean_method({}, [])
