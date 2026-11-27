@@ -1,42 +1,68 @@
 {
-  "_about": "v79.9 (B4): per institution module, the special laws expected in the graph -- the same list as the module's «laws» in data/institution_modules.json (a test keeps them equal). scripts/corpus_gaps.py --env .env prints the missing ones for ingestion; the parere prints one fixed line in §1 and §9 when a case's module has one missing (lawyer_method.MISSING_LAWS_LINE). «defaults»: the laws admitted for every civil or criminal case (Block C's family allowlist), checked the same way. v79.10 (A4): the amministrativo module -- L. 241/1990 and the TU edilizia d.P.R. 380/2001 (the c.p.a. is a code: always admitted, not a module law). v79.10 (A4, archive names): the archive's document names carry no law numbers -- each law maps to «archive_names», the exact names of its primary documents (a list: an edition changes the name), matched by whitespace-normalised equality only, never by number, expression or substring (src/rag/corpus_laws.py); [] when the law is not in the archive (unmapped: always missing, never guessed). «number», «year» and «aliases» only read the user's own words (family_gate.user_named, the «istituto» door). «codes»: the codes a module names by sigla (the c.p.a.), mapped the same way. The mappings are the user's (BRIEF 79.10).",
+  "_about": "v79.9 (B4): per institution module, the special laws expected in the graph -- the same list as the module's «laws» in data/institution_modules.json (a test keeps them equal). scripts/corpus_gaps.py --env .env prints the missing ones for ingestion; the parere prints one fixed line in §1 and §9 when a case's module has one missing (lawyer_method.MISSING_LAWS_LINE). «defaults»: the laws admitted for every civil or criminal case (Block C's family allowlist), checked the same way. v79.10 (A4): the amministrativo module -- L. 241/1990 and the TU edilizia d.P.R. 380/2001 (the c.p.a. is a code: always admitted, not a module law). v79.10 (A4, archive names): the archive's document names carry no law numbers -- each law maps to «archive_names», the exact names of its primary documents (a list: an edition changes the name), matched by whitespace-normalised equality only, never by number, expression or substring (src/rag/corpus_laws.py); [] when the law is not in the archive (unmapped: always missing, never guessed). «number», «year» and «aliases» only read the user's own words (family_gate.user_named, the «istituto» door). «codes»: the codes a module names by sigla (the c.p.a.), mapped the same way. The mappings are the user's (BRIEF 79.10). v79.19.6: the 21 documents ingested on 27 Nov 2026 (lavoro, locazioni, sanitario, procedura civile, penale, famiglia, bancario) mapped to their exact names; L. 108/1990, L. 223/1991 and d.lgs. 165/2001 added to the licenziamento module (the last also to amministrativo), L. 76/2016 to famiglia; every one of the 21 has a table entry in data/special_laws.json too (its family and signal).",
   "laws": {
     "L. 604/1966": {
       "number": "604",
       "year": "1966",
-      "aliases": [],
-      "archive_names": []
+      "aliases": [
+        "licenziamenti individuali",
+        "legge 604",
+        "legge sui licenziamenti individuali"
+      ],
+      "archive_names": [
+        "Licenziamenti Individuali L. 604/1966 2026"
+      ]
     },
     "L. 300/1970": {
       "number": "300",
       "year": "1970",
       "aliases": [
-        "statuto dei lavoratori"
+        "statuto dei lavoratori",
+        "statuto lavoratori",
+        "legge 300"
       ],
-      "archive_names": []
+      "archive_names": [
+        "Statuto dei Lavoratori 2026"
+      ]
     },
     "d.lgs. 23/2015": {
       "number": "23",
       "year": "2015",
       "aliases": [
-        "jobs act"
+        "jobs act",
+        "tutele crescenti",
+        "contratto a tutele crescenti",
+        "decreto 23/2015"
       ],
-      "archive_names": []
+      "archive_names": [
+        "Contratto a Tutele Crescenti 2026"
+      ]
     },
     "d.lgs. 81/2015": {
       "number": "81",
       "year": "2015",
-      "aliases": [],
-      "archive_names": []
+      "aliases": [
+        "disciplina organica dei contratti di lavoro",
+        "decreto 81/2015",
+        "codice dei contratti di lavoro"
+      ],
+      "archive_names": [
+        "Disciplina Organica dei Contratti di Lavoro 2026"
+      ]
     },
     "L. 24/2017": {
       "number": "24",
       "year": "2017",
       "aliases": [
         "gelli-bianco",
-        "legge gelli"
+        "legge gelli",
+        "gelli",
+        "responsabilità sanitaria",
+        "legge 24/2017"
       ],
-      "archive_names": []
+      "archive_names": [
+        "Legge Gelli-Bianco Responsabilità Sanitaria 2026"
+      ]
     },
     "d.lgs. 206/2005": {
       "number": "206",
@@ -61,9 +87,14 @@
     "d.lgs. 28/2010": {
       "number": "28",
       "year": "2010",
-      "aliases": [],
+      "aliases": [
+        "mediazione civile",
+        "mediazione civile e commerciale",
+        "decreto 28/2010"
+      ],
       "archive_names": [
-        "Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025"
+        "Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025",
+        "Mediazione Civile e Commerciale 2026"
       ]
     },
     "d.lgs. 285/1992": {
@@ -90,16 +121,24 @@
       "number": "392",
       "year": "1978",
       "aliases": [
-        "equo canone"
+        "equo canone",
+        "locazioni di immobili urbani",
+        "legge 392"
       ],
-      "archive_names": []
+      "archive_names": [
+        "Locazioni di Immobili Urbani 2026"
+      ]
     },
     "L. 431/1998": {
       "number": "431",
       "year": "1998",
-      "aliases": [],
+      "aliases": [
+        "locazioni abitative",
+        "legge 431"
+      ],
       "archive_names": [
-        "Legge sulle locazioni abitative 2023"
+        "Legge sulle locazioni abitative 2023",
+        "Locazioni Abitative 2026"
       ]
     },
     "L. 241/1990": {
@@ -135,6 +174,170 @@
       "archive_names": [
         "Riforma del Lavoro Fornero 2026"
       ]
+    },
+    "L. 108/1990": {
+      "number": "108",
+      "year": "1990",
+      "aliases": [
+        "legge 108",
+        "legge 108/1990",
+        "licenziamenti individuali 108"
+      ],
+      "archive_names": [
+        "Licenziamenti Individuali L. 108/1990 2026"
+      ]
+    },
+    "L. 223/1991": {
+      "number": "223",
+      "year": "1991",
+      "aliases": [
+        "licenziamenti collettivi",
+        "cassa integrazione",
+        "legge 223",
+        "mobilità"
+      ],
+      "archive_names": [
+        "Licenziamenti Collettivi e Cassa Integrazione 2026"
+      ]
+    },
+    "d.lgs. 165/2001": {
+      "number": "165",
+      "year": "2001",
+      "aliases": [
+        "testo unico pubblico impiego",
+        "t.u. pubblico impiego",
+        "tupi",
+        "pubblico impiego",
+        "decreto 165/2001"
+      ],
+      "archive_names": [
+        "Testo Unico Pubblico Impiego 2026"
+      ]
+    },
+    "d.l. 132/2014": {
+      "number": "132",
+      "year": "2014",
+      "aliases": [
+        "negoziazione assistita",
+        "decreto 132/2014"
+      ],
+      "archive_names": [
+        "Negoziazione Assistita 2026"
+      ]
+    },
+    "d.lgs. 150/2011": {
+      "number": "150",
+      "year": "2011",
+      "aliases": [
+        "riti civili semplificati",
+        "semplificazione dei riti civili",
+        "riti semplificati",
+        "decreto 150/2011"
+      ],
+      "archive_names": [
+        "Riti Civili Semplificati 2026"
+      ]
+    },
+    "d.P.R. 115/2002": {
+      "number": "115",
+      "year": "2002",
+      "aliases": [
+        "testo unico spese di giustizia",
+        "t.u. spese di giustizia",
+        "spese di giustizia",
+        "contributo unificato"
+      ],
+      "archive_names": [
+        "Testo Unico Spese di Giustizia 2026"
+      ]
+    },
+    "d.lgs. 274/2000": {
+      "number": "274",
+      "year": "2000",
+      "aliases": [
+        "competenza penale del giudice di pace",
+        "giudice di pace penale",
+        "decreto 274/2000"
+      ],
+      "archive_names": [
+        "Competenza Penale del Giudice di Pace 2026"
+      ]
+    },
+    "L. 689/1981": {
+      "number": "689",
+      "year": "1981",
+      "aliases": [
+        "depenalizzazione",
+        "legge 689",
+        "sanzioni amministrative"
+      ],
+      "archive_names": [
+        "Depenalizzazione e Sanzioni Amministrative 2026"
+      ]
+    },
+    "L. 69/2019": {
+      "number": "69",
+      "year": "2019",
+      "aliases": [
+        "codice rosso",
+        "legge 69/2019"
+      ],
+      "archive_names": [
+        "Codice Rosso 2026"
+      ]
+    },
+    "d.l. 11/2009": {
+      "number": "11",
+      "year": "2009",
+      "aliases": [
+        "stalking",
+        "misure urgenti sicurezza pubblica",
+        "legge 38/2009",
+        "decreto 11/2009"
+      ],
+      "archive_names": [
+        "Misure Urgenti Sicurezza Pubblica e Stalking 2026"
+      ]
+    },
+    "L. 110/1975": {
+      "number": "110",
+      "year": "1975",
+      "aliases": [
+        "disciplina delle armi",
+        "legge armi",
+        "legge sulle armi",
+        "legge 110/1975"
+      ],
+      "archive_names": [
+        "Disciplina delle Armi 2026"
+      ]
+    },
+    "L. 76/2016": {
+      "number": "76",
+      "year": "2016",
+      "aliases": [
+        "unioni civili",
+        "legge cirinnà",
+        "cirinnà",
+        "convivenze di fatto",
+        "legge 76/2016"
+      ],
+      "archive_names": [
+        "Unioni Civili e Convivenze 2026"
+      ]
+    },
+    "d.lgs. 11/2010": {
+      "number": "11",
+      "year": "2010",
+      "aliases": [
+        "servizi di pagamento",
+        "psd",
+        "psd2",
+        "decreto 11/2010"
+      ],
+      "archive_names": [
+        "Servizi di Pagamento 2026"
+      ]
     }
   },
   "codes": {
@@ -155,20 +358,25 @@
       "L. 300/1970",
       "d.lgs. 23/2015",
       "d.lgs. 81/2015",
-      "L. 92/2012"
+      "L. 92/2012",
+      "L. 108/1990",
+      "L. 223/1991",
+      "d.lgs. 165/2001"
     ],
     "responsabilita_sanitaria": [
       "L. 24/2017"
     ],
     "famiglia": [
-      "L. 898/1970"
+      "L. 898/1970",
+      "L. 76/2016"
     ],
     "consumo": [
       "d.lgs. 206/2005"
     ],
     "amministrativo": [
       "L. 241/1990",
-      "d.P.R. 380/2001"
+      "d.P.R. 380/2001",
+      "d.lgs. 165/2001"
     ]
   },
   "defaults": [

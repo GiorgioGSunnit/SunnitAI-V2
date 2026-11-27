@@ -207,8 +207,10 @@ def test_b_the_table_is_the_archive_names_mapping_never_a_guess():
     assert corpus_laws.citation_of("Legge 7 agosto 1990, n. 241") == ""
     assert corpus_laws.citation_of("Testo unico enti locali 2025") == ""
     assert corpus_laws.cite_titles("art. 3 Testo unico enti locali 2025") == "art. 3 Testo unico enti locali 2025"
-    # an unmapped law (archive_names []) is never printed by guess either
-    assert corpus_laws.cite_titles("Statuto dei lavoratori 2026") == "Statuto dei lavoratori 2026"
+    # a title the table does not map is never printed by guess either (v79.19.6: the Statuto is mapped now; a name of
+    # another act, numbered or not, stays as written)
+    assert corpus_laws.cite_titles("Statuto delle Imprese 2026") == "Statuto delle Imprese 2026"
+    assert corpus_laws.cite_titles("Legge 20 maggio 1970, n. 300") == "Legge 20 maggio 1970, n. 300"
 
 
 def test_b_every_label_builder_prints_the_citation_and_the_reader_finds_the_document():

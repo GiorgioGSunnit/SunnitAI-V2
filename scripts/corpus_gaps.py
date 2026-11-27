@@ -68,17 +68,19 @@ def selftest() -> int:
              "Codice Civile 2026", "Codice del processo amministrativo 2025"]
     got = run(names)
     lic = got["modules"]["licenziamento"]
-    assert lic == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015"], lic
-    assert got["status"]["L. 92/2012"] == corpus_laws.PRESENT and got["status"]["L. 604/1966"] == corpus_laws.UNMAPPED
+    # v79.19.6: every module law is mapped; the licenziamento's seven others are not among these names
+    assert lic == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 108/1990", "L. 223/1991", "d.lgs. 165/2001"], lic
+    assert got["status"]["L. 92/2012"] == corpus_laws.PRESENT and got["status"]["L. 604/1966"] == corpus_laws.NOT_IN_ARCHIVE
     assert got["status"]["d.P.R. 380/2001"] == corpus_laws.NOT_IN_ARCHIVE
     assert got["status"]["L. 898/1970"] == corpus_laws.PRESENT                 # whitespace-normalised
     assert got["status"]["c.p.a."] == corpus_laws.PRESENT
-    assert got["modules"]["consumo"] == [] and got["modules"]["amministrativo"] == ["d.P.R. 380/2001"]
+    assert got["modules"]["consumo"] == [] and got["modules"]["amministrativo"] == ["d.P.R. 380/2001", "d.lgs. 165/2001"]
     assert "L. 24/2017" in got["modules"]["responsabilita_sanitaria"]
     assert got["names_unmapped"] == ["Codice Civile 2026", "Legge 15 luglio 1966, n. 604",
                                      "Legge 7 agosto 1990, n. 241"]
     assert exit_code(got) == 1 and got["names_read"] == len(names)
-    assert exit_code(run(names + ["Legge sul divorzio 2024"])) == 1      # the unmapped module laws stay unmatched
+    assert exit_code(run(names + ["Legge sul divorzio 2024"])) == 1      # the absent module laws stay unmatched
+    assert run(names + ["Statuto dei Lavoratori 2026"])["status"]["L. 300/1970"] == corpus_laws.PRESENT   # v79.19.6
     print(report(got))
     print("selftest ok")
     return 0

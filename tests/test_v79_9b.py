@@ -105,7 +105,8 @@ def test_every_module_with_special_laws_names_them():
     from src.rag import lawyer_method as M
     mods = {m["id"]: m for m in M.institution_modules()["modules"]}
     assert mods["licenziamento"]["laws"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015",
-                                             "L. 92/2012"]                      # v79.10: the Fornero reform
+                                             "L. 92/2012", "L. 108/1990", "L. 223/1991", "d.lgs. 165/2001"]
+    # v79.10: the Fornero reform; v79.19.6: the L. 108/1990, the L. 223/1991 and the T.U. pubblico impiego
     assert mods["responsabilita_sanitaria"]["laws"] == ["L. 24/2017"]
     assert {"1218 c.c.", "1228 c.c.", "2043 c.c."} <= set(mods["responsabilita_sanitaria"]["actions"])
     assert mods["consumo"]["laws"] == ["d.lgs. 206/2005"] and mods["consumo"]["requires"] == "professional_counterparty"
@@ -126,13 +127,13 @@ def test_a_dismissal_with_the_laws_absent_gets_the_line_and_no_2119_main_line():
     from src.rag import lawyer_method as M
     ctx = _dismissal_ctx()
     ctx["missing_laws"] = M.missing_laws(ctx, known=["Codice Civile 2026", "Riforma del Lavoro Fornero 2026"])
-    assert ctx["missing_laws"]["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015"]
+    assert ctx["missing_laws"]["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 108/1990", "L. 223/1991", "d.lgs. 165/2001"]
     ctx["candidates"] = M.thesis_candidates(ctx)
     assert not [c for c in ctx["candidates"] if c.get("article") in ("2119 c.c.", "2118 c.c.")]
     assert "non conferisce un'azione al cliente" in ctx["claims_refused"]["2119 c.c."]
     plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "basso"} for c in ctx["candidates"]}}, ctx["candidates"])
-    line = ("La disciplina speciale di licenziamento (L. 604/1966, L. 300/1970, d.lgs. 23/2015, d.lgs. 81/2015) non è "
-            "nell'archivio: il parere si limita alle norme del codice")
+    line = ("La disciplina speciale di licenziamento (L. 604/1966, L. 300/1970, d.lgs. 23/2015, d.lgs. 81/2015, L. 108/1990, "
+            "L. 223/1991, d.lgs. 165/2001) non è nell'archivio: il parere si limita alle norme del codice")
     # v79.12.5 (item 2): the first read's institution keeps the ten sections -- §1 says the missing laws once (never
     # the corpus line beside it)
     text = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan)
@@ -152,13 +153,17 @@ def test_a_dismissal_with_the_laws_absent_gets_the_line_and_no_2119_main_line():
 def test_with_the_laws_present_or_unknown_no_line():
     from src.rag import corpus_laws, lawyer_method as M
     ctx = _dismissal_ctx()
-    # v79.10: the archive names only -- the licenziamento's four are unmapped, missing whatever the graph holds
+    # v79.10: the archive names only -- a numbered name is never the law; v79.19.6: all mapped, missing while their
+    # exact archive names are not among the known ones
     names = ["Legge 15 luglio 1966, n. 604", "Legge 20 maggio 1970, n. 300", "Riforma del Lavoro Fornero 2026"]
-    assert M.missing_laws(ctx, known=names)["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015",
-                                                         "d.lgs. 81/2015"]
+    assert M.missing_laws(ctx, known=names)["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 108/1990", "L. 223/1991", "d.lgs. 165/2001"]
+    assert M.missing_laws(ctx, known=names + ["Statuto dei Lavoratori 2026"])["leggi"] == [
+        x for x in ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 108/1990", "L. 223/1991", "d.lgs. 165/2001"] if x != "L. 300/1970"]
     divorce = _ctx({}, "Maria chiede il divorzio da Paolo.", ["divorzio"])
-    assert M.missing_laws(divorce, known=["Legge sul divorzio 2024"]) == {}
-    assert M.missing_laws(divorce, known=["Legge 1 dicembre 1970, n. 898"])["leggi"] == ["L. 898/1970"]
+    # v79.19.6: the famiglia module holds the L. 76/2016 too («Unioni Civili e Convivenze 2026»)
+    assert M.missing_laws(divorce, known=["Legge sul divorzio 2024", "Unioni Civili e Convivenze 2026"]) == {}
+    assert M.missing_laws(divorce, known=["Legge sul divorzio 2024"])["leggi"] == ["L. 76/2016"]
+    assert M.missing_laws(divorce, known=["Legge 1 dicembre 1970, n. 898"])["leggi"] == ["L. 898/1970", "L. 76/2016"]
     assert M.missing_laws(ctx) == {}                         # the graph's names unknown: nothing said missing
     corpus_laws.set_names(["Codice civile"])
     try:

@@ -1,5 +1,5 @@
 {
-  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. v79.14.2 (B): «penal»: true flags a penal source -- the c.p. and the c.p.p. entries, and the penal laws (d.P.R. 309/1990, d.lgs. 231/2001) -- what a verified penal frame with the client imputato or indagato may offer as the charge (lawyer_method.penal_source: the codes c.p. and c.p.p., case_frame.is_penal for a law case_frame.json's penal_provisions lists -- its penal articles by range --, and a flagged law it does not list, whole). Code's draft list, for the lawyer's review; edit here.",
+  "_about": "v79.14.1 (item 2): the institution's governing law -- what decides whether §1's honesty line «Il corpus non contiene ancora informazioni sufficienti su <materia>» (lawyer_method.CORPUS_LINE) may fire: only when the governing law is outside the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., the Constitution, the disposizioni di attuazione: family_gate.ordinary_code) AND missing from the archive (data/corpus_expected.json «archive_names», or a data/special_laws.json entry's, against the graph's primary document names: corpus_laws.names; unknown names -- the graph not read -- never fire). The entries are read in order, the first that matches decides (the special laws first, then the codes) -- so a special law's pattern names its own matter only, never a word a code institution shares («fallimento delle trattative» is art. 1337 c.c., «furto tentato fallito» the c.p., «vita privata» art. 615-bis c.p.: «fallimento» needs the impresa, the dichiarazione or the procedure; «privacy» and «dati personali» their treatment or code). Each entry: «patterns» (regular expressions, case-insensitive, read on a first-read institution's name and rubricated name) and «law» (a code's sigla, or a law as data/corpus_expected.json keys it -- «d.lgs. 79/2011», «L. 633/1941»). An institution no entry names takes the law of the institution module it names (data/institution_modules.json: the law of the module's leading action -- a code article first is a code institution; a special law's article first, its «laws»' first: responsabilità sanitaria is L. 24/2017), else the code of a record whose rubrica is the institution's rubricated name, else a law or an article cited in the institution's own words; none of these: the governing law is unknown and the line never fires (lawyer_method.governing_law). A code institution never prints it: legittima difesa (art. 52 c.p.) is the c.p. v79.14.2 (B): «penal»: true flags a penal source -- the c.p. and the c.p.p. entries, and the penal laws (d.P.R. 309/1990, d.lgs. 231/2001) -- what a verified penal frame with the client imputato or indagato may offer as the charge (lawyer_method.penal_source: the codes c.p. and c.p.p., case_frame.is_penal for a law case_frame.json's penal_provisions lists -- its penal articles by range --, and a flagged law it does not list, whole). Code's draft list, for the lawyer's review; edit here. v79.19.6: the institutions of the 21 documents ingested on 27 Nov 2026 (labour, locazioni, procedura civile, penal acts, unioni civili, servizi di pagamento), each with its law as corpus_expected keys it; «penal» on the Codice rosso, the stalking decree, the arms law and the giudice di pace's penal competence.",
   "institutions": [
     {
       "name": "contratto di viaggio",
@@ -134,6 +134,182 @@
       "law": "d.lgs. 28/2010",
       "patterns": [
         "\\bmediazione\\s+(?:civile|obbligatoria|finalizzata)"
+      ]
+    },
+    {
+      "name": "licenziamento individuale",
+      "law": "L. 604/1966",
+      "patterns": [
+        "\\blicenziament\\w*\\s+(?:individual|per\\s+giust|disciplinar|illegittim|orale|senza\\s+motivazion)",
+        "\\bgiustificato\\s+motivo\\b",
+        "\\bgiusta\\s+causa\\b"
+      ]
+    },
+    {
+      "name": "statuto dei lavoratori",
+      "law": "L. 300/1970",
+      "patterns": [
+        "\\bstatuto\\s+(?:dei\\s+)?lavoratori",
+        "\\breintegr\\w*\\s+(?:nel\\s+posto\\s+di\\s+lavoro|del\\s+lavoratore)",
+        "\\bsanzion\\w*\\s+disciplinar",
+        "\\bcontroll\\w*\\s+a\\s+distanza",
+        "\\bcondotta\\s+antisindacale"
+      ]
+    },
+    {
+      "name": "contratto a tutele crescenti",
+      "law": "d.lgs. 23/2015",
+      "patterns": [
+        "\\btutele\\s+crescenti",
+        "\\bjobs\\s+act"
+      ]
+    },
+    {
+      "name": "contratti di lavoro",
+      "law": "d.lgs. 81/2015",
+      "patterns": [
+        "\\bcontratt\\w*\\s+(?:di\\s+lavoro\\s+)?a\\s+(?:tempo\\s+)?(?:determinato|termine)",
+        "\\bpart[-\\s]?time",
+        "\\bsomministrazion\\w*\\s+di\\s+lavoro",
+        "\\bapprendistat",
+        "\\blavoro\\s+(?:intermittente|a\\s+chiamata|accessorio)",
+        "\\bcollaborazion\\w*\\s+(?:coordinat|etero)"
+      ]
+    },
+    {
+      "name": "licenziamento collettivo",
+      "law": "L. 223/1991",
+      "patterns": [
+        "\\blicenziament\\w*\\s+collettiv",
+        "\\bcassa\\s+integrazion",
+        "\\bprocedur\\w*\\s+di\\s+mobilit",
+        "\\briduzion\\w*\\s+(?:del\\s+)?personale"
+      ]
+    },
+    {
+      "name": "pubblico impiego",
+      "law": "d.lgs. 165/2001",
+      "patterns": [
+        "\\bpubblico\\s+impiego",
+        "\\bdipendent\\w*\\s+pubblic",
+        "\\blavoro\\s+(?:alle\\s+dipendenze|presso)\\s+(?:della|delle|la|le)\\s+(?:pubblic\\w*\\s+amministrazion|p\\.?a\\.?)",
+        "\\bconcors\\w*\\s+pubblic"
+      ]
+    },
+    {
+      "name": "locazione di immobili urbani",
+      "law": "L. 392/1978",
+      "patterns": [
+        "\\blocazion\\w*\\s+(?:di\\s+immobil\\w*\\s+)?(?:ad\\s+uso\\s+)?(?:commercial|non\\s+abitativ|urban)",
+        "\\bequo\\s+canone",
+        "\\bindennit\\w*\\s+(?:per\\s+la\\s+perdita\\s+)?(?:di|dell['’])\\s*avviamento"
+      ]
+    },
+    {
+      "name": "locazione abitativa",
+      "law": "L. 431/1998",
+      "patterns": [
+        "\\blocazion\\w*\\s+(?:ad\\s+uso\\s+)?abitativ",
+        "\\bcanone\\s+concordato",
+        "\\bcontratt\\w*\\s+(?:3\\s*\\+\\s*2|4\\s*\\+\\s*4)"
+      ]
+    },
+    {
+      "name": "negoziazione assistita",
+      "law": "d.l. 132/2014",
+      "patterns": [
+        "\\bnegoziazion\\w*\\s+assistit",
+        "\\bconvenzion\\w*\\s+di\\s+negoziazione"
+      ]
+    },
+    {
+      "name": "riti civili semplificati",
+      "law": "d.lgs. 150/2011",
+      "patterns": [
+        "\\briti\\s+(?:civili\\s+)?semplificati",
+        "\\bopposizion\\w*\\s+(?:a|ad|all['’])\\s*(?:ordinanz\\w*[-\\s]ingiunzion|sanzion\\w*\\s+amministrativ)",
+        "\\brito\\s+(?:sommario|semplificato)\\s+di\\s+cognizione"
+      ]
+    },
+    {
+      "name": "spese di giustizia",
+      "law": "d.P.R. 115/2002",
+      "patterns": [
+        "\\bspese\\s+di\\s+giustizia",
+        "\\bcontributo\\s+unificato",
+        "\\bpatrocinio\\s+a\\s+spese\\s+dello\\s+stato",
+        "\\bgratuito\\s+patrocinio"
+      ]
+    },
+    {
+      "name": "competenza penale del giudice di pace",
+      "law": "d.lgs. 274/2000",
+      "patterns": [
+        "\\bgiudice\\s+di\\s+pace\\s+(?:penale|in\\s+sede\\s+penale)",
+        "\\bcompetenza\\s+penale\\s+del\\s+giudice\\s+di\\s+pace",
+        "\\bricorso\\s+immediato\\s+al\\s+giudice\\s+di\\s+pace"
+      ],
+      "penal": true
+    },
+    {
+      "name": "depenalizzazione e sanzioni amministrative",
+      "law": "L. 689/1981",
+      "patterns": [
+        "\\bdepenalizz",
+        "\\bsanzion\\w*\\s+amministrativ\\w*\\s+pecuniari",
+        "\\bordinanz\\w*[-\\s]ingiunzion",
+        "\\bopposizion\\w*\\s+(?:a|ad|all['’])\\s*(?:sanzion\\w*\\s+amministrativ|verbal)"
+      ]
+    },
+    {
+      "name": "codice rosso",
+      "law": "L. 69/2019",
+      "patterns": [
+        "\\bcodice\\s+rosso",
+        "\\bviolenz\\w*\\s+(?:domestic|di\\s+genere)",
+        "\\brevenge\\s+porn",
+        "\\bdiffusion\\w*\\s+illecit\\w*\\s+di\\s+immagin"
+      ],
+      "penal": true
+    },
+    {
+      "name": "atti persecutori",
+      "law": "d.l. 11/2009",
+      "patterns": [
+        "\\bstalking",
+        "\\batti\\s+persecutor",
+        "\\bammoniment\\w*\\s+del\\s+questore"
+      ],
+      "penal": true
+    },
+    {
+      "name": "disciplina delle armi",
+      "law": "L. 110/1975",
+      "patterns": [
+        "\\bdisciplina\\s+delle\\s+armi",
+        "\\bport[oa]\\s+(?:abusiv\\w*\\s+)?(?:d['’]\\s*|di\\s+)arm",
+        "\\bdetenzion\\w*\\s+(?:illegale\\s+|abusiva\\s+)?(?:di\\s+)?arm",
+        "\\barm\\w*\\s+clandestin"
+      ],
+      "penal": true
+    },
+    {
+      "name": "unioni civili e convivenze",
+      "law": "L. 76/2016",
+      "patterns": [
+        "\\bunion\\w*\\s+civil",
+        "\\bconvivenz\\w*\\s+di\\s+fatto",
+        "\\bcontratt\\w*\\s+di\\s+convivenza",
+        "\\bcirinn[àa]"
+      ]
+    },
+    {
+      "name": "servizi di pagamento",
+      "law": "d.lgs. 11/2010",
+      "patterns": [
+        "\\bserviz\\w*\\s+di\\s+pagamento",
+        "\\boperazion\\w*\\s+di\\s+pagamento\\s+non\\s+autorizzat",
+        "\\bpsd2?\\b"
       ]
     },
     {

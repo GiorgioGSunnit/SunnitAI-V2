@@ -169,7 +169,10 @@ def test_the_honesty_line_never_fires_on_a_code_institution_a_special_word_names
 
 
 def test_a_modules_leading_action_decides_its_law():
-    assert M.governing_law({"name": "locazione abitativa"}, {"records": {}}) == ("c.c.", "modulo")
+    assert M.governing_law({"name": "comodato"}, {"records": {}}) == ("c.c.", "modulo")
+    # v79.19.6: the locazioni abitative have their law in the table («Locazioni Abitative 2026», L. 431/1998) -- the
+    # table decides before the module's leading action
+    assert M.governing_law({"name": "locazione abitativa"}, {"records": {}}) == ("L. 431/1998", "tabella")
     assert M.governing_law({"name": "licenziamento per giusta causa"}, {"records": {}})[0] == "L. 604/1966"
 
 

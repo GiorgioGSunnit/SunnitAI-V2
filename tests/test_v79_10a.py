@@ -99,7 +99,7 @@ def test_the_scia_case_admits_l241_and_the_tu_edilizia():
     from src.rag import family_gate
     ctx = family_gate.context(SCIA)
     assert "amministrativo" in ctx["modules"]
-    assert ctx["module_laws"] == ["L. 241/1990", "d.P.R. 380/2001"]
+    assert ctx["module_laws"] == ["L. 241/1990", "d.P.R. 380/2001", "d.lgs. 165/2001"]     # v79.19.6: the T.U. pubblico impiego
     kept, dropped, outside = family_gate.gate([TU_EDILIZIA, L241, _row("29", "c.p.a.")], ctx, set())
     assert len(kept) == 3 and not dropped
     assert {x["family"] for x in outside} == {"edilizia", "amministrativo"}
@@ -116,7 +116,8 @@ def test_module_hit_defaults_to_any_pattern_and_honours_weak_min():
 def test_the_module_its_actions_and_the_corpus_expected_laws():
     from src.rag import corpus_laws, lawyer_method as M
     mod = next(m for m in M.institution_modules()["modules"] if m["id"] == "amministrativo")
-    assert mod["draft"] is True and mod["laws"] == ["L. 241/1990", "d.P.R. 380/2001"] and len(mod["actions"]) == 16
+    assert mod["draft"] is True and mod["laws"] == ["L. 241/1990", "d.P.R. 380/2001", "d.lgs. 165/2001"] and \
+        len(mod["actions"]) == 16
     assert mod["actions"][:5] == ["7 l. 241/1990", "10-bis l. 241/1990", "21-quinquies l. 241/1990",
                                   "21-octies l. 241/1990", "21-nonies l. 241/1990"]
     exp = json.loads((ROOT / "data" / "corpus_expected.json").read_text(encoding="utf-8"))
@@ -127,7 +128,7 @@ def test_the_module_its_actions_and_the_corpus_expected_laws():
     assert not corpus_laws.present("L. 241/1990", ["Legge 7 agosto 1990, n. 241"])
     assert corpus_laws.present("d.P.R. 380/2001", ["Testo unico in materia edilizia Edizione 2025"])
     assert corpus_laws.gaps(["Legge sul Procedimento Amministrativo 2026"])["modules"]["amministrativo"] == [
-        "d.P.R. 380/2001"]
+        "d.P.R. 380/2001", "d.lgs. 165/2001"]                          # v79.19.6: the T.U. pubblico impiego too
     # the labels the pipeline builds for these documents match the module's specs; a c.p.a. article by its sigla
     assert M.claim_admission("21-nonies Legge sul Procedimento Amministrativo 2026", [mod])[1] == "module"
     assert M.claim_admission("31 Testo unico in materia edilizia Edizione 2025", [mod])[1] == "module"

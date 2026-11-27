@@ -1,5 +1,5 @@
 {
- "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal. v79.9 (Block C): every law carries its «family» (and, where known, «number»/«year»: a document named «… n. 385» of 1993 is the TUB). The family gate (src/rag/family_gate.py) admits a document only by its family: the codes always; the defaults (strada, stupefacenti, mediazione, consumo with a professional counterparty); a family law with its signal; an active module's laws (data/corpus_expected.json); a law the user names. New entries: antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts code, the Banca d'Italia circulars. v79.10 (A4): «families» -- a family's own signal, shared by its laws: «strong» (one expression suffices) or «weak» (at least «weak_min» of them, default 2, each a different expression): «il Comune», «la PA» or a bare «provvedimento» alone never admit an administrative law (a 2051 custodia case naming the Comune as the road's custodian stays civil). A law without «signal»/«signal_all» whose family has a «families» entry takes the family's signal; «signal_families» adds a family's signal to a law's own (the TU edilizia keeps its family «edilizia» and its own signal -- private building works, appalto -- and is admitted by the amministrativo signal too). New entry: L. 241/1990 (family amministrativo). v79.10 (A4, archive names): an entry matched to the archive by its documents' exact names -- «expected» (the data/corpus_expected.json law it is: its «archive_names») or its own «archive_names» (the d.lgs. 81/2008, «Testo Unico sulla Sicurezza del Lavoro 2026»; the d.lgs. 231/2001, «Responsabilità Amministrativa di Società ed Enti 2026») -- is found on a row's code or document name only by those names (whitespace-normalised equality) or by its own citation («d.P.R. 309/1990», the whole text); its «code» expression and number/year read the user's words only. The other entries match as before.",
+ "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal. v79.9 (Block C): every law carries its «family» (and, where known, «number»/«year»: a document named «… n. 385» of 1993 is the TUB). The family gate (src/rag/family_gate.py) admits a document only by its family: the codes always; the defaults (strada, stupefacenti, mediazione, consumo with a professional counterparty); a family law with its signal; an active module's laws (data/corpus_expected.json); a law the user names. New entries: antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts code, the Banca d'Italia circulars. v79.10 (A4): «families» -- a family's own signal, shared by its laws: «strong» (one expression suffices) or «weak» (at least «weak_min» of them, default 2, each a different expression): «il Comune», «la PA» or a bare «provvedimento» alone never admit an administrative law (a 2051 custodia case naming the Comune as the road's custodian stays civil). A law without «signal»/«signal_all» whose family has a «families» entry takes the family's signal; «signal_families» adds a family's signal to a law's own (the TU edilizia keeps its family «edilizia» and its own signal -- private building works, appalto -- and is admitted by the amministrativo signal too). New entry: L. 241/1990 (family amministrativo). v79.10 (A4, archive names): an entry matched to the archive by its documents' exact names -- «expected» (the data/corpus_expected.json law it is: its «archive_names») or its own «archive_names» (the d.lgs. 81/2008, «Testo Unico sulla Sicurezza del Lavoro 2026»; the d.lgs. 231/2001, «Responsabilità Amministrativa di Società ed Enti 2026») -- is found on a row's code or document name only by those names (whitespace-normalised equality) or by its own citation («d.P.R. 309/1990», the whole text); its «code» expression and number/year read the user's words only. The other entries match as before. v79.19.6: the 21 documents ingested on 27 Nov 2026 as table entries, each with its family (lavoro, locazioni, sanitario, mediazione, procedura civile, penale, famiglia; the PSD under bancario), its code expression (number / year, common name), its domain signal, its corpus_expected law (expected) and its exact archive name (archive_names). Code's draft signals, for the lawyer's review. The family gate admits them by their signal (or the module, for the module laws); the user naming them aside.",
  "laws": [
   {
    "id": "codice_della_strada",
@@ -150,7 +150,11 @@
    "signal": "\\bphishing\\b|\\bbonific\\w*|\\bcarta\\s+di\\s+(?:credito|debito|pagamento)|\\bhome\\s+banking\\b|\\bconto\\s+corrente\\b|\\boperazion\\w*\\s+(?:di\\s+pagamento\\s+)?non\\s+autorizzat|\\baddebit\\w*\\s+non\\s+autorizzat|\\bpagament\\w*\\s+(?:elettronic|online|digital)|\\bprelievo\\b|\\bPSD2?\\b|\\bsmishing\\b|\\bvishing\\b|\\bspoofing\\b",
    "family": "bancario",
    "number": "11",
-   "year": "2010"
+   "year": "2010",
+   "expected": "d.lgs. 11/2010",
+   "archive_names": [
+    "Servizi di Pagamento 2026"
+   ]
   },
   {
    "id": "reg_692_2014",
@@ -240,6 +244,269 @@
    "family": "Banca d'Italia",
    "code": "circolare\\s+(?:n\\.\\s*\\d+\\s+)?(?:della\\s+)?banca\\s+d['’]\\s*italia|banca\\s+d['’]\\s*italia.{0,40}circolare|disposizioni\\s+di\\s+vigilanza",
    "signal": "\\bvigilanz\\w*\\s+(?:bancari|prudenzial)\\w*|\\bsegnalazion\\w*\\s+(?:di\\s+vigilanza|alla\\s+banca\\s+d['’]\\s*italia)|\\bBanca\\s+d['’]\\s*Italia\\b"
+  },
+  {
+   "id": "legge_604_1966",
+   "name": "L. 604/1966 (licenziamenti individuali)",
+   "code": "\\b604\\s*/\\s*1966\\b|licenziament\\w*\\s+individual",
+   "signal": "\\blicenziament|\\blicenziat|\\bgiustificato\\s+motivo|\\bgiusta\\s+causa|\\brecesso\\s+del\\s+datore|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdipendent[ei]\\b|\\brapporto\\s+di\\s+lavoro|\\breintegr",
+   "family": "lavoro",
+   "number": "604",
+   "year": "1966",
+   "expected": "L. 604/1966",
+   "archive_names": [
+    "Licenziamenti Individuali L. 604/1966 2026"
+   ]
+  },
+  {
+   "id": "statuto_lavoratori",
+   "name": "L. 300/1970 (statuto dei lavoratori)",
+   "code": "\\b300\\s*/\\s*1970\\b|statuto\\s+(?:dei\\s+)?lavoratori",
+   "signal": "\\blicenziament|\\blicenziat|\\bgiustificato\\s+motivo|\\bgiusta\\s+causa|\\brecesso\\s+del\\s+datore|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdipendent[ei]\\b|\\brapporto\\s+di\\s+lavoro|\\breintegr|\\bsindac|\\bsanzion\\w*\\s+disciplinar|\\bcontestazione\\s+disciplinare|\\btrasferiment\\w*\\s+del\\s+lavoratore|\\bcontroll\\w*\\s+a\\s+distanza|\\bvisit\\w*\\s+personal|\\bart\\.?\\s*18\\b",
+   "family": "lavoro",
+   "number": "300",
+   "year": "1970",
+   "expected": "L. 300/1970",
+   "archive_names": [
+    "Statuto dei Lavoratori 2026"
+   ]
+  },
+  {
+   "id": "tutele_crescenti",
+   "name": "D.lgs. 23/2015 (contratto a tutele crescenti, Jobs Act)",
+   "code": "\\b23\\s*/\\s*2015\\b|tutele\\s+crescenti|jobs\\s+act",
+   "signal": "\\blicenziament|\\blicenziat|\\bgiustificato\\s+motivo|\\bgiusta\\s+causa|\\brecesso\\s+del\\s+datore|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdipendent[ei]\\b|\\brapporto\\s+di\\s+lavoro|\\breintegr|\\btutele\\s+crescenti|\\bjobs\\s+act|\\bassunt\\w*\\s+(?:dal|dopo\\s+il|a\\s+partire\\s+dal)\\s+(?:7\\s+)?marzo\\s+2015|\\bindennit\\w*\\s+(?:risarcitori|di\\s+licenziamento)",
+   "family": "lavoro",
+   "number": "23",
+   "year": "2015",
+   "expected": "d.lgs. 23/2015",
+   "archive_names": [
+    "Contratto a Tutele Crescenti 2026"
+   ]
+  },
+  {
+   "id": "contratti_lavoro_81_2015",
+   "name": "D.lgs. 81/2015 (disciplina organica dei contratti di lavoro)",
+   "code": "\\b81\\s*/\\s*2015\\b|disciplina\\s+organica\\s+dei\\s+contratti\\s+di\\s+lavoro",
+   "signal": "\\bcontratt\\w*\\s+(?:di\\s+lavoro\\s+)?a\\s+(?:tempo\\s+)?(?:determinato|termine)|\\bpart[-\\s]?time|\\bsomministrazion\\w*\\s+di\\s+lavoro|\\bapprendist|\\blavoro\\s+(?:accessorio|intermittente|a\\s+chiamata|agile)|\\bcollaborazion\\w*\\s+(?:coordinat|etero)|\\bco\\.?\\s?co\\.?\\s?co|\\bpartita\\s+iva|\\bmansion|\\bcontratt\\w*\\s+di\\s+lavoro",
+   "family": "lavoro",
+   "number": "81",
+   "year": "2015",
+   "expected": "d.lgs. 81/2015",
+   "archive_names": [
+    "Disciplina Organica dei Contratti di Lavoro 2026"
+   ]
+  },
+  {
+   "id": "legge_108_1990",
+   "name": "L. 108/1990 (licenziamenti individuali)",
+   "code": "\\b108\\s*/\\s*1990\\b",
+   "signal": "\\blicenziament|\\blicenziat|\\bgiustificato\\s+motivo|\\bgiusta\\s+causa|\\brecesso\\s+del\\s+datore|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdipendent[ei]\\b|\\brapporto\\s+di\\s+lavoro|\\breintegr",
+   "family": "lavoro",
+   "number": "108",
+   "year": "1990",
+   "expected": "L. 108/1990",
+   "archive_names": [
+    "Licenziamenti Individuali L. 108/1990 2026"
+   ]
+  },
+  {
+   "id": "legge_223_1991",
+   "name": "L. 223/1991 (licenziamenti collettivi, cassa integrazione)",
+   "code": "\\b223\\s*/\\s*1991\\b|licenziament\\w*\\s+collettiv|cassa\\s+integrazion",
+   "signal": "\\blicenziament\\w*\\s+collettiv|\\bcassa\\s+integrazion|\\bmobilit[àa]\\b|\\briduzion\\w*\\s+(?:del\\s+)?personale|\\bprocedur\\w*\\s+(?:di\\s+licenziamento\\s+)?collettiv|\\bcrisi\\s+aziendal|\\bcig[so]?\\b|\\besuber|\\bchiusura\\s+(?:dello\\s+)?stabiliment|\\bcessazione\\s+dell['’]attivit",
+   "family": "lavoro",
+   "number": "223",
+   "year": "1991",
+   "expected": "L. 223/1991",
+   "archive_names": [
+    "Licenziamenti Collettivi e Cassa Integrazione 2026"
+   ]
+  },
+  {
+   "id": "tu_pubblico_impiego",
+   "name": "D.lgs. 165/2001 (testo unico pubblico impiego)",
+   "code": "\\b165\\s*/\\s*2001\\b|pubblico\\s+impiego|\\btupi\\b",
+   "signal": "\\bpubblico\\s+impiego|\\bdipendent\\w*\\s+(?:pubblic|comunal|statal|regional|provincial|del\\s+comune|della\\s+regione|del\\s+ministero|dell['’]ente)|\\bimpiegat\\w*\\s+(?:pubblic|comunal|statal|regional)|\\bconcors\\w*\\s+pubblic|\\bdirigent\\w*\\s+pubblic|\\bprocediment\\w*\\s+disciplinar|\\bincaric\\w*\\s+dirigenzial|\\bpubblica\\s+amministrazione\\b[^.;\\n]{0,80}\\b(?:dipendent|lavorator|assunt|licenziat)|\\bprecari\\w*\\s+(?:della|nella)\\s+(?:pubblica\\s+amministrazione|p\\.?a\\.?)",
+   "family": "lavoro",
+   "number": "165",
+   "year": "2001",
+   "expected": "d.lgs. 165/2001",
+   "archive_names": [
+    "Testo Unico Pubblico Impiego 2026"
+   ],
+   "signal_families": [
+    "amministrativo"
+   ]
+  },
+  {
+   "id": "locazioni_urbane_392_1978",
+   "name": "L. 392/1978 (locazioni di immobili urbani, equo canone)",
+   "code": "\\b392\\s*/\\s*1978\\b|equo\\s+canone|locazion\\w*\\s+di\\s+immobili\\s+urbani",
+   "signal": "\\blocazion|\\blocat[oa]\\b|\\bcanon[ei]\\b|\\bconduttor|\\blocator|\\bsfratt|\\baffitt|\\bimmobil\\w*\\s+(?:ad\\s+uso\\s+)?(?:commercial|non\\s+abitativ)|\\bavviament|\\bequo\\s+canone|\\bprelazion|\\bnegozio\\b|\\bcapannon|\\bufficio\\s+in\\s+locazione",
+   "family": "locazioni",
+   "number": "392",
+   "year": "1978",
+   "expected": "L. 392/1978",
+   "archive_names": [
+    "Locazioni di Immobili Urbani 2026"
+   ]
+  },
+  {
+   "id": "locazioni_abitative_431_1998",
+   "name": "L. 431/1998 (locazioni abitative)",
+   "code": "\\b431\\s*/\\s*1998\\b|locazion\\w*\\s+abitativ",
+   "signal": "\\blocazion|\\blocat[oa]\\b|\\bcanon[ei]\\b|\\bconduttor|\\blocator|\\bsfratt|\\baffitt|\\bdisdett|\\binquilin|\\bcontratt\\w*\\s+(?:3\\s*\\+\\s*2|4\\s*\\+\\s*4|a\\s+canone\\s+(?:concordato|libero))|\\bappartament|\\babitazion",
+   "family": "locazioni",
+   "number": "431",
+   "year": "1998",
+   "expected": "L. 431/1998",
+   "archive_names": [
+    "Locazioni Abitative 2026"
+   ]
+  },
+  {
+   "id": "gelli_bianco",
+   "name": "L. 24/2017 (Gelli-Bianco, responsabilità sanitaria)",
+   "code": "\\b24\\s*/\\s*2017\\b|gelli|responsabilit\\w*\\s+sanitari",
+   "signal": "\\bresponsabilit\\w*\\s+(?:medic|sanitari|professionale\\s+(?:del|dei|degli)\\s+(?:medic|sanitar|esercent))|\\berror\\w*\\s+(?:medic|diagnostic|chirurgic|terapeutic)|\\bmalpractice|\\bstruttur\\w*\\s+sanitari|\\bospedal|\\bclinic[ao]\\b|\\bchirurg|\\bconsenso\\s+informato|\\blinee\\s+guida|\\bbuone\\s+pratiche|\\bcartell\\w*\\s+clinic|\\bmedic[oi]\\b|\\binterven\\w*\\s+(?:chirurgic|operator)|\\bparto\\b|\\bdimission|\\bpazient|\\bcure\\s+mediche|\\bdiagnos",
+   "family": "sanitario",
+   "number": "24",
+   "year": "2017",
+   "expected": "L. 24/2017",
+   "archive_names": [
+    "Legge Gelli-Bianco Responsabilità Sanitaria 2026"
+   ]
+  },
+  {
+   "id": "mediazione_civile",
+   "name": "D.lgs. 28/2010 (mediazione civile e commerciale)",
+   "code": "\\b28\\s*/\\s*2010\\b|mediazione\\s+civile",
+   "signal": "\\bmediazion|\\bmediator\\w*\\s+civil|\\borganism\\w*\\s+di\\s+mediazione|\\bcondizion\\w*\\s+di\\s+procedibilit|\\btentativ\\w*\\s+(?:obbligatori\\w*\\s+)?di\\s+(?:mediazione|conciliazione)|\\bconciliazion|\\bcondomin|\\blocazion|\\bsuccession|\\bdivision|\\bdiritt\\w*\\s+real|\\bcomodat|\\bresponsabilit\\w*\\s+(?:medic|sanitari)|\\bdiffamazion|\\bcontratt\\w*\\s+(?:bancar|assicurativ|finanziar)|\\bfranchising|\\bsubfornitur|\\bpatt\\w*\\s+di\\s+famiglia|\\baffitt\\w*\\s+d\\w*\\s+aziend",
+   "family": "mediazione",
+   "number": "28",
+   "year": "2010",
+   "expected": "d.lgs. 28/2010",
+   "archive_names": [
+    "Mediazione Civile e Commerciale 2026"
+   ]
+  },
+  {
+   "id": "negoziazione_assistita",
+   "name": "D.l. 132/2014 (negoziazione assistita)",
+   "code": "\\b132\\s*/\\s*2014\\b|negoziazione\\s+assistita",
+   "signal": "\\bnegoziazion\\w*\\s+assistit|\\bconvenzion\\w*\\s+di\\s+negoziazione|\\binvit\\w*\\s+(?:a|alla)\\s+(?:stipulare|negoziazione)|\\bcondizion\\w*\\s+di\\s+procedibilit|\\brisarciment\\w*\\s+(?:del\\s+)?dann\\w*\\s+(?:da\\s+)?circolazion|\\bsinistr\\w*\\s+strad|\\bsomm\\w*\\s+(?:non\\s+)?(?:superior|eccedent|inferior)\\w*\\s+(?:a\\s+)?50\\.?000|\\bseparazion\\w*\\s+consensual|\\bdivorzi\\w*\\s+(?:congiunt|consensual)|\\bavvocat\\w*\\s+(?:di\\s+)?(?:entrambe|ciascuna)\\s+le\\s+parti",
+   "family": "procedura civile",
+   "number": "132",
+   "year": "2014",
+   "expected": "d.l. 132/2014",
+   "archive_names": [
+    "Negoziazione Assistita 2026"
+   ]
+  },
+  {
+   "id": "riti_semplificati_150_2011",
+   "name": "D.lgs. 150/2011 (riti civili semplificati)",
+   "code": "\\b150\\s*/\\s*2011\\b|riti\\s+(?:civili\\s+)?semplificati|semplificazione\\s+dei\\s+(?:riti|procedimenti)",
+   "signal": "\\bopposizion\\w*\\s+(?:a|ad|all['’]|alla)\\s*(?:ordinanz\\w*[-\\s]ingiunzion|sanzion\\w*\\s+amministrativ|verbal|cartell\\w*\\s+(?:di\\s+pagamento|esattorial))|\\brito\\s+(?:sommario|semplificato|del\\s+lavoro|locatizio)\\b|\\bprocediment\\w*\\s+semplificat|\\bricors\\w*\\s+(?:ex|ai\\s+sensi\\s+dell['’])\\s*art\\.?\\s*702|\\bespulsion|\\bprotezione\\s+internazional|\\bimpugnazion\\w*\\s+(?:del|della)\\s+(?:provvedimento\\s+di\\s+)?(?:espulsione|diniego)",
+   "family": "procedura civile",
+   "number": "150",
+   "year": "2011",
+   "expected": "d.lgs. 150/2011",
+   "archive_names": [
+    "Riti Civili Semplificati 2026"
+   ]
+  },
+  {
+   "id": "tu_spese_giustizia",
+   "name": "D.P.R. 115/2002 (testo unico spese di giustizia)",
+   "code": "\\b115\\s*/\\s*2002\\b|spese\\s+di\\s+giustizia",
+   "signal": "\\bcontributo\\s+unificato|\\bspese\\s+di\\s+giustizia|\\bpatrocinio\\s+a\\s+spese\\s+dello\\s+stato|\\bgratuito\\s+patrocinio|\\bspese\\s+(?:legali|processuali|di\\s+lite|del\\s+giudizio)|\\bcost\\w*\\s+(?:del\\s+giudizio|della\\s+causa|del\\s+processo|legal)|\\bonorari\\w*\\s+(?:dell['’]avvocato|del\\s+difensore)|\\bcompens\\w*\\s+(?:dell['’]avvocato|del\\s+difensore|professional)|\\bquant\\w*\\s+cost|\\bcon\\s+quali\\s+costi|\\bin\\s+che\\s+tempi\\s+e\\s+(?:con\\s+)?quali\\s+costi",
+   "family": "procedura civile",
+   "number": "115",
+   "year": "2002",
+   "expected": "d.P.R. 115/2002",
+   "archive_names": [
+    "Testo Unico Spese di Giustizia 2026"
+   ]
+  },
+  {
+   "id": "giudice_pace_penale_274_2000",
+   "name": "D.lgs. 274/2000 (competenza penale del giudice di pace)",
+   "code": "\\b274\\s*/\\s*2000\\b|competenza\\s+penale\\s+del\\s+giudice\\s+di\\s+pace|giudice\\s+di\\s+pace\\s+penale",
+   "signal": "\\bgiudice\\s+di\\s+pace\\b|\\bpercoss|\\blesion\\w*\\s+(?:personal\\w*\\s+)?(?:lievi|lievissim)|\\bingiuri|\\bminacci\\w*\\s+(?:semplice|lieve)|\\bdiffamazion|\\bdanneggiament\\w*\\s+(?:semplice|lieve)|\\binvasion\\w*\\s+di\\s+terren|\\bsomministrazion\\w*\\s+di\\s+bevande\\s+alcolich|\\bmolesti\\w*\\s+(?:o\\s+disturbo\\s+)?alle\\s+persone|\\bricorso\\s+immediato\\s+al\\s+giudice|\\bpermanenza\\s+domiciliare|\\blavoro\\s+di\\s+pubblica\\s+utilit|\\bmalattia\\s+(?:di\\s+durata\\s+)?(?:non\\s+superiore|inferiore)\\s+a\\s+(?:venti|20)\\s+giorni",
+   "family": "penale",
+   "number": "274",
+   "year": "2000",
+   "expected": "d.lgs. 274/2000",
+   "archive_names": [
+    "Competenza Penale del Giudice di Pace 2026"
+   ]
+  },
+  {
+   "id": "depenalizzazione_689_1981",
+   "name": "L. 689/1981 (depenalizzazione e sanzioni amministrative)",
+   "code": "\\b689\\s*/\\s*1981\\b|depenalizzazion|sanzioni\\s+amministrative",
+   "signal": "\\bsanzion\\w*\\s+amministrativ|\\bordinanz\\w*[-\\s]ingiunzion|\\bdepenalizz|\\bverbal\\w*\\s+di\\s+(?:accertamento|contestazione)|\\bpagament\\w*\\s+in\\s+misura\\s+ridotta|\\bprefett|\\bscritti\\s+difensivi|\\bopposizion\\w*\\s+(?:a|ad|all['’])\\s*(?:ordinanz|sanzion|verbal)|\\bsanzion\\w*\\s+pecuniari|\\bsemidetenzion|\\blibert[àa]\\s+controllat|\\bconversione\\s+(?:della\\s+)?pena\\s+pecuniari|\\bpena\\s+pecuniari|\\bsospensione\\s+condizional",
+   "family": "penale",
+   "number": "689",
+   "year": "1981",
+   "expected": "L. 689/1981",
+   "archive_names": [
+    "Depenalizzazione e Sanzioni Amministrative 2026"
+   ]
+  },
+  {
+   "id": "codice_rosso_69_2019",
+   "name": "L. 69/2019 (Codice rosso)",
+   "code": "\\b69\\s*/\\s*2019\\b|codice\\s+rosso",
+   "signal": "\\bcodice\\s+rosso|\\bmaltrattament|\\bstalking|\\batti\\s+persecutor|\\bviolenz\\w*\\s+(?:sessual|domestic|di\\s+genere|privata|contro\\s+le\\s+donne)|\\brevenge\\s+porn|\\bdiffusion\\w*\\s+illecit\\w*\\s+di\\s+immagin|\\bsfregi|\\bdeformazion\\w*\\s+(?:dell['’])?aspetto|\\bcostrizion\\w*\\s+(?:al|o\\s+induzione\\s+al)\\s+matrimonio|\\bconvivent|\\bex\\s+(?:marito|moglie|compagn|fidanzat|partner)|\\bbraccialett\\w*\\s+elettronic|\\ballontanament\\w*\\s+dalla\\s+casa\\s+familiare|\\bdivieto\\s+di\\s+avvicinamento|\\bpersona\\s+offesa\\b[^.;\\n]{0,60}\\b(?:sentita|ascoltata)\\s+entro\\s+tre\\s+giorni|\\bpartner\\b|\\bcompagn[oa]\\b",
+   "family": "penale",
+   "number": "69",
+   "year": "2019",
+   "expected": "L. 69/2019",
+   "archive_names": [
+    "Codice Rosso 2026"
+   ]
+  },
+  {
+   "id": "sicurezza_pubblica_stalking_11_2009",
+   "name": "D.l. 11/2009 (misure urgenti di sicurezza pubblica, stalking)",
+   "code": "\\b11\\s*/\\s*2009\\b|\\b38\\s*/\\s*2009\\b|sicurezza\\s+pubblica\\s+e\\s+stalking|misure\\s+urgenti\\s+(?:in\\s+materia\\s+)?di\\s+sicurezza\\s+pubblica",
+   "signal": "\\bstalking|\\batti\\s+persecutor|\\bammoniment|\\bquestor[ei]\\b|\\bmolest|\\bpedinament|\\bappostament|\\bmessagg\\w*\\s+(?:insistent|ripetut|minaccios|continu)|\\bchiamat\\w*\\s+(?:insistent|ripetut|continu|anonim)|\\bperseguit|\\bperdurante\\s+(?:e\\s+grave\\s+)?stato\\s+di\\s+ansia|\\btimore\\s+per\\s+l['’]incolumit|\\bcambiare\\s+(?:le\\s+)?abitudini\\s+di\\s+vita|\\bex\\s+(?:marito|moglie|compagn|fidanzat|partner)|\\bronde?\\b|\\bdivieto\\s+di\\s+avvicinamento",
+   "family": "penale",
+   "number": "11",
+   "year": "2009",
+   "expected": "d.l. 11/2009",
+   "archive_names": [
+    "Misure Urgenti Sicurezza Pubblica e Stalking 2026"
+   ]
+  },
+  {
+   "id": "disciplina_armi_110_1975",
+   "name": "L. 110/1975 (disciplina delle armi)",
+   "code": "\\b110\\s*/\\s*1975\\b|disciplina\\s+delle\\s+armi|legge\\s+(?:sulle\\s+)?armi",
+   "signal": "\\barm[ai]\\b|\\bpistol|\\bfucil|\\bcoltell|\\bmunizion|\\bport[oa]\\s+(?:abusiv\\w*\\s+)?(?:d['’]\\s*|di\\s+)arm|\\bdetenzion\\w*\\s+(?:illegale\\s+|abusiva\\s+)?(?:di\\s+)?arm|\\bsparat|\\bcolp[oi]\\s+d['’]arma|\\bdenunci\\w*\\s+(?:di\\s+)?(?:detenzione|arm)|\\barma\\s+(?:da\\s+fuoco|clandestina|comune\\s+da\\s+sparo|bianca|giocattolo|improprio)|\\bcaricator|\\bpoligon|\\blicenz\\w*\\s+di\\s+porto\\s+d['’]armi|\\bnulla\\s*-?osta\\s+(?:all['’])?acquisto",
+   "family": "penale",
+   "number": "110",
+   "year": "1975",
+   "expected": "L. 110/1975",
+   "archive_names": [
+    "Disciplina delle Armi 2026"
+   ]
+  },
+  {
+   "id": "unioni_civili_76_2016",
+   "name": "L. 76/2016 (unioni civili e convivenze)",
+   "code": "\\b76\\s*/\\s*2016\\b|unioni\\s+civili|cirinn[àa]",
+   "signal": "\\bunion\\w*\\s+civil|\\bconvivenz\\w*\\s+(?:di\\s+fatto|more\\s+uxorio|stabile|registrat)|\\bconvivent[ei]\\b|\\bcontratt\\w*\\s+di\\s+convivenza|\\bcoppi\\w*\\s+(?:omosessual|dello\\s+stesso\\s+sesso|di\\s+fatto|non\\s+sposat|conviventi)|\\bpartner\\b|\\bcompagn[oa]\\b(?!\\s+di\\s+(?:classe|scuola|lavoro|squadra|viaggio))|\\bscioglimento\\s+dell['’]unione|\\bunit[oa]\\s+civilmente|\\bsenza\\s+(?:essere\\s+)?sposat|\\bmai\\s+sposat",
+   "family": "famiglia",
+   "number": "76",
+   "year": "2016",
+   "expected": "L. 76/2016",
+   "archive_names": [
+    "Unioni Civili e Convivenze 2026"
+   ]
   }
  ],
  "families": {

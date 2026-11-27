@@ -1,7 +1,8 @@
 {
-  "_doc": "v60h (2): the closed lists of the conditions of procedibilità before a civil action, keyed by matter. Read by src/rag/render_computed.py (mediation_of, negotiation_of). A matter's articles: per code sigla, [first, last] article ranges; per special law, a pattern its store name matches (every article). A chosen topic's anchor or matched article in a matter of the list makes the line; an article in a 'never' matter never does. Edit here, not in the code. v60q: with the case-first flow the matter is the case's own -- each matter's 'case': 'contracts' (a pattern the extraction's contract types match), 'areas' (the frame's areas that are it) with 'words' (a pattern the extraction's contracts, requests and events must also match, when given); the first matter a contract type matches, else the first an area matches (one with 'words' before one without). An article the parere writes never makes the line.",
+  "_doc": "v60h (2): the closed lists of the conditions of procedibilità before a civil action, keyed by matter. Read by src/rag/render_computed.py (mediation_of, negotiation_of). A matter's articles: per code sigla, [first, last] article ranges; per special law, a pattern its store name matches (every article). A chosen topic's anchor or matched article in a matter of the list makes the line; an article in a 'never' matter never does. Edit here, not in the code. v60q: with the case-first flow the matter is the case's own -- each matter's 'case': 'contracts' (a pattern the extraction's contract types match), 'areas' (the frame's areas that are it) with 'words' (a pattern the extraction's contracts, requests and events must also match, when given); the first matter a contract type matches, else the first an area matches (one with 'words' before one without). An article the parere writes never makes the line. v79.19.6: «archive_names» on the two blocks name the archive documents the lists come from (art. 5 co. 1 d.lgs. 28/2010: «Mediazione Civile e Commerciale 2026»; art. 3 d.l. 132/2014: «Negoziazione Assistita 2026»); the store names of the 27 Nov documents added to the «laws» patterns -- the labour acts and the penal acts in the «never» lists, the servizi di pagamento among the contratti bancari (the locazioni and the Gelli-Bianco already matched by «locazion» and «gelli»).",
   "mediazione": {
     "ref": "art. 5, co. 1, d.lgs. 28/2010",
+    "archive_names": ["Mediazione Civile e Commerciale 2026", "Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025"],
     "ref_note": "the matters of art. 5, co. 1-bis before d.lgs. 149/2022, now art. 5, co. 1 (with associazione in partecipazione, consorzio, franchising, opera, rete, somministrazione, società di persone, subfornitura added)",
     "matters": {
       "condominio": {"codes": {"c.c.": [[1117, 1139]]}, "case": {"areas": ["diritti_reali"], "words": "condomin", "request_words": "condomin"}},
@@ -15,7 +16,7 @@
       "risarcimento del danno da responsabilità medica e sanitaria": {"laws": ["24/2017", "gelli", "responsabilit\\w* (?:sanitari|medic|professionale degli esercenti)"], "case": {"contracts": "sanitari|ospedal|spedalit|prestazion\\w* medic|cura medic|chirurg", "areas": ["responsabilita_civile"], "words": "medic|sanitari|ospedal|chirurg|clinic", "request_words": "errore medic|\\bmedic[oi]\\b|responsabilit\\w* (?:medic|sanitari)|malpractice|sanitari|ospedal|chirurg|clinic|nosocomial"}},
       "risarcimento del danno da diffamazione con il mezzo della stampa o di altro mezzo di pubblicità": {"laws": ["47/1948", "disposizioni sulla stampa"], "case": {"areas": ["responsabilita_civile"], "words": "diffamazion|a mezzo (?:stampa|social)|testata|articolo di giornale", "request_words": "diffamazion|a mezzo (?:stampa|social)|testata|articolo di giornale"}},
       "contratti assicurativi": {"codes": {"c.c.": [[1882, 1932]]}, "case": {"contracts": "assicur|polizz"}},
-      "contratti bancari e finanziari": {"codes": {"c.c.": [[1834, 1860]]}, "laws": ["385/1993", "testo unico bancario", "58/1998", "testo unico della finanza"], "case": {"contracts": "banc|finanziar|conto corrent|apertura di credito|leasing|investiment|mutuo (?:bancari|ipotecari|fondiari)|credito al consumo|derivat"}},
+      "contratti bancari e finanziari": {"codes": {"c.c.": [[1834, 1860]]}, "laws": ["385/1993", "testo unico bancario", "58/1998", "testo unico della finanza", "servizi di pagamento"], "case": {"contracts": "banc|finanziar|conto corrent|apertura di credito|leasing|investiment|mutuo (?:bancari|ipotecari|fondiari)|credito al consumo|derivat"}},
       "associazione in partecipazione": {"codes": {"c.c.": [[2549, 2554]]}, "case": {"contracts": "associazione in partecipazione"}},
       "consorzio": {"codes": {"c.c.": [[2602, 2620]]}, "case": {"contracts": "consorzi"}},
       "franchising": {"laws": ["129/2004", "affiliazione commerciale", "franchising"], "case": {"contracts": "franchising|affiliazione commerciale"}},
@@ -26,10 +27,10 @@
       "subfornitura": {"laws": ["192/1998", "subfornitura"], "case": {"contracts": "subfornitur"}}
     },
     "never": {
-      "rito del lavoro": {"codes": {"c.c.": [[2060, 2134]], "c.p.c.": [[409, 473]]}, "laws": ["81/2008", "sicurezza (?:sul|nei luoghi di) lavoro", "300/1970", "statuto dei lavoratori", "81/2015", "\\blavoro\\b", "lavorator"], "case": {"areas": ["lavoro"]}},
+      "rito del lavoro": {"codes": {"c.c.": [[2060, 2134]], "c.p.c.": [[409, 473]]}, "laws": ["81/2008", "sicurezza (?:sul|nei luoghi di) lavoro", "300/1970", "statuto dei lavoratori", "81/2015", "\\blavoro\\b", "lavorator", "licenziament", "tutele crescenti", "cassa integrazione", "pubblico impiego"], "case": {"areas": ["lavoro"]}},
       "fatto illecito": {"codes": {"c.c.": [[2043, 2059]]}},
       "possesso (azioni possessorie e di nunciazione)": {"codes": {"c.c.": [[1140, 1157], [1168, 1172]]}},
-      "reati": {"codes": {"c.p.": [[1, 99999]], "c.p.p.": [[1, 99999]]}, "case": {"areas": ["penale"], "all": true}}
+      "reati": {"codes": {"c.p.": [[1, 99999]], "c.p.p.": [[1, 99999]]}, "laws": ["codice rosso", "giudice di pace", "sicurezza pubblica", "stalking", "\\barmi\\b"], "case": {"areas": ["penale"], "all": true}}
     },
     "facoltativa": {
       "_doc": "v79.12.1: the named contracts outside art. 5, co. 1 -- their dispute may go to mediation (art. 2 d.lgs. 28/2010), never as a condition of the action: a case whose contract type (the extraction's contract «type») is one of these, and none of the listed matters, prints «Mediazione facoltativa»; the area never makes such a case mandatory (a preliminare di vendita of a house is no «diritti reali» matter), nor a word of its parties or clauses (a «bonifico bancario», a «polizza fideiussoria»). Each entry: the pattern its type matches. «Obbligatoria» is the listed «matters» only. v79.12.1 (review): a named contract outside the list never hides an art. 5 matter the client's own request names -- each area matter's «case.request_words» (the condominio's delibera, the usucapione, the divisione, the lesione della legittima, the errore medico): matched in the extraction's requests (never the contract's type, parties or clauses), it makes the matter «obbligatoria» beside an appalto or a compravendita; a «never» matter (reati, rito del lavoro) prints no mediazione at all, facoltativa neither. A professional's contract (prestazione di servizi professionali, mandato professionale all'avvocato) is a contratto d'opera (art. 2229 c.c.), in the list.",
@@ -52,6 +53,7 @@
   },
   "negoziazione_assistita": {
     "ref": "art. 3 d.l. 132/2014",
+    "archive_names": ["Negoziazione Assistita 2026"],
     "matters": {
       "risarcimento del danno da circolazione di veicoli e natanti": {"facts": "circolazione"},
       "domanda di pagamento, a qualsiasi titolo, di somme non eccedenti 50.000 euro": {"facts": "pagamento", "max_euro": 50000}

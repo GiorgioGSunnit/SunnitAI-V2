@@ -29,13 +29,31 @@ CONTRACT = ("Alfa s.r.l. ha venduto a Beta s.r.l. un macchinario industriale per
             "saldo alla scadenza.")
 DISMISSAL = "Laura, dipendente della società Alfa da otto anni, è stata licenziata con una lettera senza motivazione."
 
-# the user's mappings (BRIEF 79.10), verbatim
+# the user's mappings (BRIEF 79.10), verbatim; v79.19.6: the 21 documents ingested on 27 Nov 2026 (tests/test_v79_19_6.py
+# holds their list) -- every law is mapped now
 MAPPED = {"L. 241/1990": [L241_DOC], "d.P.R. 380/2001": [TU_DOC],
-          "d.lgs. 28/2010": ["Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025"],
+          "d.lgs. 28/2010": ["Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025",
+                             "Mediazione Civile e Commerciale 2026"],
           "d.P.R. 309/1990": ["Testo Unico sugli Stupefacenti 2026"], "d.lgs. 206/2005": ["Codice del Consumo 2026"],
           "d.lgs. 285/1992": ["Codice della strada 2026"], "L. 92/2012": [FORNERO_DOC],
-          "L. 898/1970": ["Legge sul divorzio 2024"], "L. 431/1998": ["Legge sulle locazioni abitative 2023"]}
-UNMAPPED = ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 392/1978", "L. 24/2017"]
+          "L. 898/1970": ["Legge sul divorzio 2024"],
+          "L. 431/1998": ["Legge sulle locazioni abitative 2023", "Locazioni Abitative 2026"],
+          "L. 604/1966": ["Licenziamenti Individuali L. 604/1966 2026"], "L. 300/1970": ["Statuto dei Lavoratori 2026"],
+          "d.lgs. 23/2015": ["Contratto a Tutele Crescenti 2026"],
+          "d.lgs. 81/2015": ["Disciplina Organica dei Contratti di Lavoro 2026"],
+          "L. 108/1990": ["Licenziamenti Individuali L. 108/1990 2026"],
+          "L. 223/1991": ["Licenziamenti Collettivi e Cassa Integrazione 2026"],
+          "d.lgs. 165/2001": ["Testo Unico Pubblico Impiego 2026"], "L. 392/1978": ["Locazioni di Immobili Urbani 2026"],
+          "L. 24/2017": ["Legge Gelli-Bianco Responsabilità Sanitaria 2026"],
+          "d.l. 132/2014": ["Negoziazione Assistita 2026"], "d.lgs. 150/2011": ["Riti Civili Semplificati 2026"],
+          "d.P.R. 115/2002": ["Testo Unico Spese di Giustizia 2026"],
+          "d.lgs. 274/2000": ["Competenza Penale del Giudice di Pace 2026"],
+          "L. 689/1981": ["Depenalizzazione e Sanzioni Amministrative 2026"], "L. 69/2019": ["Codice Rosso 2026"],
+          "d.l. 11/2009": ["Misure Urgenti Sicurezza Pubblica e Stalking 2026"], "L. 110/1975": ["Disciplina delle Armi 2026"],
+          "L. 76/2016": ["Unioni Civili e Convivenze 2026"], "d.lgs. 11/2010": ["Servizi di Pagamento 2026"]}
+UNMAPPED: list = []
+LICENZIAMENTO = ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015", "L. 92/2012", "L. 108/1990",
+                 "L. 223/1991", "d.lgs. 165/2001"]
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +83,7 @@ def test_the_mappings_are_the_users_and_every_other_law_is_unmapped():
     assert sorted(k for k, v in exp["laws"].items() if v["archive_names"] == []) == sorted(UNMAPPED)
     assert all(isinstance(v["archive_names"], list) for v in exp["laws"].values())
     assert exp["codes"] == {"c.p.a.": {"name": "Codice del processo amministrativo", "archive_names": [CPA_DOC]}}
-    assert exp["modules"]["licenziamento"] == UNMAPPED[:4] + ["L. 92/2012"]
+    assert exp["modules"]["licenziamento"] == LICENZIAMENTO
     table = {x["id"]: x for x in json.loads((ROOT / "data" / "special_laws.json").read_text(encoding="utf-8"))["laws"]}
     assert table["testo_unico_sicurezza_lavoro"]["archive_names"] == ["Testo Unico sulla Sicurezza del Lavoro 2026"]
     assert table["dlgs_231_2001"]["archive_names"] == ["Responsabilità Amministrativa di Società ed Enti 2026"]
@@ -91,9 +109,10 @@ def test_a_numbered_name_is_no_corpus_law_anywhere():
     assert special_laws.law_of(numbered) is None and corpus_laws.law_for(numbered) == ""
     assert family_gate.classify(L241_DOC) == ("amministrativo", "legge_241_1990")
     assert family_gate.classify(FORNERO_DOC) == ("modulo", "L. 92/2012")
+    # v79.19.6: both laws have a table entry now -- its family and id (the mediazione family still the default one)
     assert family_gate.classify("Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025") == (
-        "mediazione", "d.lgs. 28/2010")
-    assert family_gate.classify("Legge sulle locazioni abitative 2023") == ("modulo", "L. 431/1998")
+        "mediazione", "mediazione_civile")
+    assert family_gate.classify("Legge sulle locazioni abitative 2023") == ("locazioni", "locazioni_abitative_431_1998")
     # a label's code that is the law's own citation, or the sigla its document is labelled with
     assert corpus_laws.law_for("l. 241/1990") == "L. 241/1990" and corpus_laws.law_for("c.d.s.") == "d.lgs. 285/1992"
 
@@ -193,7 +212,11 @@ def test_an_unmapped_law_is_reported_missing_whatever_the_graph_holds():
     from src.rag import corpus_laws
     names = ["Legge 15 luglio 1966, n. 604", "Legge 604/1966", "L. 604/1966", L241_DOC]
     assert corpus_laws.missing(["L. 604/1966", "L. 241/1990"], names) == ["L. 604/1966"]
-    assert corpus_laws.status("L. 604/1966", names) == corpus_laws.UNMAPPED
+    # v79.19.6: the L. 604/1966 is mapped («Licenziamenti Individuali L. 604/1966 2026»): not in these names; a law
+    # the table does not hold at all is the unmapped one
+    assert corpus_laws.status("L. 604/1966", names) == corpus_laws.NOT_IN_ARCHIVE
+    assert corpus_laws.status("L. 999/1999", names) == corpus_laws.UNMAPPED
+    assert corpus_laws.missing(["L. 999/1999", "L. 241/1990"], names) == ["L. 999/1999"]
     assert corpus_laws.status("d.P.R. 380/2001", names) == corpus_laws.NOT_IN_ARCHIVE
     assert corpus_laws.status("L. 241/1990", names) == corpus_laws.PRESENT
     assert corpus_laws.missing(["L. 604/1966"], None) is None or corpus_laws.names() is None
@@ -204,11 +227,12 @@ def test_fornero_present_and_the_line_for_licenziamentos_four():
     ctx = {"records": {}, "circumstances": {}, "case": DISMISSAL, "assessment": {}, "institutions": ["licenziamento"]}
     gone = M.missing_laws(ctx, known=[FORNERO_DOC, "Codice Civile 2026"])
     assert gone["module"] == "licenziamento" and "L. 92/2012" not in gone["leggi"]
-    assert gone["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015"]
+    # v79.19.6: the module's laws are all mapped; those whose archive name is not among the known ones are missing
+    assert gone["leggi"] == [x for x in LICENZIAMENTO if x != "L. 92/2012"]
     ctx["missing_laws"] = gone
     assert M.missing_laws_line(ctx) == (
-        "La disciplina speciale di licenziamento (L. 604/1966, L. 300/1970, d.lgs. 23/2015, d.lgs. 81/2015) non è "
-        "nell'archivio: il parere si limita alle norme del codice.")
+        "La disciplina speciale di licenziamento (L. 604/1966, L. 300/1970, d.lgs. 23/2015, d.lgs. 81/2015, L. 108/1990, "
+        "L. 223/1991, d.lgs. 165/2001) non è nell'archivio: il parere si limita alle norme del codice.")
     assert "L. 92/2012" in M.missing_laws(ctx, known=["Codice Civile 2026"])["leggi"]
 
 
@@ -250,7 +274,9 @@ def test_corpus_gaps_selftest_and_report():
     assert out.returncode == 0 and "selftest ok" in out.stdout, out.stderr
     assert "(expected 87)" in out.stdout and "## module licenziamento" in out.stdout
     assert f"| L. 92/2012 | «{FORNERO_DOC}» | present |" in out.stdout
-    assert "| L. 604/1966 | — | UNMAPPED |" in out.stdout and "NOT IN ARCHIVE" in out.stdout
+    # v79.19.6: the L. 604/1966 is mapped to its 27 Nov document, absent from the selftest's names
+    assert "| L. 604/1966 | «Licenziamenti Individuali L. 604/1966 2026» | NOT IN ARCHIVE |" in out.stdout
+    assert "UNMAPPED" not in out.stdout
     assert "## archive names no law maps" in out.stdout and "- «Codice Civile 2026»" in out.stdout
 
 
@@ -288,7 +314,7 @@ def test_a_document_named_like_a_citation_is_not_the_law(name):
     kept, dropped, _ = family_gate.gate([_row("2", name)], ctx, set())
     assert kept == [] and dropped[0]["family"] == family_gate.OTHER
     assert not M.same_article(f"2 {name}", "2 l. 604/1966") and corpus_laws.law_for(name) == ""
-    assert corpus_laws.status("L. 604/1966", [name]) == corpus_laws.UNMAPPED
+    assert corpus_laws.status("L. 604/1966", [name]) == corpus_laws.NOT_IN_ARCHIVE      # v79.19.6: mapped, not here
     # a module action and the pipeline's own citations are still read («l.», «d.lgs.», «d.P.R.»)
     assert corpus_laws.law_for("l. 604/1966") == "L. 604/1966" and corpus_laws.law_for("d.lgs. 23/2015") == "d.lgs. 23/2015"
     assert family_gate.classify("Legge 241/1990", "Legge 241/1990") == (family_gate.OTHER, "")
@@ -310,7 +336,7 @@ def test_a_rows_document_decides_not_the_code_beside_it():
     from src.rag import family_gate, special_laws
     numbered = "Decreto legislativo 4 marzo 2010, n. 28"
     assert family_gate.classify("D.lgs. 28/2010", numbered) == (family_gate.OTHER, "")
-    assert family_gate.classify("D.lgs. 28/2010") == ("mediazione", "d.lgs. 28/2010")         # a bare label's citation
+    assert family_gate.classify("D.lgs. 28/2010") == ("mediazione", "mediazione_civile")      # a bare label's citation
     assert special_laws.law_of_row("d.lgs. 81/2008", "Decreto legislativo 9 aprile 2008, n. 81") is None
     assert special_laws.law_of_row("d.lgs. 81/2008", "Testo Unico sulla Sicurezza del Lavoro 2026")["id"] == (
         "testo_unico_sicurezza_lavoro")
