@@ -572,6 +572,26 @@ The page argues one line and answers the questions; nothing new to set. Source: 
 
 Not changed: 79.19.5 items 1, 6 and 7; 79.19.4's three rules; 79.19.3's fixes; the step's line selection and order; GATES_DEMOTE (off); `data/remedy_articles.json`. 52 and 55 c.p. are not in the remedy set, so the step may still take one of them as a line when its record is live (as in 79.19.5); only a dropped record stays out of the candidates.
 
+## 5q. v79.19.9 additions (branch v79.19; one new flag, `OPINION_WRITER`)
+
+Source: the 28 Nov ceiling review, rows 111-113 -- 24% of the key articles are found and then removed by a rule before the writer; on the right articles the same model writes a 5, on ours a 3.
+
+**Part 1, the rails (always on).**
+
+| Item | What changed |
+|---|---|
+| A. Writable by grade (row 107) | `issue_records.build`: a listed article graded 2 or more is writable whatever its place in its topic's list (`writable = ref in _topic_refs(t) or grade >= 2`); 79.8's «elencato, non scrivibile» kept 21 key article-runs out. Logged `interactive_writable_by_grade {articles}`. The `_topic_refs` audit (24 call sites): the writer's refs already rank every graded article of a topic (`capped_refs` with records), so such a record is written by its topic; the three sites that read the planned list only and feed the writer -- the link's labels (`link_records`), the plan issues (`plan_inputs`) and the fallback plan -- now read every listed article filtered by the writer's refs / the writable records; the other sites (topic texts fetch, the API's topic listing, the profiles, the offence survival, the cap's «non trattate» line) list or count and are unchanged. |
+| B. Grade 3 not demoted by one contradicted element (row 108) | `issue_records.demote_contradicted`: after the `keep` test, a `DEMOTED_CONTRADICTED` against a grade of 3 is kept and logged `kept_grade3`; the facts' exclusion (`DEMOTED_EXCLUDED`) demotes as before; grade 2 unchanged. |
+| C. Grade cap 30 -> 50 (row 109) | `interactive_flow.GRADE_CAP = 50`, below `defensive_generation.GRADE_PREFILTER_N` (50): nothing else moves. The cost is visible per case: `interactive_grading_calls {calls, wall_s, longest_s, grading_s, cap, hits}` and `interactive_grade_funnel.cap`. |
+
+**Part 2, the opinion writer.**
+
+| Name | Default | Read in | What it does |
+|---|---|---|---|
+| `OPINION_WRITER` | false | `src/rag/opinion_writer.py:enabled` (`FLAG`) | After the analysis step and `render_computed.render`, one chat call (`max_tokens` 3000, thinking asked -- `LLM_THINKING` decides) with system = Antonelo's row-112 text verbatim plus three rail lines (cite only the given articles; no rulings; terms and rites only from the «Profili processuali (calcolati)» block), human = the case text, the article texts of the live records graded 2 or 3 (the step's lines first; each article's whole text from the graph, at most 9,000 characters per article, 45,000 in all), then the rendered procedural section under that heading. Four code checks on the prose, logged under `interactive_opinion_writer` (`opinion_checks`): `articles_removed` (a sentence citing an article not among the given texts, by key: removed), `rulings_stripped` («Cass.» / «sent.» / «ord.» followed by a number: stripped; the rulings section stays the code's), `terms_flagged` (a date or term -- «entro N giorni/mesi/anni», «dal <date>», «prescrizione …», «decadenza …» -- not present in the rendered section: the sentence suffixed «[da verificare]»), `facts_contested` (the step's verified «provato» elements whose cited fact the prose marks «da provare» / «non risulta» / «allegazione»: counted). The checked prose, with the rendered procedural section as its own «**5. Profili processuali e termini**» section, goes through `step_aside_answer` (the grounded-rule check, the code-made rulings section) and is the answer returned; the page is still built and kept beside it: `state["page_text"]` / `state["opinion_text"]`, the single-shot result's `page_text` / `opinion_text`, the event's `opinion_text`. A failed call: the page as today, the error logged. Retrieval, grading, records, the analysis step and the fit are untouched. Off: nothing is called, the output is 79.19.8's. |
+
+Not changed: everything of 79.19.3-79.19.8; GATES_DEMOTE (off); `data/remedy_articles.json`; the step's line selection.
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the
@@ -584,4 +604,4 @@ files on the server for the values actually set.
 | `scripts/promote.sh` (live ← test) | Copies the boolean flags of `/root/v38/.env.v45` into `/opt/chatbot/.env`. That means lines `KEY=true\|false\|yes\|no\|on\|off` whose key does not start with `LLM_`, `EMBEDDING_`, `NEO4J_` or `STRIPE_`. It never copies LLM settings. Each change is printed (`scripts/promote.sh` step 3). |
 | `scripts/nightly_sim.py` | Loads `--env` (default `.env`). The docstring requires the server's environment with `LAWYER_METHOD=true`, `CASE_FIRST_SINGLE_SHOT=true` and `LLM_THINKING=per_call` (except in `--answers` mode, which needs no model and no database). |
 | `scripts/diagnose_long.py` | Loads `--env`, then applies `--set NAME=VALUE`. `--interactive-sim` defaults `INTERACTIVE_FLOW=true` and `INTERACTIVE_CASE_FIRST=true`. `--interactive-sim --single-shot` defaults `CASE_FIRST_SINGLE_SHOT=true` and `INTERACTIVE_CASE_FIRST=true`. A `--set` of the same name wins. With `VOTE_POOL_ENABLED` and no readable `VOTE_POOL_IDF_FILE`, it computes the counts once and sets `VOTE_POOL_IDF_FILE` for its child processes. |
-| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 90 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |
+| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 92 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |

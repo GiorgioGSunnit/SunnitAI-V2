@@ -725,7 +725,9 @@ def procedural_institutions(searches: Sequence[Dict[str, Any]], pairs: Sequence[
 CUTTING_SHARE = 0.8         # v60d: of the prefilter's N kept, more than this share graded 2+: the prefilter is cutting
 
 
-GRADE_CAP = 30           # v79.8 (A2): the articles round 1 grades, at most
+GRADE_CAP = 50           # v79.8 (A2): the articles round 1 grades, at most; v79.19.9 (C, row 109): 30 -> 50 -- below
+#                          GRADE_PREFILTER_N (50, defensive_generation) nothing else moves; the cost is logged
+#                          (grading_calls: calls, grading_s; grade_funnel: cap)
 
 
 def grade_cap(rows: Sequence[Dict[str, Any]], keep: Sequence[str], cap: int = GRADE_CAP, anchors: Sequence[str] = ()
@@ -1085,7 +1087,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                                                      if r.get("_article")}),
                                    "matter_gated": len((out.get("matter_gate") or {}).get("dropped") or []),
                                    "hits": hits_n, "capped": cap_log["dropped"], "graded": cap_log["kept"],
-                                   "anchors_kept": cap_log["anchors_kept"]}            # v79.10.4 (D2)
+                                   "anchors_kept": cap_log["anchors_kept"],            # v79.10.4 (D2)
+                                   "cap": GRADE_CAP}                                   # v79.19.9 (C)
             _log("grade_funnel", out["grade_funnel"])
         stage_meter.mark("grading")
         if case_first:          # v60 (G): round 1's graded check -- the embedding prefilter's top N
@@ -1115,7 +1118,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             out["grading"]["calls"] = limits.get("calls") or {}         # v60p: calls, wall time, the longest call
             _log("grading_breadth", out["grading"]["breadth"])
             _log("grading_invariant", out["grading"]["invariant"])
-            _log("grading_calls", {**out["grading"]["calls"], "grading_s": out["grading"]["s"]})
+            _log("grading_calls", {**out["grading"]["calls"], "grading_s": out["grading"]["s"],
+                                   "cap": GRADE_CAP, "hits": hits_n})          # v79.19.9 (C): the cost per case
             # v79.10 (A5): the shadow grading -- (review) on a meter of its own, its seconds a stage of their own: never
             # the request's grading_s, round1_llm, llm_calls or total_s (the nightly's counters measure the pipeline)
             t_shadow = time.time()
@@ -3458,7 +3462,11 @@ def link_records(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], dead: 
     sents = state.get("sentences") or case_sentences(state)
     mark_sides(sents, state)                    # v60t: the client is settled now -- whose account each sentence is
     state["sentences"] = sents
-    labels = [[issue_records._label(r) for r in _topic_refs(t) if _key(r) not in dead] for t in topics]
+    # v79.19.9 (A): every writable record of the topic (the planned ones and those writable by grade), not only the
+    # first TOPIC_ARTICLES -- a record made writable by its grade is linked with its topic
+    labels = [[issue_records._label(r) for r in _topic_refs(t, all_=True) if _key(r) not in dead
+               and (r in _topic_refs(t) or (records.get(issue_records._label(r)) or {}).get("dropped") is None
+                    and issue_records._label(r) in records)] for t in topics]
     in_topics = {x for group in labels for x in group}
     extra = [x for x in extra if x not in in_topics and records.get(x)]
     if extra:
@@ -3487,7 +3495,7 @@ def plan_inputs(state: Dict[str, Any], analysis: Dict[str, Any], topics: Sequenc
     issues: List[Dict[str, Any]] = []
     if records:
         wanted = {_key(r) for r in refs}
-        by_topic = [[r for r in _topic_refs(t) if _key(r) in wanted] for t in topics]
+        by_topic = [[r for r in _topic_refs(t, all_=True) if _key(r) in wanted] for t in topics]   # v79.19.9 (A)
         issues = issue_records.plan_issues(topics, by_topic, records, state.get("sentences") or [])
         if issues:
             analysis[ptw.PLAN_ISSUES_KEY] = issues
@@ -4904,7 +4912,8 @@ def _fallback_plan(state: Dict[str, Any], analysis: Dict[str, Any], topics: Sequ
     name = str(analysis.get("parte_assistita") or "").strip()
     return {"parte_assistita": name, "posizione": str(analysis.get("posizione") or ""), "obiettivo": "",
             "questione_centrale": topics[0]["title"] if topics else "", "risposte": [], "subordinate": [],
-            "punti_deboli": [], "questioni": [{"titolo": t["title"], "norme": [r for r in _topic_refs(t) if r in refs],
+            "punti_deboli": [], "questioni": [{"titolo": t["title"],
+                                              "norme": [r for r in _topic_refs(t, all_=True) if r in refs],   # v79.19.9 (A)
                                               "pronunce": [], "argomento": "", "obiezione": "", "replica": "",
                                               "ancore": []} for t in topics]}
 
@@ -6540,6 +6549,17 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         from . import analysis_step         # a step that raised: the leading line «da determinare», never the old one
         verified = _isolated("analysis_step", lambda: analysis_step_run(state), None) or analysis_step.view(None, None)
         _isolated("step_aside_if_no_line", lambda: step_aside_if_no_line(state, verified), False)   # v79.19.4 (rule 3)
+    # v79.19.9 (Part 2, OPINION_WRITER): one call on the case, the live records' article texts (the step's lines first)
+    # and the rendered procedural section -- the opinion, checked (opinion_writer.checks); the page is still built and
+    # kept beside it, the opinion is what the user gets (opinion_answer, at the end). Off: nothing called, nothing changes.
+    state.pop("opinion_writer", None)
+    state.pop("opinion_text", None)
+    state.pop("page_text", None)
+    if opinion_flag():
+        mark("opinion_writer")
+        from . import opinion_writer
+        state["opinion_writer"] = _isolated("opinion_writer", lambda: opinion_writer.write(
+            state, verified, all_rows, case, rendered or ""), None)
     method_ctx: Optional[Dict[str, Any]] = None
     method_plan: Dict[str, Any] = {}
     method_clients = None
@@ -6797,6 +6817,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     _isolated("role_corpus_counted", lambda: role_corpus_counted(state, draft, method_ctxs, posture))
     for n in numbers:
         state.setdefault("answers", {})[str(n)] = {"version": state.get("version"), "chars": len(draft)}
+    if (state.get("opinion_writer") or {}).get("text"):     # v79.19.9 (Part 2): the opinion is the page returned --
+        page = draft                                        # the page kept beside it (page_text), logged with its checks
+        draft = _isolated("opinion_answer", lambda: opinion_answer(state, page, all_rows, case, rendered or ""),
+                          draft) or draft
     mark("citations")
     cited = rows + tool_rows
     citations = _isolated("citations", lambda: [c for c in dg._rows_to_sources(dg._draft_sources(draft, cited, [], documents))
@@ -7652,6 +7676,29 @@ def step_aside_own(state: Dict[str, Any], case: str = "") -> List[str]:
         [case or ""]
     return list(dict.fromkeys(list(state.get("records") or {})
                               + [citations.label(r) for t in texts for r in citations.article_refs(t)]))
+
+
+def opinion_flag() -> bool:
+    """v79.19.9 (Part 2): OPINION_WRITER (opinion_writer.enabled)."""
+    from . import opinion_writer
+    return opinion_writer.enabled()
+
+
+def opinion_answer(state: Dict[str, Any], page: str, rows: Sequence[Dict[str, Any]], case: str, rendered: str) -> str:
+    """v79.19.9 (Part 2, OPINION_WRITER): the opinion as the answer -- the checked prose with the code-rendered
+    procedural section as its own section (opinion_writer.final_text), then through step_aside_answer (the grounded-rule
+    check on the prose, the code-made rulings section for the record articles it cites), as the step-aside path prints
+    today. The page stays in state["page_text"], the opinion in state["opinion_text"]; logged «opinion_writer»
+    {opinion_text, opinion_checks, articles, lines, texts, seconds, error, page_chars, opinion_chars}."""
+    from . import opinion_writer
+    op = dict(state.get("opinion_writer") or {})
+    text = step_aside_answer(state, opinion_writer.final_text(op.get("text") or "", rendered), rows, case, rendered)
+    state["page_text"], state["opinion_text"] = page, text
+    _log("opinion_writer", {"opinion_text": text, "opinion_checks": op.get("checks") or {}, "articles": op.get("articles"),
+                            "lines": op.get("lines"), "texts": op.get("texts"), "seconds": op.get("seconds"),
+                            "error": op.get("error") or "", "prompt_chars": op.get("prompt_chars"),
+                            "page_chars": len(page or ""), "opinion_chars": len(text)})
+    return text
 
 
 def step_aside_answer(state: Dict[str, Any], draft: str, rows: Sequence[Dict[str, Any]], case: str = "",
@@ -10267,8 +10314,11 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     articles = _isolated("article_citations", lambda: article_citations(state, text), []) or []     # v60q
     from .. import version          # v77: the answer ends with «SunnitAI <version>» (state["last_answer"] without it)
     # v79.12.7 (item 8): the version is the response's metadata («version»); in the body only under FOOTER_IN_BODY
-    return {"answer": with_version(text), "interaction": field, "state": state, "citations": citations,
-            "kind": "answer", "article_citations": articles, "version": version.current()}
+    out = {"answer": with_version(text), "interaction": field, "state": state, "citations": citations,
+           "kind": "answer", "article_citations": articles, "version": version.current()}
+    if state.get("opinion_text"):       # v79.19.9 (Part 2, OPINION_WRITER): both texts, the page beside the opinion
+        out["opinion_text"], out["page_text"] = state["opinion_text"], state.get("page_text") or ""
+    return out
 
 
 def footer_in_body() -> bool:

@@ -9,7 +9,8 @@ VERBOSE = os.getenv("VERBOSE_LOGGING", "false").lower() == "true"
 logger = logging.getLogger("sunnitai.verbose")
 # Printed whole, as JSON, instead of cut to 100 characters: the typed facts of a case (fact_signals), which a
 # dry run cannot be read without (27 Oct).
-FULL_KEYS = {"facts", "rules", "issues", "traceback", "prompt", "partial_reply", "late_reply"}    # v79.19.1 (item 2)
+FULL_KEYS = {"facts", "rules", "issues", "traceback", "prompt", "partial_reply", "late_reply",   # v79.19.1 (item 2)
+             "opinion_text", "opinion_checks"}                                                   # v79.19.9 (Part 2)
 # Printed whatever VERBOSE_LOGGING says: an exception the pipeline caught, with its traceback (v45d: a run failed with
 # only "'bool' object is not iterable" to go on).
 ALWAYS_EVENTS = {"pipeline_exception", "intake"}     # v61: the request's intake, whatever VERBOSE_LOGGING says

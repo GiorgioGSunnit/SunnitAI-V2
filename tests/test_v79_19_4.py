@@ -45,8 +45,10 @@ def _sent(n, text):
     return {"id": f"S{n}", "text": text, "certainty": "accertato", "source": "caso"}
 
 
-def _demote(monkeypatch, element, sentences, contradicting, alternatives=None):
-    rows = [{"_article": ("9999", "c.c."), "_grade": 3, "s": {}}]
+def _demote(monkeypatch, element, sentences, contradicting, alternatives=None, grade=2):
+    # v79.19.9 (B, row 108): a grade of 3 is no longer demoted by a contradicted element alone -- the sample is graded 2
+    # where the test wants the demotion as today; the grade-3 case is test_a_grade_3_contradicted_is_kept_and_logged
+    rows = [{"_article": ("9999", "c.c."), "_grade": grade, "s": {}}]
     el = {"comma": 1, "text": element, **({"alternatives": alternatives} if alternatives else {})}
     monkeypatch.setattr(I, "distinctive", lambda rows, analysis: {"9999 c.c.": el})
     monkeypatch.setattr(I, "sentences", lambda case: [_sent(i, t) for i, t in enumerate(sentences, 1)])
@@ -59,8 +61,9 @@ def _demote(monkeypatch, element, sentences, contradicting, alternatives=None):
 
 def test_one_contradicted_alternative_keeps_the_grade_and_is_logged(monkeypatch):
     row, log = _demote(monkeypatch, "la cosa venduta non ha le qualità promesse ovvero quelle essenziali per l'uso",
-                       ["La cosa venduta aveva tutte le qualità promesse nel contratto.", "Beta ha pagato."], ["S1"])
-    assert row["_grade"] == 3 and log["demoted"] == [] and not row.get("_demoted")
+                       ["La cosa venduta aveva tutte le qualità promesse nel contratto.", "Beta ha pagato."], ["S1"],
+                       grade=3)
+    assert row["_grade"] == 3 and log["demoted"] == [] and not row.get("_demoted") and "kept_grade3" not in log
     got = log["alternative_contradicted"]
     assert len(got) == 1 and got[0]["article"] == "9999 c.c." and got[0]["kept"] == 3
     assert got[0]["alternative"] == "la cosa venduta non ha le qualità promesse"
@@ -70,6 +73,14 @@ def test_one_contradicted_alternative_keeps_the_grade_and_is_logged(monkeypatch)
     rec = {"requisites": [{"id": "R1", "kind": "requisito", "comma": 1, "text": row["_distinctive_text"]}]}
     I.seed(rec, row)
     assert rec["requisites"][0]["distinctive"] and rec["requisites"][0]["contraddetta"] == row["_alternative_contradicted"]
+
+
+def test_a_grade_3_contradicted_is_kept_and_logged(monkeypatch):
+    """v79.19.9 (B, row 108): the whole element contradicted, grade 3 -- the grade stands, logged kept_grade3."""
+    row, log = _demote(monkeypatch, "con violenza o minaccia", ["Alfa si è comportato correttamente con Beta."], ["S1"],
+                       grade=3)
+    assert row["_grade"] == 3 and not row.get("_demoted") and log["demoted"] == []
+    assert log["kept_grade3"] == ["9999 c.c."]
 
 
 def test_a_contradiction_of_no_single_alternative_is_of_the_whole_element_and_demotes_as_today(monkeypatch):
@@ -102,7 +113,7 @@ def test_an_alternative_comma_s_requisites_are_alternatives(monkeypatch):
     # the distinctive element of an alternative comma: contradicted, the other comma's requisite open -> kept
     row, log = _demote(monkeypatch, "il vizio rende la cosa inidonea all'uso",
                        ["La cosa è rimasta perfettamente idonea all'uso."], ["S1"],
-                       alternatives=["il vizio diminuisce il valore della cosa"])
+                       alternatives=["il vizio diminuisce il valore della cosa"], grade=3)
     assert row["_grade"] == 3 and log["alternative_contradicted"][0]["open"] == ["il vizio diminuisce il valore della cosa"]
     assert log["alternative_contradicted"][0]["contradicted"] == ["il vizio rende la cosa inidonea all'uso"]
     # both contradicted -> demoted

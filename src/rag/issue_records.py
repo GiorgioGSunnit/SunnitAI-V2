@@ -474,6 +474,7 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
     by_key = {_key(r["_article"]): r for r in rows or [] if r.get("_article")}
     out: Dict[str, Dict[str, Any]] = {}
     from . import comma_material
+    by_grade: List[str] = []            # v79.19.9 (A, row 107): the records writable by their grade alone
     for t in topics or []:
         grades = t.get("grades") or {}
         matched = set(t.get("matched") or [])
@@ -497,7 +498,13 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
                 kept.append("reato identificato")
             if row.get("_first_read"):
                 kept.append(f"primo esame: {row['_first_read']}")
-            writable = ref in _topic_refs(t)
+            # v79.19.9 (A, row 107): a listed article graded 2 or more is writable whatever its place in the topic's
+            # list (79.8's «non scrivibile» kept 21 key articles out); the writer's refs already rank every graded
+            # article (capped_refs), the link, the plan issues and the fallback plan read them too (_topic_refs all_)
+            planned = ref in _topic_refs(t)
+            writable = planned or (isinstance(grade, int) and grade >= 2)
+            if writable and not planned:
+                by_grade.append(label)
             rubrica = own_rubrica(label, row, t, rubriche)          # v79.12.1: never the topic's heading
             line, line_why = schema_line(row)                       # v79.11 (6): (None, "off") with the flag off
             gated = not decomposed_by_gate(label, rubrica,          # v74: never a fattispecie record, any route
@@ -537,6 +544,8 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
         out.setdefault(label, {"article": label, "rubrica": "", "topic": "", "grade": None, "issue": "", "kept": [],
                                "dropped": "prefiltro (fuori dai primi N per somiglianza)", "requisites": [],
                                "linked": "", "answer": {}})
+    if by_grade:                        # v79.19.9 (A): logged interactive_writable_by_grade {articles}
+        _log_event("writable_by_grade", {"articles": by_grade})
     number(out)
     refresh(out, analysis, questions)
     return out
@@ -2477,6 +2486,11 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
             continue
         if label in keep:
             log["kept_named"].append(label)
+            continue
+        # v79.19.9 (B, row 108): a grade of 3 is not demoted by one contradicted element alone (12 such demotions in
+        # the seven runs, 8 of them key articles); the facts' exclusion demotes as before, grade 2 unchanged
+        if reason == DEMOTED_CONTRADICTED and row["_grade"] >= 3:
+            log.setdefault("kept_grade3", []).append(label)
             continue
         row["_grade_before"] = row["_grade"]
         row["_grade"] = 1

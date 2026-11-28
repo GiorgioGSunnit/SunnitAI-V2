@@ -66,15 +66,17 @@ def test_no_known_matter_drops_nothing():
 
 # --- A2 ------------------------------------------------------------------------------------------------------------------
 
-def test_the_grading_reads_at_most_thirty_and_the_kept_ones_always():
-    from src.rag import interactive_flow as flow
+def test_the_grading_reads_at_most_fifty_and_the_kept_ones_always():
+    """v79.8 (A2) read at most thirty; v79.19.9 (C, row 109): fifty -- below GRADE_PREFILTER_N nothing else moves."""
+    from src.rag import defensive_generation as dg, interactive_flow as flow
     rows = [_row(str(100 + i), "c.c.", rank=i) for i in range(1, 61)]
     rows.append(_row("1803", "c.c.", "Nozione", rank=500))              # the first read's institution, ranked last
     out, log = flow.grade_cap(rows, ["1803 c.c."])
     labels = [f"{r['_article'][0]} {r['_article'][1]}" for r in out]
-    assert len(labels) == flow.GRADE_CAP == 30 and "1803 c.c." in labels
-    assert labels[:29] == [f"{100 + i} c.c." for i in range(1, 30)] and log["kept"] == 30
-    assert log["dropped"][0] == "130 c.c." and len(log["dropped"]) == 31
+    assert len(labels) == flow.GRADE_CAP == 50 and "1803 c.c." in labels
+    assert labels[:49] == [f"{100 + i} c.c." for i in range(1, 50)] and log["kept"] == 50
+    assert log["dropped"][0] == "150 c.c." and len(log["dropped"]) == 11
+    assert flow.GRADE_CAP <= dg.GRADE_PREFILTER_N == dg.grade_prefilter_n()
     few = rows[:5]
     assert flow.grade_cap(few, [])[0] == few
 
